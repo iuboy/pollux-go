@@ -347,13 +347,11 @@ func decryptPKCS8(encryptedDER, password []byte) ([]byte, error) {
 		return nil, fmt.Errorf("smx509: parse PBKDF2 params: %w", err)
 	}
 
-	// Minimum iteration count for decryption compatibility.
-	// OWASP recommends ≥600,000 for PBKDF2-HMAC-SHA256/SM3 when GENERATING new keys;
-	// the lower 2048 floor here allows decrypting existing keys from common tools
-	// (OpenSSL defaults to 10K, Java to 100K). Callers generating new encrypted keys
-	// should target ≥600,000 iterations.
-	if kdfParams.IterationCount < 2048 {
-		return nil, fmt.Errorf("PBKDF2 iterations %d below minimum 2048", kdfParams.IterationCount)
+	// Minimum iteration count aligned with OpenSSL default (10,000).
+	// OWASP recommends ≥600,000 for PBKDF2-HMAC-SHA256/SM3 when GENERATING new keys.
+	// Callers generating new encrypted keys should target ≥600,000 iterations.
+	if kdfParams.IterationCount < 10000 {
+		return nil, fmt.Errorf("PBKDF2 iterations %d below minimum 10000", kdfParams.IterationCount)
 	}
 	prf := newPRF(kdfParams.PRF.Algorithm)
 	keyLen := encKeySize(params.ES.Algorithm)

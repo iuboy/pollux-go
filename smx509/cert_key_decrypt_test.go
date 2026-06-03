@@ -143,7 +143,7 @@ func TestDecryptPEMPrivateKey_PKCS8SM4CBC(t *testing.T) {
 		Cipher: gmsmPKCS.SM4CBC,
 		KDFOpts: gmsmPKCS8.PBKDF2Opts{
 			SaltSize:       16,
-			IterationCount: 2048,
+			IterationCount: 10000,
 			HMACHash:       gmsmPKCS.SM3,
 		},
 	}
@@ -180,7 +180,7 @@ func TestDecryptPEMPrivateKey_PKCS8SM4GCM(t *testing.T) {
 		Cipher: gmsmPKCS.SM4GCM,
 		KDFOpts: gmsmPKCS8.PBKDF2Opts{
 			SaltSize:       16,
-			IterationCount: 2048,
+			IterationCount: 10000,
 			HMACHash:       gmsmPKCS.SM3,
 		},
 	}
@@ -217,7 +217,7 @@ func TestDecryptPEMPrivateKey_PKCS8SM4WrongPassword(t *testing.T) {
 		Cipher: gmsmPKCS.SM4CBC,
 		KDFOpts: gmsmPKCS8.PBKDF2Opts{
 			SaltSize:       16,
-			IterationCount: 2048,
+			IterationCount: 10000,
 			HMACHash:       gmsmPKCS.SM3,
 		},
 	}

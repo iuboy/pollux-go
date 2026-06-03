@@ -89,6 +89,10 @@ func Equal(x, y *ecdsa.PublicKey) bool {
 }
 
 // PrivateKeyToBytes 将 SM2 私钥序列化为 32 字节大端整数。
+//
+// Security: the returned bytes contain sensitive key material.
+// Callers MUST zero the returned slice after use via memsecure.ZeroBytes
+// or by overwriting with zeros. Do not leave copies in memory.
 func PrivateKeyToBytes(key *PrivateKey) []byte {
 	return key.D.Bytes()
 }

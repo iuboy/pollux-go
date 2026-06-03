@@ -21,6 +21,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/subtle"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -35,6 +36,7 @@ import (
 	gmsmSM3 "github.com/emmansun/gmsm/sm3"
 	smx509 "github.com/emmansun/gmsm/smx509"
 	polluxSM4 "github.com/ycq/pollux/sm4"
+	"github.com/ycq/pollux/internal/memsecure"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -345,6 +347,11 @@ func decryptPKCS8(encryptedDER, password []byte) ([]byte, error) {
 		return nil, fmt.Errorf("smx509: parse PBKDF2 params: %w", err)
 	}
 
+	// Minimum iteration count for decryption compatibility.
+	// OWASP recommends ≥600,000 for PBKDF2-HMAC-SHA256/SM3 when GENERATING new keys;
+	// the lower 2048 floor here allows decrypting existing keys from common tools
+	// (OpenSSL defaults to 10K, Java to 100K). Callers generating new encrypted keys
+	// should target ≥600,000 iterations.
 	if kdfParams.IterationCount < 2048 {
 		return nil, fmt.Errorf("PBKDF2 iterations %d below minimum 2048", kdfParams.IterationCount)
 	}
@@ -354,6 +361,7 @@ func decryptPKCS8(encryptedDER, password []byte) ([]byte, error) {
 		return nil, fmt.Errorf("smx509: unsupported encryption scheme: %v", params.ES.Algorithm)
 	}
 	derivedKey := pbkdf2.Key(password, kdfParams.Salt, kdfParams.IterationCount, keyLen, prf)
+	defer memsecure.ZeroBytes(derivedKey)
 
 	return decryptBlock(params.ES, derivedKey, encInfo.EncryptedData)
 }
@@ -459,10 +467,13 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 	if padLen == 0 || padLen > aes.BlockSize || padLen > len(data) {
 		return nil, errInvalidPadding
 	}
+	// Constant-time validation: always iterate all padding bytes regardless of value.
+	var valid int = 1
 	for _, b := range data[len(data)-padLen:] {
-		if int(b) != padLen {
-			return nil, errInvalidPadding
-		}
+		valid &= subtle.ConstantTimeByteEq(b, byte(padLen))
+	}
+	if valid == 0 {
+		return nil, errInvalidPadding
 	}
 	return data[:len(data)-padLen], nil
 }

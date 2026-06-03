@@ -35,8 +35,8 @@ import (
 	"github.com/emmansun/gmsm/sm2"
 	gmsmSM3 "github.com/emmansun/gmsm/sm3"
 	smx509 "github.com/emmansun/gmsm/smx509"
-	polluxSM4 "github.com/ycq/pollux/sm4"
 	"github.com/ycq/pollux/internal/memsecure"
+	polluxSM4 "github.com/ycq/pollux/sm4"
 	"golang.org/x/crypto/pbkdf2"
 )
 

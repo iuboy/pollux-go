@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"strings"
 
 	gmsmSM2 "github.com/emmansun/gmsm/sm2"
 	gmsmSMX509 "github.com/emmansun/gmsm/smx509"
@@ -22,6 +23,12 @@ func ParsePrivateKeyFromPEM(pemData []byte) (*PrivateKey, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
 		return nil, errPEMDecode
+	}
+
+	// 检测加密的 PEM 并提供明确的错误提示
+	if block.Type == "ENCRYPTED PRIVATE KEY" ||
+		strings.Contains(block.Headers["Proc-Type"], "ENCRYPTED") {
+		return nil, errors.New("sm2: PEM key is encrypted; use smx509.DecryptPEMPrivateKey to decrypt first")
 	}
 
 	// 尝试 PKCS#8（优先使用 smx509 以支持 SM2 OID）

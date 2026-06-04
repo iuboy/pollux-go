@@ -74,3 +74,11 @@ func (p *KeyExchangePerformer) ComputeSharedSecretAsResponder(r io.Reader, peerE
 	}
 	return sharedKey, sig, nil
 }
+
+// Destroy clears internal key exchange state, including any derived shared secrets.
+// This should be called after the key exchange is complete to minimize the window
+// during which sensitive material exists in memory.
+func (p *KeyExchangePerformer) Destroy() {
+	p.ke = nil
+	p.initDone = false
+}

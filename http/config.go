@@ -212,7 +212,8 @@ type ClientOptions struct {
 	TLSCipherSuites       []uint16
 	TLSInsecureSkipVerify bool
 
-	Timeout time.Duration
+	Timeout      time.Duration
+	MaxRedirects int // Maximum number of HTTP redirects (default: 10). Set to -1 to disable redirect following.
 }
 
 // buildTLCPClientConfig builds a tlcp.Config for client use.

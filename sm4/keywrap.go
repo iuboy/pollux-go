@@ -1,6 +1,7 @@
 package sm4
 
 import (
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 )
@@ -116,11 +117,10 @@ func KeyUnwrap(kek, ciphertext []byte) ([]byte, error) {
 		}
 	}
 
-	// Check IV
-	for _, b := range A {
-		if b != 0xA6 {
-			return nil, errors.New("sm4/keywrap: integrity check failed")
-		}
+	// Check IV (constant-time comparison to prevent timing side channels)
+	expectedIV := []byte{0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6}
+	if subtle.ConstantTimeCompare(A, expectedIV) != 1 {
+		return nil, errors.New("sm4/keywrap: integrity check failed")
 	}
 
 	plaintext := make([]byte, 0, n*8)

@@ -95,6 +95,9 @@ func (c *CMAC) processBlock(data []byte) {
 
 // Sum returns the CMAC tag, appending it to b.
 // It does not change the underlying state.
+//
+// The implementation uses constant-time operations to avoid timing
+// side channels that could reveal whether the last block is complete.
 func (c *CMAC) Sum(b []byte) []byte {
 	// Work on a copy of state + partial buffer to preserve internal state.
 	lastBlock := make([]byte, BlockSize)
@@ -103,20 +106,25 @@ func (c *CMAC) Sum(b []byte) []byte {
 		lastBlock[i] ^= c.buffer[i]
 	}
 
-	if c.bufSize == BlockSize {
-		// Complete last block: XOR with K1
-		for i := 0; i < BlockSize; i++ {
-			lastBlock[i] ^= c.k1[i]
-		}
-	} else {
-		// Incomplete last block: pad with 10* and XOR with K2
-		lastBlock[c.bufSize] ^= 0x80
-		for i := c.bufSize + 1; i < BlockSize; i++ {
-			lastBlock[i] = 0x00
-		}
-		for i := 0; i < BlockSize; i++ {
-			lastBlock[i] ^= c.k2[i]
-		}
+	// Constant-time path: avoid branching on bufSize.
+	// isComplete is 1 when bufSize == BlockSize, 0 otherwise.
+	isComplete := subtle.ConstantTimeEq(int32(c.bufSize), int32(BlockSize))
+
+	// Apply 10* padding for incomplete blocks (constant-time).
+	for i := 0; i < BlockSize; i++ {
+		atPadPos := subtle.ConstantTimeEq(int32(i), int32(c.bufSize))
+		pastPadPos := subtle.ConstantTimeLessOrEq(int(c.bufSize), int(i))
+		// When complete: keep lastBlock[i] unchanged.
+		// When incomplete at pad position: XOR with 0x80.
+		// When incomplete past pad position: zero out.
+		lastBlock[i] = byte(subtle.ConstantTimeSelect(isComplete, int(lastBlock[i]),
+			subtle.ConstantTimeSelect(atPadPos, int(lastBlock[i])^0x80,
+				subtle.ConstantTimeSelect(pastPadPos, 0, int(lastBlock[i])))))
+	}
+
+	// XOR with subkey: K1 for complete blocks, K2 for incomplete blocks.
+	for i := 0; i < BlockSize; i++ {
+		lastBlock[i] ^= byte(subtle.ConstantTimeSelect(isComplete, int(c.k1[i]), int(c.k2[i])))
 	}
 
 	// Encrypt the final block.

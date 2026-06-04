@@ -96,6 +96,14 @@ func (p *Pool) Len() int {
 	return len(p.certs)
 }
 
+// Clear removes all certificates from the pool.
+func (p *Pool) Clear() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.certs = nil
+	p.raw = nil
+}
+
 // ToStandardPool converts to a standard *x509.CertPool.
 func (p *Pool) ToStandardPool() *x509.CertPool {
 	p.mu.RLock()

@@ -42,7 +42,47 @@ func verifySM2(cert *x509.Certificate, opts VerifyOptions) error {
 		Roots:         opts.Roots.ToSMX509Pool(),
 		Intermediates: intermediatesPool(opts),
 	}
-	return polluxSmx509.Verify(cert, smx509Opts)
+	if err := polluxSmx509.Verify(cert, smx509Opts); err != nil {
+		return err
+	}
+
+	// Manual ExtendedKeyUsage validation (gmsm/smx509 does not support this natively).
+	if len(opts.KeyUsages) > 0 {
+		if err := validateKeyUsages(cert, opts.KeyUsages); err != nil {
+			return err
+		}
+	}
+
+	// Manual time validation (gmsm/smx509 VerifyOptions does not support CurrentTime).
+	currentTime := opts.CurrentTime
+	if currentTime.IsZero() {
+		currentTime = time.Now()
+	}
+	if currentTime.Before(cert.NotBefore) {
+		return fmt.Errorf("cert: certificate not yet valid (current %s, not before %s)",
+			currentTime.Format(time.RFC3339), cert.NotBefore.Format(time.RFC3339))
+	}
+	if currentTime.After(cert.NotAfter) {
+		return fmt.Errorf("cert: certificate expired (current %s, not after %s)",
+			currentTime.Format(time.RFC3339), cert.NotAfter.Format(time.RFC3339))
+	}
+
+	return nil
+}
+
+// validateKeyUsages checks that the certificate has at least one of the required ExtendedKeyUsages.
+func validateKeyUsages(cert *x509.Certificate, required []x509.ExtKeyUsage) error {
+	if len(cert.ExtKeyUsage) == 0 {
+		return nil // No EKU restriction on cert, accept any usage.
+	}
+	for _, req := range required {
+		for _, present := range cert.ExtKeyUsage {
+			if present == req || present == x509.ExtKeyUsageAny {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("cert: certificate does not have required ExtendedKeyUsage")
 }
 
 func verifyStandard(cert *x509.Certificate, opts VerifyOptions) error {

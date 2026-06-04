@@ -48,12 +48,23 @@ func SliceFromBytes(data []byte) []byte {
 	return unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), len(data))
 }
 
-// ZeroUint32 securely zeroes a uint32 slice.
+// ZeroUint32 securely zeroes a uint32 slice using the same multi-layer
+// defense as ZeroBytes: XOR + direct write + KeepAlive.
 func ZeroUint32(data []uint32) {
 	if len(data) == 0 {
 		return
 	}
 
+	// Layer 1: XOR-based zeroing (consistent with ZeroBytes pattern).
+	byteLen := len(data) * 4
+	zeros := make([]byte, byteLen)
+	subtle.XORBytes(
+		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen),
+		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen),
+		zeros,
+	)
+
+	// Layer 2: direct write.
 	for i := range data {
 		*(*uint32)(unsafe.Pointer(&data[i])) = 0
 	}
@@ -61,12 +72,23 @@ func ZeroUint32(data []uint32) {
 	runtime.KeepAlive(data)
 }
 
-// ZeroUint64 securely zeroes a uint64 slice.
+// ZeroUint64 securely zeroes a uint64 slice using the same multi-layer
+// defense as ZeroBytes: XOR + direct write + KeepAlive.
 func ZeroUint64(data []uint64) {
 	if len(data) == 0 {
 		return
 	}
 
+	// Layer 1: XOR-based zeroing (consistent with ZeroBytes pattern).
+	byteLen := len(data) * 8
+	zeros := make([]byte, byteLen)
+	subtle.XORBytes(
+		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen),
+		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen),
+		zeros,
+	)
+
+	// Layer 2: direct write.
 	for i := range data {
 		*(*uint64)(unsafe.Pointer(&data[i])) = 0
 	}

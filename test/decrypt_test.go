@@ -254,7 +254,7 @@ func TestBlackBox_SMX509_X2_LegacyPEMShortIV(t *testing.T) {
 }
 
 // TestBlackBox_SMX509_X3_PBKDF2LowIterations verifies that a PKCS#8 encrypted key
-// with PBKDF2 iterations below the minimum (2048) returns an error.
+// with PBKDF2 iterations below the minimum (10000) returns an error.
 func TestBlackBox_SMX509_X3_PBKDF2LowIterations(t *testing.T) {
 	// Use SM4-CBC OID for variety
 	sm4CbcOID := asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 104, 2}
@@ -266,7 +266,7 @@ func TestBlackBox_SMX509_X3_PBKDF2LowIterations(t *testing.T) {
 
 	pemData := buildMalformedPKCS8PEM(t,
 		[]byte("0123456789abcdef"),
-		100, // below minimum 2048
+		100, // below minimum 10000
 		hmacSM3OID,
 		sm4CbcOID,
 		iv,

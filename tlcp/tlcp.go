@@ -152,6 +152,12 @@ func NewConfig() *Config {
 
 // configToGotlcp 将 pollux Config 转换为 gotlcp Config。
 // 核心转换：stdlib 证书类型 → gmsm 证书类型。
+//
+// SECURITY NOTE: OCSP stapling and CRL checking are not supported when using
+// TLCP through this wrapper. The underlying gotlcp library does not expose
+// OCSP or CRL verification hooks. Callers requiring revocation checking must
+// implement it out-of-band (e.g., fetch and validate OCSP/CRL separately
+// before establishing a TLCP session).
 func configToGotlcp(c *Config) (*gotlcp.Config, error) {
 	if c == nil {
 		return nil, errors.New("tlcp: nil config")
@@ -360,6 +366,38 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// deepCopyTLSCertificate creates a deep copy of a tls.Certificate,
+// copying the Certificate [][]byte and SignedCertificateTimestamps fields
+// to prevent shared mutable state between cloned configs.
+func deepCopyTLSCertificate(cert *tls.Certificate) *tls.Certificate {
+	if cert == nil {
+		return nil
+	}
+	clone := &tls.Certificate{
+		PrivateKey: cert.PrivateKey,
+		Leaf:       cert.Leaf,
+	}
+	if len(cert.Certificate) > 0 {
+		clone.Certificate = make([][]byte, len(cert.Certificate))
+		for i, der := range cert.Certificate {
+			clone.Certificate[i] = make([]byte, len(der))
+			copy(clone.Certificate[i], der)
+		}
+	}
+	if len(cert.SignedCertificateTimestamps) > 0 {
+		clone.SignedCertificateTimestamps = make([][]byte, len(cert.SignedCertificateTimestamps))
+		for i, sct := range cert.SignedCertificateTimestamps {
+			clone.SignedCertificateTimestamps[i] = make([]byte, len(sct))
+			copy(clone.SignedCertificateTimestamps[i], sct)
+		}
+	}
+	if len(cert.OCSPStaple) > 0 {
+		clone.OCSPStaple = make([]byte, len(cert.OCSPStaple))
+		copy(clone.OCSPStaple, cert.OCSPStaple)
+	}
+	return clone
+}
+
 // Clone 克隆 TLCP 配置
 func (c *Config) Clone() *Config {
 	clone := &Config{
@@ -372,10 +410,10 @@ func (c *Config) Clone() *Config {
 	}
 
 	if c.SignCertificate != nil {
-		clone.SignCertificate = c.SignCertificate
+		clone.SignCertificate = deepCopyTLSCertificate(c.SignCertificate)
 	}
 	if c.EncCertificate != nil {
-		clone.EncCertificate = c.EncCertificate
+		clone.EncCertificate = deepCopyTLSCertificate(c.EncCertificate)
 	}
 
 	if len(c.CipherSuites) > 0 {

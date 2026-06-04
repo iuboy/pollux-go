@@ -2,6 +2,7 @@ package quicgm
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/json"
 	"sync"
@@ -119,19 +120,10 @@ func (r *NonceRegistry) CheckAndRecord(keyID, sessionID string, nonce []byte) bo
 	// Get nonce list for this sessionID
 	nonces := sessionMap[sessionID]
 
-	// Check if nonce already used
+	// Check if nonce already used (constant-time comparison)
 	for _, n := range nonces {
-		if len(n) == len(nonce) {
-			match := true
-			for i := range n {
-				if n[i] != nonce[i] {
-					match = false
-					break
-				}
-			}
-			if match {
-				return false // Nonce already used
-			}
+		if subtle.ConstantTimeCompare(n, nonce) == 1 {
+			return false // Nonce already used
 		}
 	}
 

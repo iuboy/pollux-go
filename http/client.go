@@ -73,5 +73,21 @@ func NewClient(opts *ClientOptions) (*http.Client, error) {
 	if opts.Timeout > 0 {
 		client.Timeout = opts.Timeout
 	}
+
+	// Configure redirect policy.
+	maxRedirects := opts.MaxRedirects
+	if maxRedirects == 0 {
+		maxRedirects = 10 // explicit default
+	}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if maxRedirects < 0 {
+			return http.ErrUseLastResponse
+		}
+		if len(via) >= maxRedirects {
+			return fmt.Errorf("pollux/http: stopped after %d redirects", maxRedirects)
+		}
+		return nil
+	}
+
 	return client, nil
 }

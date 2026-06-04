@@ -107,6 +107,9 @@ func WrapKey(publicKey *EncryptMasterPublicKey, uid []byte, keyLen int) (key []b
 	if len(uid) == 0 {
 		return nil, nil, errUIDEmpty
 	}
+	if keyLen <= 0 || keyLen > 1024 {
+		return nil, nil, errors.New("sm9: keyLen must be between 1 and 1024")
+	}
 	return gmsmSM9.WrapKey(rand.Reader, publicKey, uid, DefaultEncryptHID, keyLen)
 }
 
@@ -114,6 +117,9 @@ func WrapKey(publicKey *EncryptMasterPublicKey, uid []byte, keyLen int) (key []b
 func WrapKeyASN1(publicKey *EncryptMasterPublicKey, uid []byte, keyLen int) ([]byte, error) {
 	if len(uid) == 0 {
 		return nil, errUIDEmpty
+	}
+	if keyLen <= 0 || keyLen > 1024 {
+		return nil, errors.New("sm9: keyLen must be between 1 and 1024")
 	}
 	return publicKey.WrapKeyASN1(rand.Reader, uid, DefaultEncryptHID, keyLen)
 }

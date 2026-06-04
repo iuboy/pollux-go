@@ -347,9 +347,14 @@ func decryptPKCS8(encryptedDER, password []byte) ([]byte, error) {
 		return nil, fmt.Errorf("smx509: parse PBKDF2 params: %w", err)
 	}
 
-	// Minimum iteration count aligned with OpenSSL default (10,000).
-	// OWASP recommends ≥600,000 for PBKDF2-HMAC-SHA256/SM3 when GENERATING new keys.
-	// Callers generating new encrypted keys should target ≥600,000 iterations.
+	// Minimum iteration count for READING legacy keys: 10,000 (aligned with OpenSSL default).
+	//
+	// SECURITY WARNING: OWASP 2023 recommends >= 600,000 iterations for PBKDF2-HMAC-SHA256
+	// and >= 600,000 for PBKDF2-HMAC-SM3 when GENERATING new keys. The 10,000 minimum here
+	// is for reading existing keys only. Callers creating new encrypted keys MUST use
+	// at least 600,000 iterations.
+	//
+	// See: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
 	if kdfParams.IterationCount < 10000 {
 		return nil, fmt.Errorf("PBKDF2 iterations %d below minimum 10000", kdfParams.IterationCount)
 	}
@@ -450,11 +455,12 @@ var errInvalidPadding = errors.New("smx509: invalid PKCS#7 padding")
 
 // asn1IsSequence 检查 DER 数据是否以 ASN.1 SEQUENCE 标签开头。
 // 用于在 CBC 解密后验证密码正确性（CBC 无认证，错误密码可能通过 PKCS7 unpad）。
+// 使用常量时间比较以防止时序侧信道。
 func asn1IsSequence(der []byte) bool {
 	if len(der) == 0 {
 		return false
 	}
-	return der[0] == 0x30
+	return subtle.ConstantTimeByteEq(der[0], 0x30) == 1
 }
 
 func pkcs7Unpad(data []byte) ([]byte, error) {
@@ -517,12 +523,13 @@ func decryptLegacyPEM(block *pem.Block, password []byte) ([]byte, error) {
 	cipher.NewCBCDecrypter(blockCipher, iv).CryptBlocks(plaintext, block.Bytes)
 	unpadded, err := pkcs7Unpad(plaintext)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("smx509: decryption failed")
 	}
 	// CBC 没有 authenticated encryption，错误密码可能通过 PKCS7 unpad。
 	// 通过 ASN.1 结构校验检测：私钥 DER 必须是合法的 SEQUENCE。
+	// 返回与 pkcs7Unpad 相同的错误消息以防止 padding oracle 攻击。
 	if !asn1IsSequence(unpadded) {
-		return nil, fmt.Errorf("decryption failed: password may be incorrect")
+		return nil, errors.New("smx509: decryption failed")
 	}
 	return unpadded, nil
 }
@@ -560,7 +567,15 @@ func legacyNewCipher(name string, key []byte) (cipher.Block, error) {
 }
 
 // evpBytesToKey implements OpenSSL's legacy EVP_BytesToKey key derivation.
-// It is MD5-based for compatibility with traditional encrypted PEM blocks only.
+//
+// SECURITY WARNING: This function uses MD5 for key derivation, which is
+// CRYPTOGRAPHICALLY BROKEN. It exists solely for reading legacy OpenSSL-encrypted
+// PEM private keys (Proc-Type/DEK-Info headers). Do NOT use this function for
+// any new key derivation. New encrypted keys must use PKCS#8 PBES2 with
+// PBKDF2-HMAC-SHA256 or PBKDF2-HMAC-SM3 (see decryptPKCS8).
+//
+// Deprecated: Do not use in new code. This will never be removed for
+// compatibility reasons, but new code should never call this directly.
 func evpBytesToKey(password, salt []byte, keyLen int) []byte {
 	var result, prev []byte
 	for len(result) < keyLen {

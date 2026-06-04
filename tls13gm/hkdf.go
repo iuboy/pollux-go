@@ -1,11 +1,16 @@
 package tls13gm
 
 import (
+	"fmt"
+
 	"github.com/ycq/pollux/sm3"
 )
 
 // HKDFExpandLabel implements TLS 1.3 HKDF-Expand-Label with SM3.
 func HKDFExpandLabel(secret []byte, label string, context []byte, length int) ([]byte, error) {
+	if length <= 0 || length > 255 {
+		return nil, fmt.Errorf("tls13gm: HKDFExpandLabel length must be 1..255, got %d", length)
+	}
 	hkdfLabel := buildHKDFLabel(label, context, length)
 	return sm3.HKDFExpand(secret, hkdfLabel, length)
 }

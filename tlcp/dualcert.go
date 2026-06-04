@@ -151,6 +151,25 @@ func ValidateTLCPCertificate(cert *x509.Certificate, isSignCert bool) error {
 		}
 	}
 
+	// 验证扩展密钥用途（EKU）
+	if len(cert.ExtKeyUsage) > 0 {
+		hasValidEKU := false
+		for _, eku := range cert.ExtKeyUsage {
+			if eku == x509.ExtKeyUsageServerAuth || eku == x509.ExtKeyUsageClientAuth ||
+				eku == x509.ExtKeyUsageAny {
+				hasValidEKU = true
+				break
+			}
+		}
+		if !hasValidEKU {
+			role := "sign"
+			if !isSignCert {
+				role = "encrypt"
+			}
+			return fmt.Errorf("tlcp: %s cert missing serverAuth, clientAuth, or any ExtendedKeyUsage", role)
+		}
+	}
+
 	return nil
 }
 

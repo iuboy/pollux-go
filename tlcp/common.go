@@ -9,18 +9,17 @@ const (
 	SuiteECC_SM2_SM4_CBC_SM3   uint16 = 0xE013
 )
 
-// defaultCipherSuites 默认支持的密码套件（GCM-only，推荐安全配置）
+// defaultCipherSuites 默认支持的密码套件（GCM-only，ECDHE-only，提供前向安全）
 var defaultCipherSuites = []uint16{
 	SuiteECDHE_SM2_SM4_GCM_SM3,
-	SuiteECC_SM2_SM4_GCM_SM3,
 }
 
-// DefaultCipherSuites 返回默认的 TLCP 密码套件（GCM-only）。
+// DefaultCipherSuites 返回默认的 TLCP 密码套件（GCM-only，ECDHE-only，提供前向安全）。
 // 这是新连接的推荐配置，提供最佳安全性。
+// 如需包含非 PFS 的静态 ECC 套件，请使用 LegacyCipherSuites()。
 func DefaultCipherSuites() []uint16 {
 	return []uint16{
 		SuiteECDHE_SM2_SM4_GCM_SM3,
-		SuiteECC_SM2_SM4_GCM_SM3,
 	}
 }
 

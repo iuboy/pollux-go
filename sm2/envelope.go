@@ -110,6 +110,13 @@ func EnvelopeEncryptSM4(pub *ecdsa.PublicKey, plaintext []byte) (encryptedKey, n
 }
 
 // EnvelopeDecryptSM4 使用 SM2+SM4-GCM 解密数字信封（简化版）。
+//
+// SECURITY NOTE: This function does not implement timing-safe error handling.
+// An attacker who can measure decryption time may be able to distinguish
+// between "SM2 decryption failed" and "SM4-GCM authentication failed" errors,
+// which could theoretically aid in chosen-ciphertext attacks. For applications
+// where this distinction matters, add constant-time delays or unified error
+// responses at the protocol layer.
 func EnvelopeDecryptSM4(priv *PrivateKey, encryptedKey, nonce, ciphertext []byte) ([]byte, error) {
 	if priv == nil {
 		return nil, errors.New("sm2: nil private key")

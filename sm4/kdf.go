@@ -3,7 +3,11 @@ package sm4
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 )
+
+// maxDeriveKeyLength is the maximum allowed derived key material in bytes.
+const maxDeriveKeyLength = 1024
 
 // DeriveKey derives a key using SM4-CMAC in NIST SP 800-108 Counter Mode KDF.
 //
@@ -15,6 +19,9 @@ func DeriveKey(masterKey, label, context []byte, length int) ([]byte, error) {
 	}
 	if length <= 0 {
 		return nil, errors.New("sm4/kdf: length must be positive")
+	}
+	if length > maxDeriveKeyLength {
+		return nil, fmt.Errorf("sm4/kdf: length %d exceeds maximum %d", length, maxDeriveKeyLength)
 	}
 
 	result := make([]byte, 0, length)

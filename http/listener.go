@@ -68,6 +68,15 @@ func DefaultProtocolMask() ProtocolMask {
 //     underlying tls.Config handle version negotiation.
 //  3. For production use, consider using separate listeners for TLS and TLCP
 //     to eliminate protocol ambiguity and reduce attack surface.
+//
+// SECURITY WARNING: Protocol detection relies on the unauthenticated record
+// header version field. An active network attacker can craft a ClientHello
+// that mimics TLCP (version 0x0101) or TLS (version 0x03xx) to trigger
+// the wrong protocol handler. ProtocolMask provides coarse filtering only
+// and is NOT a security boundary.
+//
+// This listener is DEPRECATED. Use separate ports for TLS and TLCP to
+// eliminate protocol confusion risk.
 type hybridListener struct {
 	net.Listener
 	tlcpCfg          *tlcp.Config

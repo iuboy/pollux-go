@@ -6,7 +6,11 @@ import (
 
 // NewAEAD creates an SM4-GCM AEAD cipher for TLS 1.3 packet protection.
 // This is a thin wrapper around sm4gcm.Seal/Open for TLS 1.3 record protection.
+// Panics if nonce is not exactly 12 bytes (TLS 1.3 SM4-GCM nonce length).
 func NewAEAD(key, nonce []byte) *AEAD {
+	if len(nonce) != 12 {
+		panic("tls13gm: nonce must be 12 bytes for TLS 1.3 SM4-GCM")
+	}
 	return &AEAD{key: key, fixedNonce: nonce}
 }
 

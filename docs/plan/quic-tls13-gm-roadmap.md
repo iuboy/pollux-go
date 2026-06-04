@@ -976,3 +976,166 @@ func NewTLS13Client(opts ClientOptions) (*http.Client, error)
 6. 将完整 RFC8998 QUIC 作为 experimental research，不进入生产承诺。
 
 这条路线能最快形成安全可用的能力：标准 QUIC/TLS1.3 负责传输安全，pollux-go 的 SM2/SM3/SM4 提供应用层国密能力，同时避免把尚未具备完整支持的 RFC8998/TLCP 能力误暴露为生产级 QUIC 国密。
+
+## 17. QUIC 国密标准参考
+
+> 本章记录 QUIC + 国密（ShangMi/SM）相关的国际标准与国内标准现状，为项目的路线选择和长期规划提供标准依据。
+
+### 17.1 标准链总览
+
+pollux-go 涉及 QUIC 国密的三条路线分别依赖以下标准：
+
+| 路线 | 传输层标准 | 国密标准 | 状态 |
+|------|-----------|---------|------|
+| **路线 A：QUIC + 标准 TLS 1.3** | RFC 9000, RFC 9001, RFC 8446 | 无 | ✅ 已发布，生产可用 |
+| **路线 B：QUIC + 标准 TLS 1.3 + 应用层国密 Profile** | RFC 9000, RFC 9001, RFC 8446 | SM2/SM3/SM4 算法标准（ISO/IEC） | ✅ 已发布，生产可用 |
+| **路线 C：QUIC + RFC 8998 TLS 1.3 国密套件** | RFC 9000, RFC 9001 | RFC 8998 | ⚠️ 已发布，但 Go/quic-go 尚未支持 |
+
+### 17.2 国际标准（IETF）
+
+#### 17.2.1 RFC 9000 — QUIC 传输协议
+
+| 项目 | 内容 |
+|------|------|
+| **编号** | RFC 9000 |
+| **标题** | *QUIC: A UDP-Based Multiplexed and Secure Transport* |
+| **发布日期** | 2021 年 5 月 |
+| **核心内容** | 定义 QUIC 传输协议：连接 ID、流多路复用、丢包检测、拥塞控制、连接迁移等 |
+| **与国密关系** | QUIC 的加密层完全依赖 TLS 1.3（RFC 9001），不直接涉及密码算法选择 |
+
+#### 17.2.2 RFC 9001 — Using TLS to Secure QUIC
+
+| 项目 | 内容 |
+|------|------|
+| **编号** | RFC 9001 |
+| **标题** | *Using TLS to Secure QUIC* |
+| **发布日期** | 2021 年 5 月 |
+| **核心内容** | 定义 QUIC 如何使用 TLS 1.3 进行握手和包保护（packet protection） |
+| **与国密关系** | QUIC 的 TLS 握手层是可替换的——如果 TLS 实现支持 RFC 8998 套件，QUIC 即可使用国密算法进行传输层加密 |
+
+#### 17.2.3 RFC 8446 — TLS 1.3
+
+| 项目 | 内容 |
+|------|------|
+| **编号** | RFC 8446 |
+| **标题** | *The Transport Layer Security Protocol Version 1.3* |
+| **发布日期** | 2018 年 8 月 |
+| **核心内容** | TLS 1.3 协议规范 |
+| **与国密关系** | RFC 8998 在 TLS 1.3 框架内注册国密套件，不修改 TLS 1.3 的握手流程 |
+
+#### 17.2.4 RFC 8998 — ShangMi (SM) Cipher Suites for TLS 1.3
+
+| 项目 | 内容 |
+|------|------|
+| **编号** | RFC 8998 |
+| **标题** | *ShangMi (SM) Cipher Suites for TLS 1.3* |
+| **前身草案** | `draft-yang-tls-tls13-sm-suites`（经历多个版本后成为 RFC） |
+| **发布日期** | 2021 年 3 月 |
+| **意义** | 🇨🇳 **中国首个 IETF 国密国际标准** |
+
+RFC 8998 定义了以下内容：
+
+1. **两个 TLS 1.3 国密加密套件**：
+   - `TLS_SM4_GCM_SM3`（0x00C6）：SM4-GCM 模式 + SM3 哈希
+   - `TLS_SM4_CCM_SM3`（0x00C7）：SM4-CCM 模式 + SM3 哈希
+
+2. **SM2 椭圆曲线**：`curveSM2`（曲线 ID 41），用于密钥交换
+
+3. **SM2-SM3 签名方法**：用于数字签名
+
+RFC 8998 完整映射表（与标准 TLS 1.3 对比）：
+
+| 组件 | 标准 TLS 1.3 | RFC 8998 国密 |
+|------|-------------|---------------|
+| CipherSuite | `TLS_AES_128_GCM_SHA256` | `TLS_SM4_GCM_SM3` |
+| Transcript Hash | SHA-256/SHA-384 | SM3 |
+| HKDF | HKDF-SHA256/SHA384 | HKDF-SM3 |
+| Signature | ECDSA/RSA-PSS/Ed25519 | SM2-SM3 |
+| Key Exchange | X25519/P-256 | curveSM2 |
+| AEAD | AES-GCM/ChaCha20-Poly1305 | SM4-GCM |
+
+### 17.3 国内标准
+
+#### 17.3.1 GB/T 38636-2020 — TLCP
+
+| 项目 | 内容 |
+|------|------|
+| **编号** | GB/T 38636-2020 |
+| **标题** | 《信息安全技术 传输层密码协议（TLCP）》 |
+| **前身** | GM/T 0024-2014（密码行业标准） |
+| **发布日期** | 2020 年 4 月 |
+| **实施日期** | 2020 年 11 月 1 日 |
+| **归口单位** | TC260（全国网络安全标准化技术委员会） |
+| **核心内容** | 基于 SM2/SM3/SM4 的独立传输层密码协议，采用"双证书"体系（签名证书 + 加密证书分离） |
+| **与 QUIC 关系** | TLCP 是独立协议，与 TLS 1.3 不兼容，**不能直接用于 QUIC**。QUIC 要求 TLS 1.3 握手。 |
+
+#### 17.3.2 国密算法标准
+
+| 算法 | 类型 | 标准 | ISO 国际标准 |
+|------|------|------|-------------|
+| SM2 | 椭圆曲线公钥密码 | GB/T 32918-2016 | ISO/IEC 14888-3:2018 |
+| SM3 | 密码哈希 | GB/T 32905-2016 | ISO/IEC 10118-3:2018 |
+| SM4 | 分组密码 | GB/T 32907-2016 | ISO/IEC 18033-3:2010/AMD1:2021 |
+
+### 17.4 QUIC + 国密的标准化现状
+
+#### 17.4.1 是否存在独立的 QUIC 国密 IETF 草案？
+
+**结论：不存在。**
+
+当前没有独立的 IETF Internet-Draft 专门定义"QUIC 国密"。QUIC + 国密通过以下标准链间接实现：
+
+```
+RFC 8998 (SM cipher suites for TLS 1.3)
+    ↓ 注册到
+RFC 8446 (TLS 1.3)
+    ↓ 被
+RFC 9001 (QUIC TLS)
+    ↓ 用于保护
+RFC 9000 (QUIC transport)
+```
+
+也就是说，只要 TLS 实现支持 RFC 8998 的国密套件，QUIC 即可通过 RFC 9001 使用这些套件进行传输层加密，无需定义新的 QUIC 扩展。
+
+#### 17.4.2 TLCP 是否有 QUIC 版本？
+
+**结论：暂无公开草案。**
+
+GB/T 38636-2020（TLCP）仍为现行有效版本，截至目前未发现包含 QUIC 支持的修订草案或征求意见稿。TC260 和密码行业标准化技术委员会的公开渠道中暂无相关立项信息。
+
+#### 17.4.3 业界实现实践
+
+尽管尚无独立的 QUIC 国密标准，但业界已有实际落地：
+
+| 项目 | 组织 | 实现方式 |
+|------|------|---------|
+| **NJet** | 开源社区 | 在 QUIC 中增加 `TLS_SM4_GCM_SM3` 套件，支持 HTTP/3 国密通信 |
+| **BabaSSL / Tongsuo** | 蚂蚁集团 | OpenSSL 分支，支持 RFC 8998 TLS 1.3 国密套件，可被 QUIC 栈调用 |
+
+### 17.5 对 pollux-go 路线的影响
+
+基于以上标准现状分析，pollux-go 的三条路线在标准层面的成熟度如下：
+
+1. **路线 A（QUIC + 标准 TLS 1.3）**：标准完备，Go 生态（`crypto/tls` + `quic-go`）完全支持。**当前已实现**。
+
+2. **路线 B（QUIC + 应用层国密 Profile）**：SM2/SM3/SM4 算法已标准化（ISO + GB/T），应用层 envelope 不依赖传输层标准。**当前已实现**。
+
+3. **路线 C（QUIC + RFC 8998）**：RFC 8998 已正式发布，但 Go 标准库 `crypto/tls` 不支持 SM 套件，`quic-go` 也未集成。完整实现需要：
+   - Fork Go `crypto/tls` 并实现 SM transcript hash、HKDF-SM3、SM2-SM3 签名、curveSM2 密钥交换
+   - Fork `quic-go` 并适配 SM4-GCM packet protection
+   - 或等待 Go 社区/`quic-go` 上游支持 RFC 8998
+
+**建议**：保持路线 C 的 experimental 定位，在 `tls13gm` 包中沉淀 RFC 8998 常量、接口和测试向量，待 Go 生态成熟后再推进传输层集成。
+
+### 17.6 标准参考链接
+
+| 标准 | 链接 |
+|------|------|
+| RFC 9000 | https://datatracker.ietf.org/doc/rfc9000/ |
+| RFC 9001 | https://datatracker.ietf.org/doc/rfc9001/ |
+| RFC 8446 | https://datatracker.ietf.org/doc/rfc8446/ |
+| RFC 8998 | https://datatracker.ietf.org/doc/html/rfc8998 |
+| RFC 8998 前身草案 | https://datatracker.ietf.org/doc/draft-yang-tls-tls13-sm-suites/06/ |
+| GB/T 38636-2020 | https://std.samr.gov.cn/gb/search/gbDetailed?id=A47A713B764314ABE05397BE0A0ABB25 |
+| TC260 官网 | https://www.tc260.org.cn |
+| SM2/SM3/SM4 ISO 标准 | ISO/IEC 14888-3:2018, ISO/IEC 10118-3:2018, ISO/IEC 18033-3:2010/AMD1:2021 |

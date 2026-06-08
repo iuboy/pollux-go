@@ -22,11 +22,10 @@ func NewPool() *Pool {
 }
 
 // NewPoolFromCerts creates a pool from a list of certificates.
+// Uses a single lock acquisition for all additions.
 func NewPoolFromCerts(certs ...*x509.Certificate) *Pool {
 	p := NewPool()
-	for _, c := range certs {
-		p.AddCert(c)
-	}
+	p.AddCerts(certs...)
 	return p
 }
 
@@ -42,6 +41,23 @@ func (p *Pool) AddCert(cert *x509.Certificate) {
 		rawCopy := make([]byte, len(cert.Raw))
 		copy(rawCopy, cert.Raw)
 		p.raw = append(p.raw, rawCopy)
+	}
+}
+
+// AddCerts adds multiple certificates to the pool in a single lock acquisition.
+func (p *Pool) AddCerts(certs ...*x509.Certificate) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, cert := range certs {
+		if cert == nil {
+			continue
+		}
+		p.certs = append(p.certs, cert)
+		if len(cert.Raw) > 0 {
+			rawCopy := make([]byte, len(cert.Raw))
+			copy(rawCopy, cert.Raw)
+			p.raw = append(p.raw, rawCopy)
+		}
 	}
 }
 

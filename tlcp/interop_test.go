@@ -79,20 +79,6 @@ func generateInteropCerts(t *testing.T) (signCert, encCert gotlcp.Certificate) {
 	return
 }
 
-// toGotlcpCerts 将 pollux-go 的证书转换为 gotlcp 格式
-//
-//nolint:unused
-func toGotlcpCerts(t *testing.T, signCert, encCert *tls.Certificate) (gotlcpSign, gotlcpEnc gotlcp.Certificate) {
-	t.Helper()
-	return gotlcp.Certificate{
-			Certificate: signCert.Certificate,
-			PrivateKey:  signCert.PrivateKey,
-		}, gotlcp.Certificate{
-			Certificate: encCert.Certificate,
-			PrivateKey:  encCert.PrivateKey,
-		}
-}
-
 // TestInterop_GotlcpServer_PolluxClient 测试 gotlcp 服务端 + pollux-go 客户端
 func TestInterop_GotlcpServer_PolluxClient(t *testing.T) {
 	signCert, encCert := generateInteropCerts(t)

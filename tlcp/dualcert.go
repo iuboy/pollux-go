@@ -21,8 +21,8 @@ var (
 	errNotSM2Certificate = errors.New("tlcp: certificate is not SM2")
 )
 
-// DualCertPair 表示一对 TLCP 双证书（签名证书 + 加密证书）。
-// 这是 TLCP 协议的核心特征：签名和加密使用不同的证书和密钥。
+// DualCertPair represents a TLCP dual certificate pair (signing certificate + encryption certificate).
+// This is a core feature of TLCP: signing and encryption use different certificates and keys.
 type DualCertPair struct {
 	SignCert *x509.Certificate
 	EncCert  *x509.Certificate
@@ -30,7 +30,7 @@ type DualCertPair struct {
 	EncKey   *sm2.PrivateKey
 }
 
-// LoadDualCertPair 从 PEM 文件加载双证书对。
+// LoadDualCertPair loads a dual certificate pair from PEM files.
 func LoadDualCertPair(signCertFile, signKeyFile, encCertFile, encKeyFile string) (*DualCertPair, error) {
 	signCert, err := loadCertificate(signCertFile)
 	if err != nil {
@@ -65,7 +65,7 @@ func LoadDualCertPair(signCertFile, signKeyFile, encCertFile, encKeyFile string)
 	return pair, nil
 }
 
-// LoadDualCertPairFromPEM 从 PEM 编码的字节数据加载双证书对。
+// LoadDualCertPairFromPEM loads a dual certificate pair from PEM-encoded byte data.
 func LoadDualCertPairFromPEM(signCertPEM, signKeyPEM, encCertPEM, encKeyPEM []byte) (*DualCertPair, error) {
 	signCert, err := parseCertificatePEM(signCertPEM)
 	if err != nil {
@@ -100,8 +100,8 @@ func LoadDualCertPairFromPEM(signCertPEM, signKeyPEM, encCertPEM, encKeyPEM []by
 	return pair, nil
 }
 
-// ValidateDualCertPair 验证双证书对的合法性。
-// 检查：证书类型、密钥用途、签发者一致、未过期。
+// ValidateDualCertPair validates the dual certificate pair.
+// Checks: certificate type, key usage, issuer consistency, validity period.
 func ValidateDualCertPair(pair *DualCertPair) error {
 	if pair.SignCert == nil {
 		return errSignCertMissing
@@ -110,17 +110,17 @@ func ValidateDualCertPair(pair *DualCertPair) error {
 		return errEncCertMissing
 	}
 
-	// 验证签名证书用途
+	// Validate signing certificate usage
 	if err := ValidateTLCPCertificate(pair.SignCert, true); err != nil {
 		return fmt.Errorf("tlcp: sign cert: %w", err)
 	}
 
-	// 验证加密证书用途
+	// Validate encryption certificate usage
 	if err := ValidateTLCPCertificate(pair.EncCert, false); err != nil {
 		return fmt.Errorf("tlcp: encrypt cert: %w", err)
 	}
 
-	// 检查同一签发者（比较 RawIssuer）
+	// Verify same issuer (compare RawIssuer)
 	if !bytes.Equal(pair.SignCert.RawIssuer, pair.EncCert.RawIssuer) {
 		return fmt.Errorf("tlcp: sign and encrypt certs from different issuers")
 	}
@@ -128,18 +128,18 @@ func ValidateDualCertPair(pair *DualCertPair) error {
 	return nil
 }
 
-// ValidateTLCPCertificate 检查单个证书是否满足 TLCP 要求。
+// ValidateTLCPCertificate checks if a single certificate meets TLCP requirements.
 func ValidateTLCPCertificate(cert *x509.Certificate, isSignCert bool) error {
 	if cert == nil {
 		return errInvalidCertPair
 	}
 
-	// 验证是 SM2 证书
+	// Verify SM2 certificate
 	if !polluxSmx509.IsSM2PublicKey(cert.PublicKey) {
 		return errNotSM2Certificate
 	}
 
-	// 验证密钥用途
+	// Verify key usage
 	if isSignCert {
 		if cert.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
 			return fmt.Errorf("tlcp: sign cert missing digitalSignature key usage")
@@ -151,7 +151,7 @@ func ValidateTLCPCertificate(cert *x509.Certificate, isSignCert bool) error {
 		}
 	}
 
-	// 验证扩展密钥用途（EKU）
+	// Verify extended key usage (EKU)
 	if len(cert.ExtKeyUsage) > 0 {
 		hasValidEKU := false
 		for _, eku := range cert.ExtKeyUsage {
@@ -173,14 +173,14 @@ func ValidateTLCPCertificate(cert *x509.Certificate, isSignCert bool) error {
 	return nil
 }
 
-// VerifyDualCertPair 验证双证书对的配对关系（同签发者、密钥用途）。
-// 链验证需由调用方分别对每张证书执行。
+// VerifyDualCertPair verifies pairing of dual certificates (same issuer, key usage).
+// Chain verification should be performed by the caller for each certificate separately.
 func VerifyDualCertPair(pair *DualCertPair) error {
 	return polluxSmx509.VerifyDualCerts(pair.SignCert, pair.EncCert)
 }
 
-// ToTLSCertificates 将双证书对转换为 tls.Certificate。
-// 返回 [签名证书, 加密证书]。
+// ToTLSCertificates converts dual certificate pair to tls.Certificate.
+// Returns [signing certificate, encryption certificate].
 func (p *DualCertPair) ToTLSCertificates() ([]tls.Certificate, error) {
 	signTLSCert, err := p.toTLSCertificate(p.SignCert, p.SignKey)
 	if err != nil {
@@ -195,7 +195,7 @@ func (p *DualCertPair) ToTLSCertificates() ([]tls.Certificate, error) {
 	return []tls.Certificate{signTLSCert, encTLSCert}, nil
 }
 
-// toTLSCertificate 将 x509 证书和 SM2 私钥转换为 tls.Certificate。
+// toTLSCertificate converts x509 certificate and SM2 private key to tls.Certificate.
 func (p *DualCertPair) toTLSCertificate(cert *x509.Certificate, key *sm2.PrivateKey) (tls.Certificate, error) {
 	certDER, err := polluxSmx509.CreateCertificate(cert, cert, cert.PublicKey, key)
 	if err != nil {
@@ -211,7 +211,7 @@ func (p *DualCertPair) toTLSCertificate(cert *x509.Certificate, key *sm2.Private
 	}, nil
 }
 
-// PublicKeyPairs 返回签名和加密公钥对。
+// PublicKeyPairs returns signing and encryption public key pairs.
 func (p *DualCertPair) PublicKeyPairs() (signPub, encPub *ecdsa.PublicKey) {
 	if p.SignCert != nil {
 		if pub, ok := p.SignCert.PublicKey.(*ecdsa.PublicKey); ok {
@@ -226,7 +226,7 @@ func (p *DualCertPair) PublicKeyPairs() (signPub, encPub *ecdsa.PublicKey) {
 	return
 }
 
-// loadCertificate 从 PEM 文件加载 x509 证书。
+// loadCertificate loads an x509 certificate from PEM file.
 func loadCertificate(filename string) (*x509.Certificate, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -235,7 +235,7 @@ func loadCertificate(filename string) (*x509.Certificate, error) {
 	return parseCertificatePEM(data)
 }
 
-// parseCertificatePEM 从 PEM 编码数据解析 x509 证书。
+// parseCertificatePEM parses x509 certificate from PEM-encoded data.
 func parseCertificatePEM(data []byte) (*x509.Certificate, error) {
 	block, _ := pem.Decode(data)
 	if block == nil {
@@ -244,7 +244,7 @@ func parseCertificatePEM(data []byte) (*x509.Certificate, error) {
 	return polluxSmx509.ParseCertificate(block.Bytes)
 }
 
-// loadSM2PrivateKey 从 PEM 文件加载 SM2 私钥。
+// loadSM2PrivateKey loads an SM2 private key from PEM file.
 func loadSM2PrivateKey(filename string) (*sm2.PrivateKey, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {

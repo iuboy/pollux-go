@@ -64,7 +64,7 @@ func NewClient(opts *ClientOptions) (*http.Client, error) {
 		}
 		transport = NewTLSTransport(cfg)
 	default:
-		return nil, fmt.Errorf("pollux/http: unsupported client mode: %v", mode)
+		return nil, fmt.Errorf("pollux/http: unsupported client mode: %d", mode)
 	}
 
 	client := &http.Client{

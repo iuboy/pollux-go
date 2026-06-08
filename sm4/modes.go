@@ -10,8 +10,8 @@ import (
 
 var errInvalidIVLen = errors.New("sm4: invalid IV length")
 
-// NewGCM 创建 SM4-GCM 认证加密器。
-// 返回的 cipher.AEAD 可直接用于 Seal/Open。
+// NewGCM creates an SM4-GCM authenticated encryptor.
+// The returned cipher.AEAD can be used directly for Seal/Open.
 func NewGCM(key []byte) (cipher.AEAD, error) {
 	block, err := NewCipher(key)
 	if err != nil {
@@ -20,7 +20,7 @@ func NewGCM(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-// NewCBCEncrypter 创建 SM4-CBC 加密器。
+// NewCBCEncrypter creates an SM4-CBC encryptor.
 func NewCBCEncrypter(key, iv []byte) (cipher.BlockMode, error) {
 	if len(iv) != BlockSize {
 		return nil, errInvalidIVLen
@@ -32,7 +32,7 @@ func NewCBCEncrypter(key, iv []byte) (cipher.BlockMode, error) {
 	return cipher.NewCBCEncrypter(block, iv), nil
 }
 
-// NewCBCDecrypter 创建 SM4-CBC 解密器。
+// NewCBCDecrypter creates an SM4-CBC decryptor.
 func NewCBCDecrypter(key, iv []byte) (cipher.BlockMode, error) {
 	if len(iv) != BlockSize {
 		return nil, errInvalidIVLen
@@ -44,7 +44,7 @@ func NewCBCDecrypter(key, iv []byte) (cipher.BlockMode, error) {
 	return cipher.NewCBCDecrypter(block, iv), nil
 }
 
-// NewCTR 创建 SM4-CTR 流密码。
+// NewCTR creates an SM4-CTR stream cipher.
 func NewCTR(key, iv []byte) (cipher.Stream, error) {
 	if len(iv) != BlockSize {
 		return nil, errInvalidIVLen
@@ -56,9 +56,9 @@ func NewCTR(key, iv []byte) (cipher.Stream, error) {
 	return cipher.NewCTR(block, iv), nil
 }
 
-// NewCFBEncrypter 创建 SM4-CFB 加密器。
+// NewCFBEncrypter creates an SM4-CFB encryptor.
 //
-// Deprecated: CFB 模式不提供认证，建议使用 NewGCM 代替。
+// Deprecated: CFB mode does not provide authentication; use NewGCM instead.
 func NewCFBEncrypter(key, iv []byte) (cipher.Stream, error) {
 	if len(iv) != BlockSize {
 		return nil, errInvalidIVLen
@@ -70,9 +70,9 @@ func NewCFBEncrypter(key, iv []byte) (cipher.Stream, error) {
 	return cipher.NewCFBEncrypter(block, iv), nil //nolint:staticcheck
 }
 
-// NewCFBDecrypter 创建 SM4-CFB 解密器。
+// NewCFBDecrypter creates an SM4-CFB decryptor.
 //
-// Deprecated: CFB 模式不提供认证，建议使用 NewGCM 代替。
+// Deprecated: CFB mode does not provide authentication; use NewGCM instead.
 func NewCFBDecrypter(key, iv []byte) (cipher.Stream, error) {
 	if len(iv) != BlockSize {
 		return nil, errInvalidIVLen
@@ -84,7 +84,7 @@ func NewCFBDecrypter(key, iv []byte) (cipher.Stream, error) {
 	return cipher.NewCFBDecrypter(block, iv), nil //nolint:staticcheck
 }
 
-// GenerateIV 生成与块大小相同的随机 IV。
+// GenerateIV generates a random IV of the same size as the block.
 func GenerateIV() ([]byte, error) {
 	iv := make([]byte, BlockSize)
 	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
@@ -143,7 +143,8 @@ func PKCS7Unpad(data []byte, blockSize int) ([]byte, error) {
 }
 
 // Encrypt encrypts plaintext using the specified SM4 mode.
-// For GCM, iv is used as the nonce:
+// Supported modes: ModeGCM (recommended), ModeCBC, ModeCTR, ModeCFB, ModeECB (deprecated).
+//
 //   - If iv is nil or empty, a random 12-byte nonce is generated and prepended to the ciphertext.
 //   - If iv is provided, it is used directly and NOT prepended to the ciphertext.
 //

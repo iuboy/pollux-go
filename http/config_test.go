@@ -2,6 +2,8 @@ package http
 
 import (
 	"testing"
+
+	"github.com/ycq/pollux/tlcp"
 )
 
 func TestLoadTLCPCertificates(t *testing.T) {
@@ -40,7 +42,7 @@ func TestLoadSM2KeyPairFromFile(t *testing.T) {
 }
 
 func TestTLCPDefaultCipherSuites(t *testing.T) {
-	suites := tlcpDefaultCipherSuites()
+	suites := tlcp.DefaultCipherSuites()
 	if len(suites) == 0 {
 		t.Error("cipher suites should not be empty")
 	}

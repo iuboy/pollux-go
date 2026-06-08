@@ -3,6 +3,7 @@ package tlcp
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"net"
 	"time"
 
@@ -10,18 +11,18 @@ import (
 	"github.com/ycq/pollux/internal/panicsafe"
 )
 
-// Conn 表示一个 TLCP 安全连接，实现 net.Conn 接口。
-// 底层委托给 gotlcp.Conn 实现 TLCP 协议。
+// Conn represents a TLCP secure connection, implements net.Conn interface.
+// Delegates to gotlcp.Conn internally for the TLCP protocol.
 type Conn struct {
 	inner    *gotlcp.Conn
 	config   *Config
 	rawConn  net.Conn
 	isClient bool
-	initErr  error // config 转换失败时暂存错误，延迟到 Handshake 时返回
+	initErr  error // stores error from config conversion, deferred to Handshake
 }
 
-// Client 返回一个 TLCP 客户端连接。
-// 参照 tls.Client(conn, config)。
+// Client returns a TLCP client connection.
+// Follows the pattern of tls.Client(conn, config).
 func Client(conn net.Conn, config *Config) *Conn {
 	c := &Conn{config: config, rawConn: conn, isClient: true}
 	gc, err := configToGotlcp(config)
@@ -33,8 +34,8 @@ func Client(conn net.Conn, config *Config) *Conn {
 	return c
 }
 
-// Server 返回一个 TLCP 服务端连接。
-// 参照 tls.Server(conn, config)。
+// Server returns a TLCP server connection.
+// Follows the pattern of tls.Server(conn, config).
 func Server(conn net.Conn, config *Config) *Conn {
 	c := &Conn{config: config, rawConn: conn, isClient: false}
 	gc, err := configToGotlcp(config)
@@ -46,7 +47,7 @@ func Server(conn net.Conn, config *Config) *Conn {
 	return c
 }
 
-// Handshake 执行 TLCP 握手。
+// Handshake performs the TLCP handshake.
 func (c *Conn) Handshake() error {
 	return panicsafe.Do(func() error {
 		if c.initErr != nil {
@@ -56,7 +57,7 @@ func (c *Conn) Handshake() error {
 	})
 }
 
-// HandshakeContext 使用 context 执行 TLCP 握手。
+// HandshakeContext performs the TLCP handshake with context.
 func (c *Conn) HandshakeContext(ctx context.Context) error {
 	return panicsafe.Do(func() error {
 		if c.initErr != nil {
@@ -66,7 +67,7 @@ func (c *Conn) HandshakeContext(ctx context.Context) error {
 	})
 }
 
-// Read 从连接读取应用数据。
+// Read reads application data from the connection.
 func (c *Conn) Read(b []byte) (int, error) {
 	return panicsafe.Do1(func() (int, error) {
 		if c.inner == nil {
@@ -76,7 +77,7 @@ func (c *Conn) Read(b []byte) (int, error) {
 	})
 }
 
-// Write 向连接写入应用数据。
+// Write writes application data to the connection.
 func (c *Conn) Write(b []byte) (int, error) {
 	return panicsafe.Do1(func() (int, error) {
 		if c.inner == nil {
@@ -86,7 +87,7 @@ func (c *Conn) Write(b []byte) (int, error) {
 	})
 }
 
-// Close 关闭连接。
+// Close closes the connection.
 func (c *Conn) Close() error {
 	if c.inner != nil {
 		return c.inner.Close()
@@ -97,7 +98,7 @@ func (c *Conn) Close() error {
 	return nil
 }
 
-// LocalAddr 返回本地地址。
+// LocalAddr returns the local address.
 func (c *Conn) LocalAddr() net.Addr {
 	if c.inner != nil {
 		return c.inner.LocalAddr()
@@ -108,7 +109,7 @@ func (c *Conn) LocalAddr() net.Addr {
 	return nil
 }
 
-// RemoteAddr 返回远端地址。
+// RemoteAddr returns the remote address.
 func (c *Conn) RemoteAddr() net.Addr {
 	if c.inner != nil {
 		return c.inner.RemoteAddr()
@@ -119,32 +120,41 @@ func (c *Conn) RemoteAddr() net.Addr {
 	return nil
 }
 
-// SetDeadline 设置读写截止时间。
+// SetDeadline sets the read/write deadline.
 func (c *Conn) SetDeadline(t time.Time) error {
 	if c.inner != nil {
 		return c.inner.SetDeadline(t)
 	}
-	return c.rawConn.SetDeadline(t)
+	if c.rawConn != nil {
+		return c.rawConn.SetDeadline(t)
+	}
+	return errors.New("tlcp: connection not initialized")
 }
 
-// SetReadDeadline 设置读取截止时间。
+// SetReadDeadline sets the read deadline.
 func (c *Conn) SetReadDeadline(t time.Time) error {
 	if c.inner != nil {
 		return c.inner.SetReadDeadline(t)
 	}
-	return c.rawConn.SetReadDeadline(t)
+	if c.rawConn != nil {
+		return c.rawConn.SetReadDeadline(t)
+	}
+	return errors.New("tlcp: connection not initialized")
 }
 
-// SetWriteDeadline 设置写入截止时间。
+// SetWriteDeadline sets the write deadline.
 func (c *Conn) SetWriteDeadline(t time.Time) error {
 	if c.inner != nil {
 		return c.inner.SetWriteDeadline(t)
 	}
-	return c.rawConn.SetWriteDeadline(t)
+	if c.rawConn != nil {
+		return c.rawConn.SetWriteDeadline(t)
+	}
+	return errors.New("tlcp: connection not initialized")
 }
 
-// ConnectionState 返回连接的安全参数。
-// 将 gotlcp 的 gmsm 证书类型转换为 stdlib 证书类型。
+// ConnectionState returns the connection's security parameters.
+// Converts gotlcp gmsm certificate types to stdlib certificate types.
 func (c *Conn) ConnectionState() ConnectionState {
 	if c.inner == nil {
 		return ConnectionState{}
@@ -152,7 +162,7 @@ func (c *Conn) ConnectionState() ConnectionState {
 	return convertConnectionState(c.inner.ConnectionState())
 }
 
-// NetConn 返回底层连接。
+// NetConn returns the underlying connection.
 func (c *Conn) NetConn() net.Conn {
 	if c.inner != nil {
 		return c.inner.NetConn()
@@ -160,8 +170,8 @@ func (c *Conn) NetConn() net.Conn {
 	return c.rawConn
 }
 
-// convertConnectionState 将 gotlcp.ConnectionState 转换为 pollux ConnectionState。
-// 主要工作是将 gmsm/smx509.Certificate 转换为 crypto/x509.Certificate。
+// convertConnectionState converts gotlcp.ConnectionState to pollux ConnectionState.
+// Primary work is converting gmsm/smx509.Certificate to crypto/x509.Certificate.
 func convertConnectionState(cs gotlcp.ConnectionState) ConnectionState {
 	result := ConnectionState{
 		Version:           cs.Version,
@@ -170,12 +180,12 @@ func convertConnectionState(cs gotlcp.ConnectionState) ConnectionState {
 		ServerName:        cs.ServerName,
 	}
 
-	// 转换对端证书：gmsm smx509.Certificate → stdlib x509.Certificate
+	// Convert peer certificates: gmsm smx509.Certificate -> stdlib x509.Certificate
 	for _, cert := range cs.PeerCertificates {
 		result.PeerCertificates = append(result.PeerCertificates, cert.ToX509())
 	}
 
-	// TLCP 约定：PeerCertificates[0]=签名证书, [1]=加密证书
+	// TLCP convention: PeerCertificates[0]=signing certificate, [1]=encryption certificate
 	if len(result.PeerCertificates) > 0 {
 		result.PeerSignCert = result.PeerCertificates[0]
 	}
@@ -183,7 +193,7 @@ func convertConnectionState(cs gotlcp.ConnectionState) ConnectionState {
 		result.PeerEncCert = result.PeerCertificates[1]
 	}
 
-	// 转换验证链
+	// Convert verification chains
 	for _, chain := range cs.VerifiedChains {
 		var stdChain []*x509.Certificate
 		for _, cert := range chain {

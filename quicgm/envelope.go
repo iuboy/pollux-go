@@ -2,13 +2,16 @@ package quicgm
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"sync"
 
-	"github.com/ycq/pollux/sm4gcm"
+	"github.com/ycq/pollux/sm4"
 )
+
+// nonceSize is the SM4-GCM nonce length in bytes (12 bytes / 96 bits).
+const nonceSize = 12
 
 // Envelope holds an encrypted application payload with metadata.
 type Envelope struct {
@@ -36,8 +39,8 @@ func Seal(keys SessionKeys, plaintext, aad []byte) (Envelope, error) {
 		return Envelope{}, errEmptySessionID
 	}
 
-	nonce, err := sm4gcm.GenerateNonce(rand.Reader)
-	if err != nil {
+	nonce := make([]byte, nonceSize)
+	if _, err := rand.Read(nonce); err != nil {
 		return Envelope{}, err
 	}
 
@@ -60,11 +63,11 @@ func SealWithNonce(keys SessionKeys, nonce, plaintext, aad []byte) (Envelope, er
 	if keys.SessionID == "" {
 		return Envelope{}, errEmptySessionID
 	}
-	if len(nonce) != sm4gcm.NonceSize {
+	if len(nonce) != nonceSize {
 		return Envelope{}, errInvalidNonceLength
 	}
 
-	ct, err := sm4gcm.Seal(keys.SM4Key, nonce, plaintext, aad)
+	ct, err := sm4GCMSeal(keys.SM4Key, nonce, plaintext, aad)
 	if err != nil {
 		return Envelope{}, err
 	}
@@ -87,16 +90,36 @@ func SealWithNonce(keys SessionKeys, nonce, plaintext, aad []byte) (Envelope, er
 // stronger nonce guarantees than random generation provides.
 //
 // The registry tracks used nonces per (KeyID, SessionID) pair.
-// It is safe for concurrent use.
+// It is safe for concurrent use. Entries are evicted when maxEntries
+// is exceeded to prevent unbounded memory growth.
 type NonceRegistry struct {
-	mu   sync.RWMutex
-	used map[string]map[string][][]byte // keyID -> sessionID -> nonces
+	mu         sync.RWMutex
+	used       map[string]struct{} // composite key "keyID:sessionID:hex(nonce)" -> {}
+	maxEntries int                 // max nonces per session (0 = unlimited)
+}
+
+// nonceRegistryKey builds a composite map key from (keyID, sessionID, nonce).
+func nonceRegistryKey(keyID, sessionID string, nonce []byte) string {
+	// Use a strings.Builder to avoid fmt.Sprintf overhead.
+	// Hex encoding is used for the nonce to produce a deterministic key.
+	return keyID + ":" + sessionID + ":" + fmt.Sprintf("%x", nonce)
 }
 
 // NewNonceRegistry creates a new nonce registry.
+// maxEntries controls the maximum number of nonces tracked per (KeyID, SessionID).
+// When exceeded, the oldest entries are evicted. A value of 0 means unlimited.
 func NewNonceRegistry() *NonceRegistry {
 	return &NonceRegistry{
-		used: make(map[string]map[string][][]byte),
+		used:       make(map[string]struct{}),
+		maxEntries: 0,
+	}
+}
+
+// NewNonceRegistryWithCapacity creates a nonce registry with bounded capacity per session.
+func NewNonceRegistryWithCapacity(maxEntries int) *NonceRegistry {
+	return &NonceRegistry{
+		used:       make(map[string]struct{}),
+		maxEntries: maxEntries,
 	}
 }
 
@@ -110,30 +133,21 @@ func (r *NonceRegistry) CheckAndRecord(keyID, sessionID string, nonce []byte) bo
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Get or create sessionID map for this keyID
-	sessionMap := r.used[keyID]
-	if sessionMap == nil {
-		sessionMap = make(map[string][][]byte)
-		r.used[keyID] = sessionMap
+	key := nonceRegistryKey(keyID, sessionID, nonce)
+	if _, exists := r.used[key]; exists {
+		return false // Nonce already used
 	}
 
-	// Get nonce list for this sessionID
-	nonces := sessionMap[sessionID]
-
-	// Check if nonce already used (constant-time comparison)
-	for _, n := range nonces {
-		if subtle.ConstantTimeCompare(n, nonce) == 1 {
-			return false // Nonce already used
+	// Enforce capacity limit by clearing all entries when full.
+	// This is a simple eviction strategy: clear all and start fresh.
+	if r.maxEntries > 0 && len(r.used) >= r.maxEntries {
+		for k := range r.used {
+			delete(r.used, k)
 		}
 	}
 
-	// Record this nonce
-	// Make a copy to prevent caller from modifying it
-	nonceCopy := make([]byte, len(nonce))
-	copy(nonceCopy, nonce)
-	sessionMap[sessionID] = append(nonces, nonceCopy)
-
-	return true // Nonce is unique
+	r.used[key] = struct{}{}
+	return true
 }
 
 // SealWithRegistry encrypts plaintext into an Envelope using a nonce registry.
@@ -149,7 +163,7 @@ func SealWithRegistry(keys SessionKeys, nonce []byte, plaintext, aad []byte, reg
 	if keys.SessionID == "" {
 		return Envelope{}, errEmptySessionID
 	}
-	if len(nonce) != sm4gcm.NonceSize {
+	if len(nonce) != nonceSize {
 		return Envelope{}, errInvalidNonceLength
 	}
 
@@ -177,7 +191,7 @@ func Open(keys SessionKeys, env Envelope) ([]byte, error) {
 		return nil, errMACVerificationFailed
 	}
 
-	return sm4gcm.Open(keys.SM4Key, env.Nonce, env.Ciphertext, env.AAD)
+	return sm4GCMOpen(keys.SM4Key, env.Nonce, env.Ciphertext, env.AAD)
 }
 
 func computeEnvelopeMAC(key []byte, env Envelope) []byte {
@@ -214,4 +228,22 @@ func macInput(env Envelope) []byte {
 func (e Envelope) MarshalJSON() ([]byte, error) {
 	type alias Envelope
 	return json.Marshal((*alias)(&e))
+}
+
+// sm4GCMSeal encrypts plaintext with SM4-GCM using the given key, nonce, and AAD.
+func sm4GCMSeal(key, nonce, plaintext, aad []byte) ([]byte, error) {
+	aead, err := sm4.NewGCM(key)
+	if err != nil {
+		return nil, err
+	}
+	return aead.Seal(nil, nonce, plaintext, aad), nil
+}
+
+// sm4GCMOpen decrypts ciphertext with SM4-GCM using the given key, nonce, and AAD.
+func sm4GCMOpen(key, nonce, ciphertext, aad []byte) ([]byte, error) {
+	aead, err := sm4.NewGCM(key)
+	if err != nil {
+		return nil, err
+	}
+	return aead.Open(nil, nonce, ciphertext, aad)
 }

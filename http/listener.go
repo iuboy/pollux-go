@@ -105,6 +105,9 @@ func NewHybridListener(inner net.Listener, tlcpCfg *tlcp.Config, tlsCfg *tls.Con
 
 // SetHandshakeTimeout sets the maximum time to wait for handshake completion.
 // A zero or negative value disables the timeout (not recommended for production).
+//
+// WARNING: This method is NOT safe to call concurrently with Accept.
+// Set timeout parameters before calling Accept.
 func (l *hybridListener) SetHandshakeTimeout(d time.Duration) {
 	l.handshakeTimeout = d
 }

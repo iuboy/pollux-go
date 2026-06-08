@@ -24,9 +24,16 @@ import (
 )
 
 // PrivateKey is an SM2 private key. It implements crypto.Signer.
+//
+// Note: this is a type alias (=) to gmsmSM2.PrivateKey, which provides
+// direct access to all underlying methods. If the underlying library changes
+// in a future major version, this alias will be replaced by a wrapper struct.
 type PrivateKey = gmsmSM2.PrivateKey
 
 // PublicKey is an SM2 public key.
+//
+// Note: this is a type alias (=) to ecdsa.PublicKey. See PrivateKey docs
+// for implications.
 type PublicKey = ecdsa.PublicKey
 
 // GenerateKey generates a new SM2 private key.
@@ -72,6 +79,9 @@ func P256() elliptic.Curve {
 }
 
 // SM2SignerOption returns crypto.SignerOpts for SM2 signing with a user ID.
+//
+// Deprecated: use NewSM2SignerOption(true, uid) instead for explicit control
+// over the forceGMSign parameter.
 func SM2SignerOption(uid []byte) crypto.SignerOpts {
 	return gmsmSM2.NewSM2SignerOption(true, uid)
 }

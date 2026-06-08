@@ -83,7 +83,7 @@ func IsNationalCipherSuite(id uint16) bool {
 func CipherSuiteName(id uint16) string {
 	switch id {
 	case TLS_SM2_GCM_SM3:
-		return "TLS_SM4_GCM_SM3"
+		return "TLS_SM2_GCM_SM3"
 	case TLS_SM4_CCM_SM3:
 		return "TLS_SM4_CCM_SM3"
 	case ECC_SM2_WITH_SM4_GCM_SM3:

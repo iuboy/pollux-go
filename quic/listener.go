@@ -2,7 +2,6 @@ package quic
 
 import (
 	"context"
-	"crypto/tls"
 	"net"
 
 	"github.com/quic-go/quic-go"
@@ -56,6 +55,9 @@ type Conn struct {
 }
 
 // Dial establishes a QUIC connection to the given address.
+// On success, the underlying UDP connection ownership is transferred to
+// the returned quic.Conn; callers must not close or use the UDP connection
+// directly. The UDP connection is only cleaned up on error.
 func Dial(ctx context.Context, cfg ClientConfig) (*Conn, error) {
 	tlsCfg, err := cfg.tlsConfig()
 	if err != nil {
@@ -98,6 +100,3 @@ func (c *Conn) Close() error {
 func (c *Conn) RemoteAddr() net.Addr {
 	return c.inner.RemoteAddr()
 }
-
-// Verify QUIC package does not import TLCP.
-var _ *tls.Config = nil

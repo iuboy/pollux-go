@@ -7,7 +7,6 @@ package sm4gcm
 
 import (
 	"crypto/cipher"
-	"crypto/rand"
 	"errors"
 	"io"
 
@@ -97,10 +96,6 @@ func SealRandomNonce(r io.Reader, key, plaintext, aad []byte) (Sealed, error) {
 		return Sealed{}, err
 	}
 	return Sealed{Nonce: nonce, Ciphertext: ct}, nil
-}
-
-func init() {
-	_ = rand.Reader // ensure crypto/rand is imported
 }
 
 // ZeroKey securely zeroes an SM4 key.

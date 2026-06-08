@@ -27,22 +27,23 @@ func DeriveKey(masterKey, label, context []byte, length int) ([]byte, error) {
 	result := make([]byte, 0, length)
 	blocks := (length + BlockSize - 1) / BlockSize
 
-	for i := 1; i <= blocks; i++ {
-		// Build the fixed-input data: label || 0x00 || context
-		// so we only allocate it once.
-		fixedInput := make([]byte, 0, len(label)+1+len(context)+4)
-		fixedInput = append(fixedInput, label...)
-		fixedInput = append(fixedInput, 0x00)
-		fixedInput = append(fixedInput, context...)
+	// Pre-build the fixed-input portion: label || 0x00 || context
+	// This is identical across all rounds and only needs to be built once.
+	fixedInput := make([]byte, 0, len(label)+1+len(context))
+	fixedInput = append(fixedInput, label...)
+	fixedInput = append(fixedInput, 0x00)
+	fixedInput = append(fixedInput, context...)
 
-		// Build round input: [i] || fixedInput || [L in bits]
-		roundInput := make([]byte, 0, 4+len(fixedInput)+4)
+	lBits := make([]byte, 4)
+	binary.BigEndian.PutUint32(lBits, uint32(length*8))
+
+	for i := 1; i <= blocks; i++ {
+		// Build round input: [counter(4)] || fixedInput || [L in bits(4)]
 		counter := make([]byte, 4)
 		binary.BigEndian.PutUint32(counter, uint32(i))
+		roundInput := make([]byte, 0, 4+len(fixedInput)+4)
 		roundInput = append(roundInput, counter...)
 		roundInput = append(roundInput, fixedInput...)
-		lBits := make([]byte, 4)
-		binary.BigEndian.PutUint32(lBits, uint32(length*8))
 		roundInput = append(roundInput, lBits...)
 
 		// PRF: SM4-CMAC over roundInput

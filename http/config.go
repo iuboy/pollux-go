@@ -134,7 +134,7 @@ func (o *ServerOptions) buildTLCPConfig() (*tlcp.Config, error) {
 		cfg.EncRootCertificates = o.EncRootCAs.Certificates()
 	}
 	if len(cfg.CipherSuites) == 0 {
-		cfg.CipherSuites = tlcpDefaultCipherSuites()
+		cfg.CipherSuites = tlcp.DefaultCipherSuites()
 	}
 	return cfg, nil
 }
@@ -188,10 +188,6 @@ func loadSM2KeyPairFromFile(certFile, keyFile string) (*tls.Certificate, error) 
 	return loadSM2KeyPair(certPEM, keyPEM)
 }
 
-func tlcpDefaultCipherSuites() []uint16 {
-	return tlcp.DefaultCipherSuites()
-}
-
 // ClientOptions configures an HTTP client transport.
 type ClientOptions struct {
 	Mode Mode
@@ -234,7 +230,7 @@ func (o *ClientOptions) buildTLCPClientConfig() (*tlcp.Config, error) {
 		cfg.EncRootCertificates = o.EncRootCAs.Certificates()
 	}
 	if len(cfg.CipherSuites) == 0 {
-		cfg.CipherSuites = tlcpDefaultCipherSuites()
+		cfg.CipherSuites = tlcp.DefaultCipherSuites()
 	}
 	return cfg, nil
 }

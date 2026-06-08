@@ -41,7 +41,7 @@ import (
 )
 
 // IsSM2Key reports whether a private key is an SM2 key.
-func IsSM2Key(key interface{}) bool {
+func IsSM2Key(key any) bool {
 	switch k := key.(type) {
 	case *sm2.PrivateKey:
 		return true
@@ -52,7 +52,7 @@ func IsSM2Key(key interface{}) bool {
 }
 
 // IsSM2PublicKey reports whether a public key is an SM2 public key.
-func IsSM2PublicKey(pub interface{}) bool {
+func IsSM2PublicKey(pub any) bool {
 	if ecdsaPub, ok := pub.(*ecdsa.PublicKey); ok {
 		return ecdsaPub.Curve == sm2.P256()
 	}
@@ -61,7 +61,7 @@ func IsSM2PublicKey(pub interface{}) bool {
 
 // CreateCertificate creates a certificate, automatically selecting
 // crypto/x509 or gmsm/smx509 based on the signer's key type.
-func CreateCertificate(template, parent *x509.Certificate, pub, priv interface{}) ([]byte, error) {
+func CreateCertificate(template, parent *x509.Certificate, pub, priv any) ([]byte, error) {
 	if IsSM2Key(priv) {
 		return smx509.CreateCertificate(rand.Reader, template, parent, pub, priv)
 	}
@@ -70,7 +70,7 @@ func CreateCertificate(template, parent *x509.Certificate, pub, priv interface{}
 
 // CreateCertificateRequest creates a CSR, automatically selecting
 // crypto/x509 or gmsm/smx509 based on the key type.
-func CreateCertificateRequest(template *x509.CertificateRequest, priv interface{}) ([]byte, error) {
+func CreateCertificateRequest(template *x509.CertificateRequest, priv any) ([]byte, error) {
 	if IsSM2Key(priv) {
 		return smx509.CreateCertificateRequest(rand.Reader, template, priv)
 	}
@@ -84,7 +84,7 @@ func ParseCertificate(der []byte) (*x509.Certificate, error) {
 	if err != nil {
 		smCert, smErr := smx509.ParseCertificate(der)
 		if smErr != nil {
-			return nil, fmt.Errorf("x509: %w; smx509: %v", err, smErr)
+			return nil, fmt.Errorf("x509: %w; smx509: %w", err, smErr)
 		}
 		return smCert.ToX509(), nil
 	}
@@ -107,7 +107,7 @@ func ParseCertificateRequest(der []byte) (*x509.CertificateRequest, error) {
 	if err != nil {
 		smCSR, smErr := smx509.ParseCertificateRequest(der)
 		if smErr != nil {
-			return nil, fmt.Errorf("x509: %w; smx509: %v", err, smErr)
+			return nil, fmt.Errorf("x509: %w; smx509: %w", err, smErr)
 		}
 		return smCSR.ToX509(), nil
 	}
@@ -116,7 +116,7 @@ func ParseCertificateRequest(der []byte) (*x509.CertificateRequest, error) {
 
 // SignatureAlgorithmForPrivateKey returns the appropriate signature algorithm
 // for the given private key type.
-func SignatureAlgorithmForPrivateKey(key interface{}) x509.SignatureAlgorithm {
+func SignatureAlgorithmForPrivateKey(key any) x509.SignatureAlgorithm {
 	switch k := key.(type) {
 	case *rsa.PrivateKey:
 		bits := k.N.BitLen()
@@ -147,7 +147,7 @@ func SignatureAlgorithmForPrivateKey(key interface{}) x509.SignatureAlgorithm {
 
 // PublicKeyAlgorithmForPrivateKey returns the appropriate public key algorithm
 // for the given private key type.
-func PublicKeyAlgorithmForPrivateKey(key interface{}) x509.PublicKeyAlgorithm {
+func PublicKeyAlgorithmForPrivateKey(key any) x509.PublicKeyAlgorithm {
 	switch key.(type) {
 	case *rsa.PrivateKey:
 		return x509.RSA
@@ -163,7 +163,7 @@ func PublicKeyAlgorithmForPrivateKey(key interface{}) x509.PublicKeyAlgorithm {
 }
 
 // ExtractPublicKey extracts the public key from a private key.
-func ExtractPublicKey(priv interface{}) (crypto.PublicKey, error) {
+func ExtractPublicKey(priv any) (crypto.PublicKey, error) {
 	switch k := priv.(type) {
 	case *rsa.PrivateKey:
 		return &k.PublicKey, nil
@@ -190,7 +190,7 @@ func CheckCertificateRequestSignature(csr *x509.CertificateRequest) error {
 
 // MarshalPKIXPublicKey serializes a public key to PKIX DER format.
 // Supports SM2 public keys via gmsm/smx509.
-func MarshalPKIXPublicKey(pub interface{}) ([]byte, error) {
+func MarshalPKIXPublicKey(pub any) ([]byte, error) {
 	return smx509.MarshalPKIXPublicKey(pub)
 }
 

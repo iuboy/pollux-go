@@ -8,6 +8,7 @@ import (
 
 	gmsmSM2 "github.com/emmansun/gmsm/sm2"
 	"github.com/emmansun/gmsm/sm2/sm2ec"
+	"github.com/ycq/pollux/internal/memsecure"
 )
 
 var (
@@ -15,7 +16,7 @@ var (
 	errNotOnCurve           = errors.New("sm2: point not on SM2 curve")
 )
 
-// CompressPublicKey 将 SM2 公钥压缩为 33 字节（02/03 前缀 + X 坐标）。
+// CompressPublicKey compresses SM2 public key to 33 bytes (02/03 prefix + X coordinate).
 func CompressPublicKey(pub *ecdsa.PublicKey) []byte {
 	if pub == nil {
 		return nil
@@ -24,7 +25,7 @@ func CompressPublicKey(pub *ecdsa.PublicKey) []byte {
 	return elliptic.MarshalCompressed(curve, pub.X, pub.Y)
 }
 
-// DecompressPublicKey 将压缩格式的 SM2 公钥（33 字节）解压为完整公钥。
+// DecompressPublicKey decompresses compressed SM2 public key (33 bytes) to full public key.
 func DecompressPublicKey(data []byte) (*ecdsa.PublicKey, error) {
 	curve := P256()
 	if len(data) != 33 {
@@ -36,7 +37,7 @@ func DecompressPublicKey(data []byte) (*ecdsa.PublicKey, error) {
 		return nil, errInvalidCompressedKey
 	}
 
-	// 验证点在曲线上
+	// Verify point is on curve
 	if !curve.IsOnCurve(x, y) {
 		return nil, errNotOnCurve
 	}
@@ -44,7 +45,7 @@ func DecompressPublicKey(data []byte) (*ecdsa.PublicKey, error) {
 	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
 }
 
-// MarshalUncompressed 将 SM2 公钥序列化为未压缩格式（65 字节：04 + X + Y）。
+// MarshalUncompressed serializes SM2 public key to uncompressed format (65 bytes: 04 + X + Y).
 func MarshalUncompressed(pub *ecdsa.PublicKey) []byte {
 	if pub == nil {
 		return nil
@@ -52,7 +53,7 @@ func MarshalUncompressed(pub *ecdsa.PublicKey) []byte {
 	return elliptic.Marshal(P256(), pub.X, pub.Y) //nolint:staticcheck
 }
 
-// UnmarshalUncompressed 从未压缩格式解析 SM2 公钥。
+// UnmarshalUncompressed parses SM2 public key from uncompressed format.
 func UnmarshalUncompressed(data []byte) (*ecdsa.PublicKey, error) {
 	curve := P256()
 	x, y := elliptic.Unmarshal(curve, data) //nolint:staticcheck
@@ -65,8 +66,8 @@ func UnmarshalUncompressed(data []byte) (*ecdsa.PublicKey, error) {
 	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
 }
 
-// PublicKeyToBytes 将 SM2 公钥转为未压缩字节序列。
-// Deprecated: 使用 MarshalUncompressed 代替。
+// PublicKeyToBytes converts SM2 public key to uncompressed byte sequence.
+// Deprecated: use MarshalUncompressed instead.
 func PublicKeyToBytes(pub *ecdsa.PublicKey) []byte {
 	if pub == nil {
 		return nil
@@ -74,13 +75,13 @@ func PublicKeyToBytes(pub *ecdsa.PublicKey) []byte {
 	return elliptic.Marshal(P256(), pub.X, pub.Y) //nolint:staticcheck
 }
 
-// BytesToPublicKey 从字节序列解析 SM2 公钥。
-// Deprecated: 使用 UnmarshalUncompressed 代替。
+// BytesToPublicKey parses SM2 public key from byte sequence.
+// Deprecated: use UnmarshalUncompressed instead.
 func BytesToPublicKey(data []byte) (*ecdsa.PublicKey, error) {
 	return UnmarshalUncompressed(data)
 }
 
-// Equal 报告两个 SM2 公钥是否相等。
+// Equal reports whether two SM2 public keys are equal.
 func Equal(x, y *ecdsa.PublicKey) bool {
 	if x == nil || y == nil {
 		return x == y
@@ -88,7 +89,48 @@ func Equal(x, y *ecdsa.PublicKey) bool {
 	return x.X.Cmp(y.X) == 0 && x.Y.Cmp(y.Y) == 0
 }
 
-// PrivateKeyToBytes 将 SM2 私钥序列化为 32 字节大端整数。
+// SecureKeyBytes holds sensitive private key bytes with an explicit Destroy method.
+// This provides a safer alternative to PrivateKeyToBytes by making cleanup part of
+// the type contract.
+type SecureKeyBytes struct {
+	bytes []byte
+}
+
+// Data returns the underlying key bytes. Callers must not retain references
+// after calling Destroy.
+func (s *SecureKeyBytes) Data() []byte {
+	return s.bytes
+}
+
+// Destroy securely zeroes the key material and releases the reference.
+func (s *SecureKeyBytes) Destroy() {
+	if s.bytes != nil {
+		memsecure.ZeroBytes(s.bytes)
+		s.bytes = nil
+	}
+}
+
+// PrivateKeyToBytesSecure returns the private key scalar as a SecureKeyBytes
+// that must be explicitly destroyed after use. This is the recommended way
+// to access raw private key bytes.
+//
+// Example:
+//
+//	skb, err := sm2.PrivateKeyToBytesSecure(key)
+//	if err != nil { ... }
+//	defer skb.Destroy()
+//	use(skb.Data())
+func PrivateKeyToBytesSecure(key *PrivateKey) (*SecureKeyBytes, error) {
+	if key == nil {
+		return nil, errors.New("sm2: nil private key")
+	}
+	return &SecureKeyBytes{bytes: key.D.Bytes()}, nil
+}
+
+// PrivateKeyToBytes serializes SM2 private key to 32-byte big-endian integer.
+//
+// Deprecated: use PrivateKeyToBytesSecure instead, which provides explicit
+// key material cleanup via SecureKeyBytes.Destroy.
 //
 // Security: the returned bytes contain sensitive key material.
 // Callers MUST zero the returned slice after use via memsecure.ZeroBytes
@@ -97,7 +139,7 @@ func PrivateKeyToBytes(key *PrivateKey) []byte {
 	return key.D.Bytes()
 }
 
-// BytesToPrivateKey 从 32 字节大端整数恢复 SM2 私钥。
+// BytesToPrivateKey recovers SM2 private key from 32-byte big-endian integer.
 func BytesToPrivateKey(data []byte) (*PrivateKey, error) {
 	curve := sm2ec.P256()
 	d := new(big.Int).SetBytes(data)

@@ -1,12 +1,9 @@
 package quicgm
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
-
-	"github.com/ycq/pollux/sm4gcm"
 )
 
 const (
@@ -39,9 +36,9 @@ func GenerateSessionKeys(r io.Reader) (SessionKeys, error) {
 	if _, err := io.ReadFull(r, hmacKey); err != nil {
 		return SessionKeys{}, errors.New("quicgm: failed to generate HMAC key")
 	}
-	sm4Key, err := sm4gcm.GenerateKey(r)
-	if err != nil {
-		return SessionKeys{}, err
+	sm4Key := make([]byte, sm4KeySize)
+	if _, err := io.ReadFull(r, sm4Key); err != nil {
+		return SessionKeys{}, errors.New("quicgm: failed to generate SM4 key")
 	}
 	keyID := make([]byte, keyIDLen)
 	if _, err := io.ReadFull(r, keyID); err != nil {
@@ -57,8 +54,4 @@ func GenerateSessionKeys(r io.Reader) (SessionKeys, error) {
 		SM4Key:    sm4Key,
 		SessionID: fmt.Sprintf("%x", sessionID),
 	}, nil
-}
-
-func init() {
-	_ = rand.Reader
 }

@@ -72,7 +72,10 @@ func TestBlackBox_TLS13GM_SM4GCM_AEAD_RoundTrip(t *testing.T) {
 	fixedNonce := make([]byte, 12)
 	_, _ = rand.Read(fixedNonce)
 
-	aead := polluxTLS13GM.NewAEAD(key, fixedNonce)
+	aead, err := polluxTLS13GM.NewAEAD(key, fixedNonce)
+	if err != nil {
+		t.Fatalf("NewAEAD: %v", err)
+	}
 	plaintext := []byte("tls13gm AEAD test payload")
 	aad := []byte("tls13 record")
 
@@ -95,11 +98,14 @@ func TestBlackBox_TLS13GM_SM4GCM_TamperRejected(t *testing.T) {
 	fixedNonce := make([]byte, 12)
 	_, _ = rand.Read(fixedNonce)
 
-	aead := polluxTLS13GM.NewAEAD(key, fixedNonce)
+	aead, err := polluxTLS13GM.NewAEAD(key, fixedNonce)
+	if err != nil {
+		t.Fatalf("NewAEAD: %v", err)
+	}
 	ct, _ := aead.Seal(0, []byte("secret"), nil)
 
 	ct[0] ^= 0xff
-	_, err := aead.Open(0, ct, nil)
+	_, err = aead.Open(0, ct, nil)
 	if err == nil {
 		t.Error("tampered ciphertext should fail")
 	}
@@ -110,7 +116,10 @@ func TestBlackBox_TLS13GM_SM4GCM_DifferentSeqNum(t *testing.T) {
 	fixedNonce := make([]byte, 12)
 	_, _ = rand.Read(fixedNonce)
 
-	aead := polluxTLS13GM.NewAEAD(key, fixedNonce)
+	aead, err := polluxTLS13GM.NewAEAD(key, fixedNonce)
+	if err != nil {
+		t.Fatalf("NewAEAD: %v", err)
+	}
 	pt := []byte("sequence test")
 
 	ct0, _ := aead.Seal(0, pt, nil)

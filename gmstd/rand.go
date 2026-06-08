@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-// GenerateSM4Key 生成 16 字节随机 SM4 密钥。
+// GenerateSM4Key generates a 16-byte random SM4 key.
 func GenerateSM4Key() ([]byte, error) {
 	key := make([]byte, 16)
 	if _, err := rand.Read(key); err != nil {
@@ -14,7 +14,7 @@ func GenerateSM4Key() ([]byte, error) {
 	return key, nil
 }
 
-// GenerateNonce 生成指定长度的随机 nonce。
+// GenerateNonce generates a random nonce of the specified size.
 func GenerateNonce(size int) ([]byte, error) {
 	if size <= 0 {
 		return nil, errors.New("gmstd: invalid size")

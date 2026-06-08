@@ -3,8 +3,6 @@
 // This package implements auxiliary functions from:
 //   - GM/T 0009-2012: SM2 cryptographic algorithm usage specification
 //   - GM/T 0003-2012: SM3 cryptographic hash algorithm
-//
-// Status: compatibility layer for GM standard library API
 package gmstd
 
 import (

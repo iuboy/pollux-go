@@ -21,7 +21,7 @@ func LoadKeyPairPEM(certPEM, keyPEM []byte) (tls.Certificate, error) {
 
 	key, err := polluxSm2.ParsePrivateKeyFromPEM(keyPEM)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("%w: %v", ErrInvalidPrivateKey, err)
+		return tls.Certificate{}, fmt.Errorf("cert: parse private key: %w", err)
 	}
 
 	return tls.Certificate{

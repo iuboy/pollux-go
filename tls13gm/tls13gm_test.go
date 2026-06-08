@@ -71,7 +71,10 @@ func TestAEAD_RoundTrip(t *testing.T) {
 	key, _ := sm4gcm.GenerateKey(rand.Reader)
 	fixedNonce := make([]byte, 12)
 
-	aead := NewAEAD(key, fixedNonce)
+	aead, err := NewAEAD(key, fixedNonce)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pt := []byte("hello tls13gm")
 	aad := []byte("tls13 record")
 
@@ -92,7 +95,10 @@ func TestAEAD_DifferentSeqNum(t *testing.T) {
 	key, _ := sm4gcm.GenerateKey(rand.Reader)
 	fixedNonce := make([]byte, 12)
 
-	aead := NewAEAD(key, fixedNonce)
+	aead, err := NewAEAD(key, fixedNonce)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pt := []byte("same plaintext")
 
 	ct0, _ := aead.Seal(0, pt, nil)
@@ -114,9 +120,12 @@ func TestAEAD_WrongSeqNum(t *testing.T) {
 	key, _ := sm4gcm.GenerateKey(rand.Reader)
 	fixedNonce := make([]byte, 12)
 
-	aead := NewAEAD(key, fixedNonce)
+	aead, err := NewAEAD(key, fixedNonce)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ct, _ := aead.Seal(0, []byte("secret"), nil)
-	_, err := aead.Open(1, ct, nil)
+	_, err = aead.Open(1, ct, nil)
 	if err == nil {
 		t.Error("wrong seq number should fail")
 	}
@@ -126,10 +135,13 @@ func TestAEAD_TamperedCiphertext(t *testing.T) {
 	key, _ := sm4gcm.GenerateKey(rand.Reader)
 	fixedNonce := make([]byte, 12)
 
-	aead := NewAEAD(key, fixedNonce)
+	aead, err := NewAEAD(key, fixedNonce)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ct, _ := aead.Seal(0, []byte("secret"), nil)
 	ct[0] ^= 0xff
-	_, err := aead.Open(0, ct, nil)
+	_, err = aead.Open(0, ct, nil)
 	if err == nil {
 		t.Error("tampered ciphertext should fail")
 	}

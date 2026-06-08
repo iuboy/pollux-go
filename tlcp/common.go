@@ -1,7 +1,7 @@
 package tlcp
 
-// TLCP 密码套件 ID（GB/T 38636-2020 表2）
-// 与 gotlcp 的 TLCP_ECDHE_SM4_GCM_SM3 等常量值完全相同。
+// TLCP cipher suite IDs (GB/T 38636-2020 Table 2).
+// Values are identical to gotlcp constants such as TLCP_ECDHE_SM4_GCM_SM3.
 const (
 	SuiteECDHE_SM2_SM4_GCM_SM3 uint16 = 0xE051
 	SuiteECDHE_SM2_SM4_CBC_SM3 uint16 = 0xE011
@@ -9,23 +9,23 @@ const (
 	SuiteECC_SM2_SM4_CBC_SM3   uint16 = 0xE013
 )
 
-// defaultCipherSuites 默认支持的密码套件（GCM-only，ECDHE-only，提供前向安全）
+// defaultCipherSuites are the default supported cipher suites (GCM-only, ECDHE-only, providing forward secrecy).
 var defaultCipherSuites = []uint16{
 	SuiteECDHE_SM2_SM4_GCM_SM3,
 }
 
-// DefaultCipherSuites 返回默认的 TLCP 密码套件（GCM-only，ECDHE-only，提供前向安全）。
-// 这是新连接的推荐配置，提供最佳安全性。
-// 如需包含非 PFS 的静态 ECC 套件，请使用 LegacyCipherSuites()。
+// DefaultCipherSuites returns the default TLCP cipher suites (GCM-only, ECDHE-only, providing forward secrecy).
+// This is the recommended configuration for new connections, providing the best security.
+// For legacy compatibility with non-PFS static ECC suites, use LegacyCipherSuites().
 func DefaultCipherSuites() []uint16 {
 	return []uint16{
 		SuiteECDHE_SM2_SM4_GCM_SM3,
 	}
 }
 
-// LegacyCipherSuites 返回包含 CBC 的完整密码套件列表。
-// CBC 模式存在 padding oracle 等已知风险，仅用于遗留系统兼容，
-// 新协议应使用 GCM-only 默认配置。
+// LegacyCipherSuites returns the full cipher suite list including CBC suites.
+// CBC mode has known risks such as padding oracle attacks and is only for legacy
+// system compatibility. New protocols should use the GCM-only default configuration.
 func LegacyCipherSuites() []uint16 {
 	return []uint16{
 		SuiteECDHE_SM2_SM4_GCM_SM3,
@@ -35,8 +35,8 @@ func LegacyCipherSuites() []uint16 {
 	}
 }
 
-// isTLCPCipherSuite 检查是否为 TLCP 密码套件
-func isTLCPCipherSuite(id uint16) bool {
+// IsTLCPCipherSuite reports whether id is a TLCP cipher suite.
+func IsTLCPCipherSuite(id uint16) bool {
 	switch id {
 	case SuiteECC_SM2_SM4_GCM_SM3, SuiteECC_SM2_SM4_CBC_SM3,
 		SuiteECDHE_SM2_SM4_GCM_SM3, SuiteECDHE_SM2_SM4_CBC_SM3:

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	polluxSM2 "github.com/ycq/pollux/sm2"
-	polluxSmx509 "github.com/ycq/pollux/smx509"
+	polluxSM2 "github.com/iuboy/pollux-go/sm2"
+	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 // testCertChainBlackBox 生成三级证书链，仅通过 pollux 公开 API 操作。

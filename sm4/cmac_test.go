@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/ycq/pollux/sm4"
+	"github.com/iuboy/pollux-go/sm4"
 )
 
 // SM4-CMAC test vectors generated from this implementation using key

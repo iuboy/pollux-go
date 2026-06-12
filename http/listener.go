@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/ycq/pollux/tlcp"
+	"github.com/iuboy/pollux-go/tlcp"
 )
 
 var (

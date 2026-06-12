@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	polluxHTTP "github.com/ycq/pollux/http"
+	polluxHTTP "github.com/iuboy/pollux-go/http"
 )
 
 func TestTLSServerWithRSACert(t *testing.T) {

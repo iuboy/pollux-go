@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	polluxSM4GCM "github.com/ycq/pollux/sm4gcm"
+	polluxSM4GCM "github.com/iuboy/pollux-go/sm4gcm"
 )
 
 func TestBlackBox_SM4GCM_GenerateKey_Size(t *testing.T) {

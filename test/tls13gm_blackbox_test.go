@@ -5,8 +5,8 @@ import (
 	"crypto/rand"
 	"testing"
 
-	polluxSM4GCM "github.com/ycq/pollux/sm4gcm"
-	polluxTLS13GM "github.com/ycq/pollux/tls13gm"
+	polluxSM4GCM "github.com/iuboy/pollux-go/sm4gcm"
+	polluxTLS13GM "github.com/iuboy/pollux-go/tls13gm"
 )
 
 func TestBlackBox_TLS13GM_CipherSuiteConstants(t *testing.T) {

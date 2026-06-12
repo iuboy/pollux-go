@@ -10,8 +10,8 @@ import (
 	"errors"
 	"io"
 
-	"github.com/ycq/pollux/internal/memsecure"
-	"github.com/ycq/pollux/sm4"
+	"github.com/iuboy/pollux-go/internal/memsecure"
+	"github.com/iuboy/pollux-go/sm4"
 )
 
 const (

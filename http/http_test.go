@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"github.com/emmansun/gmsm/sm2"
-	polluxSm2 "github.com/ycq/pollux/sm2"
-	polluxSmx509 "github.com/ycq/pollux/smx509"
-	polluxTlcp "github.com/ycq/pollux/tlcp"
+	polluxSm2 "github.com/iuboy/pollux-go/sm2"
+	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
+	polluxTlcp "github.com/iuboy/pollux-go/tlcp"
 )
 
 func pemEncodeCert(der []byte) []byte {

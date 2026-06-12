@@ -3,7 +3,7 @@ package tls13gm
 import (
 	"fmt"
 
-	"github.com/ycq/pollux/sm3"
+	"github.com/iuboy/pollux-go/sm3"
 )
 
 // HKDFExpandLabel implements TLS 1.3 HKDF-Expand-Label with SM3.

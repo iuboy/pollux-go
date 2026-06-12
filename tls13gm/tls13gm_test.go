@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"github.com/ycq/pollux/sm4gcm"
+	"github.com/iuboy/pollux-go/sm4gcm"
 )
 
 func TestConstants(t *testing.T) {

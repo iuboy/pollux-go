@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	polluxZUC "github.com/ycq/pollux/zuc"
+	polluxZUC "github.com/iuboy/pollux-go/zuc"
 )
 
 func TestBlackBox_ZUC_NewCipher_EncryptDecrypt(t *testing.T) {

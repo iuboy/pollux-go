@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	polluxSM2 "github.com/ycq/pollux/sm2"
+	polluxSM2 "github.com/iuboy/pollux-go/sm2"
 )
 
 func TestBlackBox_SM2_SignWithSM2_WrongUID(t *testing.T) {

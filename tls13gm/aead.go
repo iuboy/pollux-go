@@ -4,7 +4,7 @@ import (
 	"crypto/cipher"
 	"errors"
 
-	"github.com/ycq/pollux/sm4"
+	"github.com/iuboy/pollux-go/sm4"
 )
 
 var errInvalidNonceLen = errors.New("tls13gm: nonce must be 12 bytes for TLS 1.3 SM4-GCM")

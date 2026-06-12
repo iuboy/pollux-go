@@ -6,8 +6,8 @@ import (
 	"encoding/pem"
 	"testing"
 
-	polluxSM2 "github.com/ycq/pollux/sm2"
-	polluxSMX509 "github.com/ycq/pollux/smx509"
+	polluxSM2 "github.com/iuboy/pollux-go/sm2"
+	polluxSMX509 "github.com/iuboy/pollux-go/smx509"
 )
 
 func TestDecryptAES256CBC(t *testing.T) {

@@ -34,8 +34,8 @@ import (
 
 	gotlcp "gitee.com/Trisia/gotlcp/tlcp"
 	gmsmSmx509 "github.com/emmansun/gmsm/smx509"
-	"github.com/ycq/pollux/internal/panicsafe"
-	polluxtls "github.com/ycq/pollux/tls"
+	"github.com/iuboy/pollux-go/internal/panicsafe"
+	polluxtls "github.com/iuboy/pollux-go/tls"
 )
 
 var (

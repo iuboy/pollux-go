@@ -18,10 +18,10 @@ import (
 	gmsmSM9 "github.com/emmansun/gmsm/sm9"
 	gmsmSMX509 "github.com/emmansun/gmsm/smx509"
 
-	polluxSM2 "github.com/ycq/pollux/sm2"
-	polluxSM3 "github.com/ycq/pollux/sm3"
-	polluxSM4 "github.com/ycq/pollux/sm4"
-	polluxSM9 "github.com/ycq/pollux/sm9"
+	polluxSM2 "github.com/iuboy/pollux-go/sm2"
+	polluxSM3 "github.com/iuboy/pollux-go/sm3"
+	polluxSM4 "github.com/iuboy/pollux-go/sm4"
+	polluxSM9 "github.com/iuboy/pollux-go/sm9"
 )
 
 // ============================================================================

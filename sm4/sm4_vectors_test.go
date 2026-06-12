@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/ycq/pollux/sm4"
+	"github.com/iuboy/pollux-go/sm4"
 )
 
 // GM/T 0002-2012 标准测试向量

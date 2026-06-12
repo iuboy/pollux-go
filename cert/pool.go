@@ -5,7 +5,7 @@ import (
 	"encoding/pem"
 	"sync"
 
-	polluxSmx509 "github.com/ycq/pollux/smx509"
+	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 // Pool is a thread-safe certificate pool that preserves raw DER bytes.

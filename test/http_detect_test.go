@@ -3,7 +3,7 @@ package test
 import (
 	"testing"
 
-	polluxHTTP "github.com/ycq/pollux/http"
+	polluxHTTP "github.com/iuboy/pollux-go/http"
 )
 
 func TestBlackBox_HTTP_DetectMode_NilCert(t *testing.T) {

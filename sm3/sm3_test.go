@@ -4,7 +4,7 @@ import (
 	"hash"
 	"testing"
 
-	"github.com/ycq/pollux/sm3"
+	"github.com/iuboy/pollux-go/sm3"
 )
 
 func TestNewReturnsHashHash(t *testing.T) {

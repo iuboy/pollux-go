@@ -3,7 +3,7 @@ package http
 import (
 	"testing"
 
-	"github.com/ycq/pollux/tlcp"
+	"github.com/iuboy/pollux-go/tlcp"
 )
 
 func TestLoadTLCPCertificates(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	polluxSm2 "github.com/ycq/pollux/sm2"
-	polluxSmx509 "github.com/ycq/pollux/smx509"
+	polluxSm2 "github.com/iuboy/pollux-go/sm2"
+	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 // LoadKeyPairPEM loads a TLS certificate from PEM-encoded cert and key.

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ycq/pollux/sm4"
+	"github.com/iuboy/pollux-go/sm4"
 )
 
 // nonceSize is the SM4-GCM nonce length in bytes (12 bytes / 96 bits).

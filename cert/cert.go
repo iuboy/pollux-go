@@ -4,7 +4,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 
-	polluxSmx509 "github.com/ycq/pollux/smx509"
+	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 // Kind represents the type of certificate.

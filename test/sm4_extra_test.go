@@ -6,7 +6,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	polluxSM4 "github.com/ycq/pollux/sm4"
+	polluxSM4 "github.com/iuboy/pollux-go/sm4"
 )
 
 // ========== CMAC ==========

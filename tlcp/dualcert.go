@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ycq/pollux/sm2"
-	polluxSmx509 "github.com/ycq/pollux/smx509"
+	"github.com/iuboy/pollux-go/sm2"
+	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 var (

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	polluxSM2 "github.com/ycq/pollux/sm2"
-	polluxTlcp "github.com/ycq/pollux/tlcp"
+	polluxSM2 "github.com/iuboy/pollux-go/sm2"
+	polluxTlcp "github.com/iuboy/pollux-go/tlcp"
 )
 
 const certPassword = "test123"

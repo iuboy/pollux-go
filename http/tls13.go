@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ycq/pollux/tls13"
+	"github.com/iuboy/pollux-go/tls13"
 )
 
 // TLS13ServerOptions holds configuration for an HTTP server enforcing TLS 1.3.

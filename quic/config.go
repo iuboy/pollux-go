@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	tls13 "github.com/ycq/pollux/tls13"
+	tls13 "github.com/iuboy/pollux-go/tls13"
 )
 
 var (

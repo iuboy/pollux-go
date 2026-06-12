@@ -6,7 +6,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/ycq/pollux/sm2"
+	"github.com/iuboy/pollux-go/sm2"
 )
 
 // TestP256CurveParams verifies the SM2 curve parameters match GM/T 0003.

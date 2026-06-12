@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	polluxQUICGM "github.com/ycq/pollux/quicgm"
+	polluxQUICGM "github.com/iuboy/pollux-go/quicgm"
 )
 
 func mustGenerateSessionKeys(t *testing.T) polluxQUICGM.SessionKeys {

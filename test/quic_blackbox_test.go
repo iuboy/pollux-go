@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	polluxQUIC "github.com/ycq/pollux/quic"
+	polluxQUIC "github.com/iuboy/pollux-go/quic"
 )
 
 func mustGenerateQUICCerts(t *testing.T) (tls.Certificate, *x509.CertPool) {

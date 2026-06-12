@@ -4,8 +4,8 @@ import (
 	"crypto/hmac"
 	"crypto/subtle"
 
-	"github.com/ycq/pollux/internal/memsecure"
-	"github.com/ycq/pollux/sm3"
+	"github.com/iuboy/pollux-go/internal/memsecure"
+	"github.com/iuboy/pollux-go/sm3"
 )
 
 // MACSM3 computes an HMAC-SM3 tag for the given data.

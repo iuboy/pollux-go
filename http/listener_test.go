@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"crypto/tls"
-	"github.com/ycq/pollux/tlcp"
+	"github.com/iuboy/pollux-go/tlcp"
 )
 
 func TestSetHandshakeTimeout(t *testing.T) {

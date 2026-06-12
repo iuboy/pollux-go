@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	polluxHTTP "github.com/ycq/pollux/http"
-	polluxSm2 "github.com/ycq/pollux/sm2"
-	polluxSmx509 "github.com/ycq/pollux/smx509"
+	polluxHTTP "github.com/iuboy/pollux-go/http"
+	polluxSm2 "github.com/iuboy/pollux-go/sm2"
+	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 const tongsuoBin = "/opt/local/tongsuo/bin/openssl"

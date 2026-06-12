@@ -5,8 +5,8 @@ import (
 	"crypto/rand"
 	"testing"
 
-	polluxGmstd "github.com/ycq/pollux/gmstd"
-	polluxSM2 "github.com/ycq/pollux/sm2"
+	polluxGmstd "github.com/iuboy/pollux-go/gmstd"
+	polluxSM2 "github.com/iuboy/pollux-go/sm2"
 )
 
 func TestBlackBox_SM3Hash(t *testing.T) {

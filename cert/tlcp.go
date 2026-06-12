@@ -4,7 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 
-	polluxTLCP "github.com/ycq/pollux/tlcp"
+	polluxTLCP "github.com/iuboy/pollux-go/tlcp"
 )
 
 // TLCPProxyOptions holds parameters for building a TLCP config.

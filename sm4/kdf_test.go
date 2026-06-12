@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/ycq/pollux/sm4"
+	"github.com/iuboy/pollux-go/sm4"
 )
 
 // TestKDFBasicConsistency verifies that deriving the same key twice

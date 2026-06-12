@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/ycq/pollux/sm3"
+	"github.com/iuboy/pollux-go/sm3"
 )
 
 // ---------------------------------------------------------------------------

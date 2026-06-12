@@ -4,7 +4,7 @@ import (
 	"crypto/cipher"
 	"testing"
 
-	"github.com/ycq/pollux/sm4"
+	"github.com/iuboy/pollux-go/sm4"
 )
 
 func TestNewCipherReturnsCipherBlock(t *testing.T) {

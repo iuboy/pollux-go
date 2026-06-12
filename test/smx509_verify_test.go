@@ -8,8 +8,8 @@ import (
 	"time"
 
 	smx509 "github.com/emmansun/gmsm/smx509"
-	polluxSM2 "github.com/ycq/pollux/sm2"
-	polluxSmx509 "github.com/ycq/pollux/smx509"
+	polluxSM2 "github.com/iuboy/pollux-go/sm2"
+	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 func buildTestCertChain(t *testing.T) (caCert *x509.Certificate, leafCert *x509.Certificate, caCertRaw *smx509.Certificate) {

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	polluxTLS13 "github.com/ycq/pollux/tls13"
+	polluxTLS13 "github.com/iuboy/pollux-go/tls13"
 )
 
 func mustGenerateTLS13Cert(t *testing.T) tls.Certificate {

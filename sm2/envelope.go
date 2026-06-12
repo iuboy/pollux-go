@@ -11,8 +11,8 @@ import (
 	"github.com/emmansun/gmsm/pkcs"
 	gmsmPkcs7 "github.com/emmansun/gmsm/pkcs7"
 	smx509 "github.com/emmansun/gmsm/smx509"
-	"github.com/ycq/pollux/internal/memsecure"
-	"github.com/ycq/pollux/sm4"
+	"github.com/iuboy/pollux-go/internal/memsecure"
+	"github.com/iuboy/pollux-go/sm4"
 )
 
 // EnvelopeResult represents a digital envelope encryption result.

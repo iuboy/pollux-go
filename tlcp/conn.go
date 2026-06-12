@@ -8,7 +8,7 @@ import (
 	"time"
 
 	gotlcp "gitee.com/Trisia/gotlcp/tlcp"
-	"github.com/ycq/pollux/internal/panicsafe"
+	"github.com/iuboy/pollux-go/internal/panicsafe"
 )
 
 // Conn represents a TLCP secure connection, implements net.Conn interface.

@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/emmansun/gmsm/sm2"
-	polluxSM2 "github.com/ycq/pollux/sm2"
-	polluxSMX509 "github.com/ycq/pollux/smx509"
+	polluxSM2 "github.com/iuboy/pollux-go/sm2"
+	polluxSMX509 "github.com/iuboy/pollux-go/smx509"
 )
 
 func TestParseSM2PrivateKey(t *testing.T) {

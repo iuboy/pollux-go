@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	polluxSM3 "github.com/ycq/pollux/sm3"
+	polluxSM3 "github.com/iuboy/pollux-go/sm3"
 )
 
 func TestBlackBox_SM3_Sum_EmptyInput(t *testing.T) {

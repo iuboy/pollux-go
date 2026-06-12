@@ -8,7 +8,7 @@ import (
 
 	gmsmSM2 "github.com/emmansun/gmsm/sm2"
 	"github.com/emmansun/gmsm/sm2/sm2ec"
-	"github.com/ycq/pollux/internal/memsecure"
+	"github.com/iuboy/pollux-go/internal/memsecure"
 )
 
 var (

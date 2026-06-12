@@ -1,4 +1,4 @@
-module github.com/ycq/pollux
+module github.com/iuboy/pollux-go
 
 go 1.26
 

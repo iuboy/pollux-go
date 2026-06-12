@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ycq/pollux/internal/panicsafe"
-	polluxSmx509 "github.com/ycq/pollux/smx509"
+	"github.com/iuboy/pollux-go/internal/panicsafe"
+	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 // VerifyOptions holds certificate verification parameters.

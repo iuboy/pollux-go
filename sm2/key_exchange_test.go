@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"github.com/ycq/pollux/sm2"
+	"github.com/iuboy/pollux-go/sm2"
 )
 
 func TestKeyExchangeFullFlow(t *testing.T) {

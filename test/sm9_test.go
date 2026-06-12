@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	polluxSM9 "github.com/ycq/pollux/sm9"
+	polluxSM9 "github.com/iuboy/pollux-go/sm9"
 )
 
 // ========== 签名主密钥 ==========

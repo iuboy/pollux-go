@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	polluxCert "github.com/ycq/pollux/cert"
-	polluxSM2 "github.com/ycq/pollux/sm2"
-	polluxSmx509 "github.com/ycq/pollux/smx509"
+	polluxCert "github.com/iuboy/pollux-go/cert"
+	polluxSM2 "github.com/iuboy/pollux-go/sm2"
+	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 // ========== Helper: 自签名证书生成 ==========

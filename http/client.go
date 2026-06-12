@@ -8,7 +8,7 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/ycq/pollux/tlcp"
+	"github.com/iuboy/pollux-go/tlcp"
 )
 
 // NewTLCPTransport returns an *http.Transport that dials using TLCP.

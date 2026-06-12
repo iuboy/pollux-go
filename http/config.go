@@ -11,9 +11,9 @@ import (
 	"os"
 	"time"
 
-	polluxCert "github.com/ycq/pollux/cert"
-	polluxSm2 "github.com/ycq/pollux/sm2"
-	"github.com/ycq/pollux/tlcp"
+	polluxCert "github.com/iuboy/pollux-go/cert"
+	polluxSm2 "github.com/iuboy/pollux-go/sm2"
+	"github.com/iuboy/pollux-go/tlcp"
 )
 
 var (

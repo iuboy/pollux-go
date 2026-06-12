@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	polluxCert "github.com/ycq/pollux/cert"
-	polluxHttp "github.com/ycq/pollux/http"
-	polluxSM2 "github.com/ycq/pollux/sm2"
-	polluxSmx509 "github.com/ycq/pollux/smx509"
+	polluxCert "github.com/iuboy/pollux-go/cert"
+	polluxHttp "github.com/iuboy/pollux-go/http"
+	polluxSM2 "github.com/iuboy/pollux-go/sm2"
+	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 // ========== Helper: 生成 SM2 CA 和叶子证书 ==========

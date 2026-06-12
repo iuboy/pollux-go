@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ycq/pollux/tlcp"
+	"github.com/iuboy/pollux-go/tlcp"
 )
 
 // ListenAndServe starts an HTTP server with TLS or TLCP.

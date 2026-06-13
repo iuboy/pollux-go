@@ -37,6 +37,12 @@ func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]b
 	if peerPublic == nil {
 		return nil, fmt.Errorf("tls13gm: peerPublic is nil")
 	}
+	// Verify the peer's public key is on the curve to prevent invalid-curve attacks.
+	// Without this check, a malicious peer could send a point on a different curve
+	// to extract information about the private scalar.
+	if !peerPublic.Curve.IsOnCurve(peerPublic.X, peerPublic.Y) {
+		return nil, fmt.Errorf("tls13gm: peer public key is not on the SM2 curve")
+	}
 	// sm2.PrivateKey embeds ecdsa.PrivateKey (via PublicKey), so .D and .Curve
 	// are directly accessible. Perform raw scalar multiplication on the peer's
 	// public point using our private scalar.
@@ -44,16 +50,25 @@ func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]b
 	// ScalarMult is deprecated for NIST curves (use crypto/ecdh instead), but
 	// SM2 uses a custom curve that crypto/ecdh does not support, so this is
 	// the correct approach.
-	x, _ := peerPublic.Curve.ScalarMult(peerPublic.X, peerPublic.Y, privateKey.D.Bytes())
+	//
+	// Pad private scalar to 32 bytes (SM2 field element size) for constant-time
+	// consistency. D.Bytes() returns minimal encoding, which may be shorter
+	// than 32 bytes if leading bytes happen to be zero.
+	const scalarSize = 32
+	dBytes := make([]byte, scalarSize)
+	rawD := privateKey.D.Bytes()
+	copy(dBytes[scalarSize-len(rawD):], rawD)
+
+	x, _ := peerPublic.Curve.ScalarMult(peerPublic.X, peerPublic.Y, dBytes)
 	if x == nil {
 		return nil, fmt.Errorf("tls13gm: ECDH scalar multiplication failed")
 	}
 	shared := x.Bytes()
-	// Pad to 32 bytes (SM2 field element size).
-	if len(shared) < 32 {
-		padded := make([]byte, 32)
-		copy(padded[32-len(shared):], shared)
+	// Pad shared secret to 32 bytes.
+	if len(shared) < scalarSize {
+		padded := make([]byte, scalarSize)
+		copy(padded[scalarSize-len(shared):], shared)
 		shared = padded
 	}
-	return shared[:32], nil
+	return shared[:scalarSize], nil
 }

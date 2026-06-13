@@ -19,6 +19,9 @@ var errCCMNotImplemented = errors.New("tls13gm: SM4-CCM is not yet implemented; 
 // TODO: Implement once a suitable CCM library is integrated. The interface
 // mirrors NewAEAD (SM4-GCM) so callers can switch transparently.
 func NewCCMAEAD(key, nonce []byte) (*CCMAEAD, error) {
+	if len(key) != 16 {
+		return nil, fmt.Errorf("tls13gm: CCM key must be 16 bytes (SM4-128), got %d", len(key))
+	}
 	if len(nonce) != 12 {
 		return nil, fmt.Errorf("tls13gm: CCM nonce must be 12 bytes for TLS 1.3, got %d", len(nonce))
 	}

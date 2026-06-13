@@ -2,7 +2,9 @@ package tls13gm
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"crypto/rand"
+	"math/big"
 	"testing"
 
 	"github.com/iuboy/pollux-go/sm2"
@@ -234,8 +236,14 @@ func TestDeriveResumptionPSK(t *testing.T) {
 func TestDeriveResumptionMasterSecret(t *testing.T) {
 	// Full chain: early → handshake → master → resumption master
 	earlySecret := DeriveEarlySecret(nil)
-	hs, _ := DeriveHandshakeSecret(earlySecret, bytes.Repeat([]byte{0x42}, 32))
-	ms, _ := DeriveMasterSecret(hs)
+	hs, err := DeriveHandshakeSecret(earlySecret, bytes.Repeat([]byte{0x42}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms, err := DeriveMasterSecret(hs)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	transcriptHash := sm3.Sum([]byte("handshake transcript"))
 	resMaster, err := DeriveResumptionMasterSecret(ms, transcriptHash[:])
@@ -250,8 +258,14 @@ func TestDeriveResumptionMasterSecret(t *testing.T) {
 // TestDeriveExporterMasterSecret tests exporter master secret derivation.
 func TestDeriveExporterMasterSecret(t *testing.T) {
 	earlySecret := DeriveEarlySecret(nil)
-	hs, _ := DeriveHandshakeSecret(earlySecret, bytes.Repeat([]byte{0x42}, 32))
-	ms, _ := DeriveMasterSecret(hs)
+	hs, err := DeriveHandshakeSecret(earlySecret, bytes.Repeat([]byte{0x42}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms, err := DeriveMasterSecret(hs)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	transcriptHash := sm3.Sum([]byte("full transcript"))
 	expMaster, err := DeriveExporterMasterSecret(ms, transcriptHash[:])
@@ -653,7 +667,10 @@ func TestECDHEKeyExchangeIntegration(t *testing.T) {
 	}
 
 	// Derive finished verify data — both sides should compute the same value
-	fk, _ := DeriveFinishedKey(clientHS)
+	fk, err := DeriveFinishedKey(clientHS)
+	if err != nil {
+		t.Fatal(err)
+	}
 	transcript := []byte("ClientHello...ServerHello")
 	th := sm3.Sum(transcript)
 
@@ -689,5 +706,132 @@ func TestPublicKeyTypeCompatibility(t *testing.T) {
 	_, err = CurveSM2ECDHE(key, &key.PublicKey)
 	if err != nil {
 		t.Fatalf("CurveSM2ECDHE with &key.PublicKey: %v", err)
+	}
+}
+
+// --- Additional Review-Driven Tests ---
+
+// TestNewAEADInvalidKey verifies that NewAEAD rejects invalid key lengths.
+func TestNewAEADInvalidKey(t *testing.T) {
+	nonce := make([]byte, 12)
+
+	for _, keyLen := range []int{0, 8, 15, 17, 32} {
+		_, err := NewAEAD(make([]byte, keyLen), nonce)
+		if err == nil {
+			t.Errorf("expected error for %d-byte key, got nil", keyLen)
+		}
+	}
+
+	// Valid 16-byte key should succeed
+	key := make([]byte, 16)
+	_, err := NewAEAD(key, nonce)
+	if err != nil {
+		t.Fatalf("unexpected error for valid 16-byte key: %v", err)
+	}
+}
+
+// TestBuildHKDFLabelPanics verifies that buildHKDFLabel panics on oversized inputs.
+func TestBuildHKDFLabelPanics(t *testing.T) {
+	t.Run("label_too_long", func(t *testing.T) {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("expected panic for label > 255 bytes, got none")
+			}
+		}()
+		// "tls13 " (6 bytes) + 250 "a"s = 256 bytes > 255
+		longLabel := string(bytes.Repeat([]byte("a"), 250))
+		buildHKDFLabel(longLabel, nil, 32)
+	})
+
+	t.Run("context_too_long", func(t *testing.T) {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("expected panic for context > 255 bytes, got none")
+			}
+		}()
+		longContext := bytes.Repeat([]byte("x"), 256)
+		buildHKDFLabel("key", longContext, 32)
+	})
+}
+
+// TestHKDFExpandLabelBoundaryLengths tests edge cases for the length parameter.
+func TestHKDFExpandLabelBoundaryLengths(t *testing.T) {
+	secret := make([]byte, 32)
+
+	// Minimum valid length
+	out, err := HKDFExpandLabel(secret, "key", nil, 1)
+	if err != nil {
+		t.Fatalf("length=1: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("length=1: got %d bytes", len(out))
+	}
+
+	// Regression test: 255 was the old limit, must still work
+	out, err = HKDFExpandLabel(secret, "key", nil, 255)
+	if err != nil {
+		t.Fatalf("length=255: %v", err)
+	}
+	if len(out) != 255 {
+		t.Fatalf("length=255: got %d bytes", len(out))
+	}
+
+	// Length exceeding HKDF-Expand maximum (255 * 32 = 8160)
+	_, err = HKDFExpandLabel(secret, "key", nil, 8161)
+	if err == nil {
+		t.Fatal("expected error for length=8161 (exceeds 255*32), got nil")
+	}
+}
+
+// TestCurveSM2ECDHEOffCurvePoint verifies that ECDHE rejects a public key
+// that is not on the SM2 curve.
+func TestCurveSM2ECDHEOffCurvePoint(t *testing.T) {
+	key, err := GenerateCurveSM2KeyPair(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a public key with coordinates that are NOT on the curve.
+	// Use (1, 1) which is extremely unlikely to be on SM2.
+	fakePub := &ecdsa.PublicKey{
+		Curve: key.PublicKey.Curve,
+		X:     big.NewInt(1),
+		Y:     big.NewInt(1),
+	}
+
+	_, err = CurveSM2ECDHE(key, fakePub)
+	if err == nil {
+		t.Fatal("expected error for off-curve public key, got nil")
+	}
+}
+
+// TestDeriveTrafficKeysInvalidParams verifies DeriveTrafficKeys with edge cases.
+func TestDeriveTrafficKeysInvalidParams(t *testing.T) {
+	secret := make([]byte, 32)
+
+	// Zero-length key should fail (HKDFExpandLabel rejects length <= 0)
+	_, err := DeriveTrafficKeys(secret, 0, 12)
+	if err == nil {
+		t.Fatal("expected error for keyLen=0, got nil")
+	}
+
+	// Negative length should fail
+	_, err = DeriveTrafficKeys(secret, -1, 12)
+	if err == nil {
+		t.Fatal("expected error for keyLen=-1, got nil")
+	}
+}
+
+// TestNewCCMAEADInvalidKey verifies that NewCCMAEAD rejects invalid key lengths.
+func TestNewCCMAEADInvalidKey(t *testing.T) {
+	nonce := make([]byte, 12)
+
+	for _, keyLen := range []int{0, 8, 15, 17, 32} {
+		_, err := NewCCMAEAD(make([]byte, keyLen), nonce)
+		if err == nil {
+			t.Errorf("expected error for %d-byte CCM key, got nil", keyLen)
+		}
 	}
 }

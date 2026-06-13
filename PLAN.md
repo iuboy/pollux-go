@@ -1,5 +1,3 @@
-<!-- /autoplan restore point: /Users/ycq/.gstack/projects/pollux-go/HEAD-autoplan-restore-20260527-220126.md -->
-
 # TLCP 握手 Bug 修复计划
 
 ## 问题概述
@@ -151,5 +149,3 @@ read Finished
 | 6 | Eng | Add certificateVerifyMsg.unmarshal (E2) | Mechanical | P1 | Required for CertificateVerify verification |
 | 7 | Eng | Fix hash timing for CertificateVerify (E3) | Mechanical | P1 | Sign covers hash excluding CertificateVerify |
 | 8 | Eng | Note TestCertificateVerify_SelfSigned issue | Mechanical | P1 | Guard condition blocks test |
-
-## GSTACK REVIEW REPORT

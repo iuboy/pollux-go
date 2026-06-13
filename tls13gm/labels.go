@@ -25,6 +25,16 @@ const (
 	// Resumption master secret label.
 	LabelResumptionMaster = "res master"
 
+	// Binder key labels (RFC 8446 §7.1).
+	LabelExternalBinder  = "ext binder"
+	LabelResumptionBinder = "res binder"
+
+	// Early exporter master secret label (RFC 8446 §7.1).
+	LabelEarlyExporterMaster = "e exp master"
+
+	// Key update label (RFC 8446 §7.2).
+	LabelTrafficUpdate = "traffic upd"
+
 	// Key and IV derivation labels.
 	LabelKey = "key"
 	LabelIV  = "iv"

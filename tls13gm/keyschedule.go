@@ -63,9 +63,18 @@ func DeriveFinishedKey(trafficSecret []byte) ([]byte, error) {
 }
 
 // ComputeFinishedVerifyData computes the verify_data for a Finished message.
-// finishedKey is from DeriveFinishedKey, transcriptHash is the hash of the handshake transcript.
+// finishedKey is from DeriveFinishedKey, transcriptHash is the hash of the
+// handshake transcript.
+//
+// Per RFC 8446 §4.4.4: verify_data = HMAC(finished_key, transcript_hash).
+// This uses HMAC-SM3, NOT HKDF-Expand-Label.
 func ComputeFinishedVerifyData(finishedKey, transcriptHash []byte) ([]byte, error) {
-	return HKDFExpandLabel(finishedKey, LabelFinished, transcriptHash, sm3.Size)
+	if len(finishedKey) == 0 {
+		return nil, fmt.Errorf("tls13gm: finishedKey is empty")
+	}
+	mac := sm3.NewHMAC(finishedKey)
+	mac.Write(transcriptHash)
+	return mac.Sum(nil), nil
 }
 
 // DeriveResumptionPSK derives the PSK from the resumption master secret

@@ -133,7 +133,7 @@ func TestHKDFExpandLabelLengths(t *testing.T) {
 func TestHKDFExpandLabelInvalidLength(t *testing.T) {
 	secret := make([]byte, 32)
 
-	for _, length := range []int{0, -1, 256} {
+	for _, length := range []int{0, -1, 65536} {
 		_, err := HKDFExpandLabel(secret, "key", nil, length)
 		if err == nil {
 			t.Errorf("expected error for length=%d, got nil", length)

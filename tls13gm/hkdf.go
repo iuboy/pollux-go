@@ -8,8 +8,8 @@ import (
 
 // HKDFExpandLabel implements TLS 1.3 HKDF-Expand-Label with SM3.
 func HKDFExpandLabel(secret []byte, label string, context []byte, length int) ([]byte, error) {
-	if length <= 0 || length > 255 {
-		return nil, fmt.Errorf("tls13gm: HKDFExpandLabel length must be 1..255, got %d", length)
+	if length <= 0 || length > 65535 {
+		return nil, fmt.Errorf("tls13gm: HKDFExpandLabel length must be 1..65535, got %d", length)
 	}
 	hkdfLabel := buildHKDFLabel(label, context, length)
 	return sm3.HKDFExpand(secret, hkdfLabel, length)
@@ -20,6 +20,12 @@ func buildHKDFLabel(label string, context []byte, length int) []byte {
 	// length (2 bytes) + label length (1 byte) + "tls13 " + label + context length (1 byte) + context
 	prefix := "tls13 "
 	fullLabel := prefix + label
+	// RFC 8446: opaque label<7..255> — "tls13 " is 6 bytes, so label must be at least 1 byte.
+	// We don't enforce this at runtime since all callers use well-known labels, but the
+	// fullLabel length must fit in one byte (≤255).
+	if len(fullLabel) > 255 {
+		panic(fmt.Sprintf("tls13gm: HKDF label too long: %d bytes (max 255)", len(fullLabel)))
+	}
 	result := make([]byte, 0, 2+1+len(fullLabel)+1+len(context))
 	result = append(result, byte(length>>8), byte(length))
 	result = append(result, byte(len(fullLabel)))

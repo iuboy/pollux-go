@@ -14,7 +14,7 @@ go test ./...
 
 结果：通过。
 
-## 1. 先同步计划状态
+## 1. 先同步计划状态 ✅ DONE
 
 现状：
 
@@ -32,7 +32,7 @@ go test ./...
 
 优先级：P0。
 
-## 2. 统一证书隔离层应提前
+## 2. 统一证书隔离层应提前 ✅ DONE
 
 现有路线把 SMX509 重构放在 M5，但现在 `tls13`、`quic`、`http TLS1.3`、`quicgm` 已经开始落地。证书语义如果继续分散，会让后续迁移成本上升。
 
@@ -44,7 +44,7 @@ go test ./...
 
 优先级：P0。
 
-## 3. 修正 HTTP TLS1.3 option 类型
+## 3. 修正 HTTP TLS1.3 option 类型 ✅ DONE
 
 当前 `http/tls13.go` 中：
 
@@ -80,7 +80,7 @@ RootPool     *cert.Pool
 
 优先级：P0。
 
-## 4. quicgm Envelope MAC 实现可收敛
+## 4. quicgm Envelope MAC 实现可收敛 ✅ DONE
 
 当前 `quicgm.Open` 中计算了 `expectedMAC`，但实际校验又调用 `VerifyMACSM3(keys.HMACKey, macInput(env), env.MAC)` 重新计算，`expectedMAC` 只是避免未使用变量。
 
@@ -111,7 +111,7 @@ RootPool     *cert.Pool
 
 优先级：P1。
 
-## 6. TLCP 状态仍应保守
+## 6. TLCP 状态仍应保守 ✅ DONE
 
 虽然 `go test ./...` 通过，但审计状态矩阵中 TLCP 仍有多项 CRITICAL/HIGH open 或 needs-test。
 
@@ -125,7 +125,7 @@ RootPool     *cert.Pool
 
 优先级：P0/P1。
 
-## 7. API 命名和兼容策略
+## 7. API 命名和兼容策略 ✅ DONE
 
 建议统一包层次：
 
@@ -148,7 +148,7 @@ RootPool     *cert.Pool
 
 优先级：P1。
 
-## 8. 黑盒测试计划需要转为覆盖矩阵
+## 8. 黑盒测试计划需要转为覆盖矩阵 ✅ DONE
 
 已有测试计划很详细，但下一步应变成可维护矩阵。
 
@@ -175,7 +175,7 @@ docs/plan/test-coverage-matrix.md
 
 优先级：P1。
 
-## 9. 审计矩阵需要和代码自动化挂钩
+## 9. 审计矩阵需要和代码自动化挂钩 ✅ DONE
 
 当前 `audit-status-matrix.md` 是手工状态，容易漂移。
 
@@ -213,7 +213,7 @@ var ErrUnsupportedCertificate = errors.New("cert: unsupported certificate")
 
 优先级：P2。
 
-## 11. 文档中的生产承诺要更严格
+## 11. 文档中的生产承诺要更严格 ✅ DONE
 
 建议所有包文档都明确状态：
 
@@ -232,7 +232,7 @@ var ErrUnsupportedCertificate = errors.New("cert: unsupported certificate")
 
 优先级：P1。
 
-## 12. 建议执行顺序
+## 12. 建议执行顺序 ✅ 大部分 DONE
 
 更新于 2026-05-26：
 

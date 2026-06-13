@@ -227,3 +227,43 @@
 | TestBlackBox_QUICGM_NonceRegistry_DifferentKeysCanReuseNonce | test/quicgm_blackbox_test.go | 黑盒不同 key |
 | TestBlackBox_QUICGM_NonceRegistry_NilRegistryAllowsAll | test/quicgm_blackbox_test.go | 黑盒 nil registry |
 | TestBlackBox_QUICGM_NonceRegistry_EndToEnd | test/quicgm_blackbox_test.go | 黑盒端到端 |
+
+### M6: tls13gm RFC 8998 实验包测试
+
+| 测试 | 文件 | 覆盖场景 |
+|------|------|----------|
+| TestBuildHKDFLabelEncoding | tls13gm/testvectors_test.go | HKDF label wire format 编码正确性 |
+| TestBuildHKDFLabelWithContext | tls13gm/testvectors_test.go | 非空 context 编码 |
+| TestHKDFExpandLabelDeterminism | tls13gm/testvectors_test.go | HKDF 确定性 |
+| TestHKDFExpandLabelLengths | tls13gm/testvectors_test.go | 多种输出长度 |
+| TestHKDFExpandLabelInvalidLength | tls13gm/testvectors_test.go | 非法长度拒绝 (0, -1, 65536) |
+| TestKeyScheduleChain | tls13gm/testvectors_test.go | Early→Handshake→Master 完整链路 |
+| TestDeriveSecretConsistency | tls13gm/testvectors_test.go | DeriveSecret 与手动 HKDFExpandLabel 交叉验证 |
+| TestDeriveSecretDifferentLabels | tls13gm/testvectors_test.go | 不同 label 产生不同密钥 |
+| TestAEADRoundTrip | tls13gm/testvectors_test.go | SM4-GCM 加解密 round-trip |
+| TestAEADSequenceNumberIsolation | tls13gm/testvectors_test.go | 不同 seqnum 产生不同密文 |
+| TestAEADTamperDetection | tls13gm/testvectors_test.go | 密文/AAD 篡改检测 |
+| TestAEADInvalidNonce | tls13gm/testvectors_test.go | 非 12 字节 nonce 拒绝 |
+| TestAEADMultipleRecords | tls13gm/testvectors_test.go | 多记录递增 seqnum |
+| TestDeriveEarlySecret | tls13gm/coverage_test.go | Early Secret 推导 |
+| TestDeriveHandshakeSecret | tls13gm/coverage_test.go | Handshake Secret 推导 |
+| TestDeriveMasterSecret | tls13gm/coverage_test.go | Master Secret 推导 |
+| TestDeriveTrafficKeys | tls13gm/coverage_test.go | Traffic key/IV 推导 |
+| TestDeriveFinishedKey | tls13gm/coverage_test.go | Finished key 推导 |
+| TestComputeFinishedVerifyData | tls13gm/coverage_test.go | HMAC-SM3 Finished verify_data（含手动交叉验证） |
+| TestDeriveResumptionPSK | tls13gm/coverage_test.go | Resumption PSK 推导 |
+| TestDeriveResumptionMasterSecret | tls13gm/coverage_test.go | Resumption master secret 推导 |
+| TestDeriveExporterMasterSecret | tls13gm/coverage_test.go | Exporter master secret 推导 |
+| TestGenerateCurveSM2KeyPair | tls13gm/coverage_test.go | SM2 密钥对生成 |
+| TestCurveSM2ECDHE | tls13gm/coverage_test.go | Alice-Bob ECDH 共享密钥一致性 |
+| TestCurveSM2ECDHEOffCurvePoint | tls13gm/coverage_test.go | Off-curve 公钥拒绝（IsOnCurve 验证） |
+| TestSignAndVerifyCertificateVerify | tls13gm/coverage_test.go | CertificateVerify 签名/验签完整流程 |
+| TestSM2SignatureWithRFC8998Identifier | tls13gm/coverage_test.go | RFC 8998 SM2 identifier 交叉验证 |
+| TestCertificateVerifyCrossVerify | tls13gm/coverage_test.go | SignCertificateVerify 与 sm2.VerifyWithSM2 交叉验证 |
+| TestFullKeyScheduleWithFinished | tls13gm/coverage_test.go | Early→Master→Traffic→Finished 完整集成 |
+| TestECDHEKeyExchangeIntegration | tls13gm/coverage_test.go | ECDHE + key schedule + Finished 端到端集成 |
+| TestNewAEADInvalidKey | tls13gm/coverage_test.go | 非法 key 长度拒绝 |
+| TestBuildHKDFLabelPanics | tls13gm/coverage_test.go | label/context 过长 panic 路径 |
+| TestHKDFExpandLabelBoundaryLengths | tls13gm/coverage_test.go | 边界长度（1, 255）和 HKDF 上限（8161） |
+| TestDeriveTrafficKeysInvalidParams | tls13gm/coverage_test.go | 零/负长度参数拒绝 |
+| TestNewCCMAEADInvalidKey | tls13gm/coverage_test.go | CCM 非法 key 长度拒绝 |

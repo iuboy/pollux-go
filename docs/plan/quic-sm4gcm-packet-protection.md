@@ -1,6 +1,8 @@
 # QUIC SM4-GCM Packet Protection 设计文档
 
-> 状态：**草案** | 路线：Route C (QUIC + RFC 8998) | 优先级：P2
+> 状态：**草案** | 实施状态：**未开始** | 路线：Route C (QUIC + RFC 8998) | 优先级：P2
+>
+> **说明**: 本文档描述的设计尚未实施。tls13gm 包的基础件（key schedule、ECDHE、AEAD、签名）已完成，但 QUIC packet protection 层（`quic_keys.go`、`quic_protection.go`）尚未创建。待后续迭代推进。
 
 ## 1. 概述
 
@@ -185,9 +187,18 @@ type QUICPacketKeys struct {
 
 // DeriveQUICPacketKeys derives all QUIC packet protection keys from a traffic secret.
 func DeriveQUICPacketKeys(trafficSecret []byte) (*QUICPacketKeys, error) {
-    key, _ := HKDFExpandLabel(trafficSecret, LabelQUICKey, nil, 16)
-    iv, _  := HKDFExpandLabel(trafficSecret, LabelQUICIV, nil, 12)
-    hp, _  := HKDFExpandLabel(trafficSecret, LabelQUICHP, nil, 16)
+    key, err := HKDFExpandLabel(trafficSecret, LabelQUICKey, nil, 16)
+    if err != nil {
+        return nil, fmt.Errorf("tls13gm: derive QUIC AEAD key: %w", err)
+    }
+    iv, err := HKDFExpandLabel(trafficSecret, LabelQUICIV, nil, 12)
+    if err != nil {
+        return nil, fmt.Errorf("tls13gm: derive QUIC AEAD IV: %w", err)
+    }
+    hp, err := HKDFExpandLabel(trafficSecret, LabelQUICHP, nil, 16)
+    if err != nil {
+        return nil, fmt.Errorf("tls13gm: derive QUIC header protection key: %w", err)
+    }
     return &QUICPacketKeys{AEADKey: key, AEADIV: iv, HeaderKey: hp}, nil
 }
 ```

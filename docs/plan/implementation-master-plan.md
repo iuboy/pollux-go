@@ -720,53 +720,93 @@ go test ./tlcp ./smx509 -fuzz=Fuzz -fuzztime=60s
 
 ## 10. M6：RFC8998 experimental
 
-### 10.1 P6.1 新增 `tls13gm` 包
+**状态**: DONE
 
-文件建议：
+### 10.1 P6.1 `tls13gm` 包（已完成）
+
+实际文件列表：
 
 ```text
-tls13gm/doc.go
-tls13gm/constants.go
-tls13gm/hkdf.go
-tls13gm/aead.go
-tls13gm/signature.go
-tls13gm/tls13gm_test.go
+tls13gm/
+├── doc.go              # 包文档（experimental 标记）
+├── constants.go        # RFC 8998 密码套件和签名方案常量
+├── labels.go           # RFC 8446 §7.1 全部 key schedule label 常量（13 个）
+├── hkdf.go             # SM3 HKDF-Expand-Label 和 Derive-Secret
+├── keyschedule.go      # 完整 TLS 1.3 key schedule（Early/Handshake/Master/Traffic/Finished/Resumption/Exporter）
+├── keyexchange.go      # curveSM2 ECDHE 密钥交换
+├── aead.go             # SM4-GCM AEAD（TLS 1.3 packet protection）
+├── aead_ccm.go         # SM4-CCM 占位（未实现，返回 errNotImplemented）
+├── signature.go        # SM2-SM3 签名/验签（RFC 8998 §3.2.1 SM2 identifier）
+├── tls13gm_test.go     # 基础常量和 API 测试
+├── testvectors_test.go # Wire format 编码、HKDF 一致性、AEAD round-trip 测试
+└── coverage_test.go    # 全覆盖集成测试（35 个测试，ECDHE + key schedule + Finished 链路）
 ```
 
-内容：
+已实现 API：
 
-- `TLS_SM4_GCM_SM3 = 0x00C6`
-- `TLS_SM4_CCM_SM3 = 0x00C7`
-- SM3 HKDF wrapper。
-- SM4-GCM AEAD wrapper。
-- SM2 signature scheme registry。
+| 函数 | 说明 |
+|------|------|
+| `HKDFExpandLabel` | TLS 1.3 HKDF-Expand-Label with SM3 |
+| `DeriveSecret` | TLS 1.3 Derive-Secret with SM3 |
+| `DeriveEarlySecret` | Early Secret 推导 |
+| `DeriveHandshakeSecret` | Handshake Secret 推导 |
+| `DeriveMasterSecret` | Master Secret 推导 |
+| `DeriveTrafficKeys` | Traffic key/IV 推导 |
+| `DeriveFinishedKey` | Finished key 推导 |
+| `ComputeFinishedVerifyData` | Finished verify_data（HMAC-SM3，非 HKDF） |
+| `DeriveResumptionPSK` | Resumption PSK 推导 |
+| `DeriveResumptionMasterSecret` | Resumption master secret 推导 |
+| `DeriveExporterMasterSecret` | Exporter master secret 推导 |
+| `GenerateCurveSM2KeyPair` | SM2 密钥对生成 |
+| `CurveSM2ECDHE` | curveSM2 ECDH 共享密钥计算（含 IsOnCurve 验证） |
+| `NewAEAD` | SM4-GCM AEAD 实例化 |
+| `NewCCMAEAD` | SM4-CCM 占位（未实现） |
+| `SignCertificateVerify` | CertificateVerify SM2-SM3 签名 |
+| `VerifyCertificateVerify` | CertificateVerify SM2-SM3 验签 |
+| `SignSM2SM3` | 通用 SM2-SM3 签名 |
+| `VerifySM2SM3` | 通用 SM2-SM3 验签 |
+| `BuildCertificateVerifyInput` | CertificateVerify 输入构造 |
+
+常量：
+
+- `TLS_SM4_GCM_SM3 = 0x00C6` (RFC 8998 §3)
+- `TLS_SM4_CCM_SM3 = 0x00C7` (RFC 8998 §3)
+- `SM2SigSM3 = 0x0708` (RFC 8998 §5)
+- `CurveSM2 = 0x0029` (RFC 8998 §4)
+
+安全加固（review 驱动）：
+
+- ECDHE 含 IsOnCurve 公钥验证（防无效曲线攻击）
+- 私钥标量固定 32 字节填充（防时序侧信道）
+- HKDF context 长度 ≤ 255 校验（防静默截断）
+- HKDF-Expand 上限 255×hashLen 校验
+- SM2 identifier 使用 RFC 8998 §3.2.1 规定值
 
 限制：
 
-- package doc 必须写明 experimental。
+- package doc 标明 experimental。
 - 不提供完整 TLS handshake。
 - 不提供误导性 `BuildTLSConfig`。
 
-### 10.2 P6.2 设计文档
+### 10.2 P6.2 设计文档（已完成）
 
-新增：
+已创建：
 
 ```text
-docs/plan/rfc8998-tls13gm-design.md
+docs/plan/quic-sm4gcm-packet-protection.md
 ```
 
-必须说明：
+说明：
 
-- RFC8998 组成部分。
-- Go `crypto/tls` 当前限制。
-- quic-go 集成难点。
-- packet protection 需要 SM4-GCM。
+- RFC 8998 组成部分和密码套件参数。
+- QUIC SM4-GCM Packet Protection 设计（P2，未实施）。
+- Go `crypto/tls` 当前限制和 quic-go 集成难点。
 - 生产路径仍是标准 QUIC/TLS1.3 + quicgm。
 
-验收：
+验收（已通过）：
 
 ```text
-go test ./tls13gm
+go test ./tls13gm    # 35 tests, all pass
 ```
 
 ## 11. 质量门禁

@@ -4,9 +4,17 @@ import (
 	"bytes"
 	"crypto/rand"
 	"testing"
-
-	"github.com/iuboy/pollux-go/sm4gcm"
 )
+
+// randomSM4Key generates a random 16-byte SM4 key for tests.
+func randomSM4Key(t *testing.T) []byte {
+	t.Helper()
+	key := make([]byte, 16)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("generate SM4 key: %v", err)
+	}
+	return key
+}
 
 func TestConstants(t *testing.T) {
 	if TLS_SM4_GCM_SM3 != 0x00C6 {
@@ -68,7 +76,7 @@ func TestDeriveSecret(t *testing.T) {
 }
 
 func TestAEAD_RoundTrip(t *testing.T) {
-	key, _ := sm4gcm.GenerateKey(rand.Reader)
+	key := randomSM4Key(t)
 	fixedNonce := make([]byte, 12)
 
 	aead, err := NewAEAD(key, fixedNonce)
@@ -92,7 +100,7 @@ func TestAEAD_RoundTrip(t *testing.T) {
 }
 
 func TestAEAD_DifferentSeqNum(t *testing.T) {
-	key, _ := sm4gcm.GenerateKey(rand.Reader)
+	key := randomSM4Key(t)
 	fixedNonce := make([]byte, 12)
 
 	aead, err := NewAEAD(key, fixedNonce)
@@ -117,7 +125,7 @@ func TestAEAD_DifferentSeqNum(t *testing.T) {
 }
 
 func TestAEAD_WrongSeqNum(t *testing.T) {
-	key, _ := sm4gcm.GenerateKey(rand.Reader)
+	key := randomSM4Key(t)
 	fixedNonce := make([]byte, 12)
 
 	aead, err := NewAEAD(key, fixedNonce)
@@ -132,7 +140,7 @@ func TestAEAD_WrongSeqNum(t *testing.T) {
 }
 
 func TestAEAD_TamperedCiphertext(t *testing.T) {
-	key, _ := sm4gcm.GenerateKey(rand.Reader)
+	key := randomSM4Key(t)
 	fixedNonce := make([]byte, 12)
 
 	aead, err := NewAEAD(key, fixedNonce)

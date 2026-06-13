@@ -14,10 +14,10 @@ const (
 
 	// Traffic secret labels.
 	LabelClientEarlyTraffic = "c e traffic"
-	LabelClientHSTraffic   = "c hs traffic"
-	LabelServerHSTraffic   = "s hs traffic"
-	LabelClientAPTraffic   = "c ap traffic"
-	LabelServerAPTraffic   = "s ap traffic"
+	LabelClientHSTraffic    = "c hs traffic"
+	LabelServerHSTraffic    = "s hs traffic"
+	LabelClientAPTraffic    = "c ap traffic"
+	LabelServerAPTraffic    = "s ap traffic"
 
 	// Exporter label.
 	LabelExporterMaster = "exp master"
@@ -26,7 +26,7 @@ const (
 	LabelResumptionMaster = "res master"
 
 	// Binder key labels (RFC 8446 §7.1).
-	LabelExternalBinder  = "ext binder"
+	LabelExternalBinder   = "ext binder"
 	LabelResumptionBinder = "res binder"
 
 	// Early exporter master secret label (RFC 8446 §7.1).
@@ -38,4 +38,16 @@ const (
 	// Key and IV derivation labels.
 	LabelKey = "key"
 	LabelIV  = "iv"
+
+	// QUIC packet protection labels per RFC 9001 §5.1.
+	// These replace the TLS "key"/"iv" labels when a traffic secret is used to
+	// protect QUIC packets rather than TLS 1.3 records.
+	LabelQUICKey = "quic key"
+	LabelQUICIV  = "quic iv"
+	LabelQUICHP  = "quic hp"
+	LabelQUICKU  = "quic ku"
+
+	// QUIC Initial secret derivation labels per RFC 9001 §5.2.
+	LabelQUICClientIn = "client in"
+	LabelQUICServerIn = "server in"
 )

@@ -41,6 +41,11 @@ func (a *AEAD) Open(seqNum uint64, ciphertext, aad []byte) ([]byte, error) {
 	return a.aead.Open(nil, nonce, ciphertext, aad)
 }
 
+// Overhead returns the AEAD authentication-tag size in bytes (16 for SM4-GCM),
+// i.e. the number of bytes Seal appends to the plaintext. Callers that need the
+// ciphertext length before encrypting should compute len(plaintext)+Overhead().
+func (a *AEAD) Overhead() int { return a.aead.Overhead() }
+
 func (a *AEAD) computeNonce(seqNum uint64) []byte {
 	nonce := make([]byte, len(a.fixedNonce))
 	copy(nonce, a.fixedNonce)

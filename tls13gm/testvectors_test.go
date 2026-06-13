@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/iuboy/pollux-go/sm3"
-	"github.com/iuboy/pollux-go/sm4gcm"
 )
 
 // TestBuildHKDFLabelEncoding verifies that buildHKDFLabel produces the correct
@@ -303,10 +302,7 @@ func TestDeriveSecretDifferentLabels(t *testing.T) {
 // TestAEADRoundTrip verifies that AEAD encryption followed by decryption
 // returns the original plaintext.
 func TestAEADRoundTrip(t *testing.T) {
-	key, err := sm4gcm.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := randomSM4Key(t)
 	nonce := make([]byte, 12)
 	if _, err := rand.Read(nonce); err != nil {
 		t.Fatal(err)
@@ -339,10 +335,7 @@ func TestAEADRoundTrip(t *testing.T) {
 // produce different ciphertexts (nonce isolation) and that a ciphertext
 // sealed with one seqnum cannot be opened with a different seqnum.
 func TestAEADSequenceNumberIsolation(t *testing.T) {
-	key, err := sm4gcm.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := randomSM4Key(t)
 	nonce := make([]byte, 12)
 
 	aead, err := NewAEAD(key, nonce)
@@ -382,10 +375,7 @@ func TestAEADSequenceNumberIsolation(t *testing.T) {
 
 // TestAEADTamperDetection verifies that AEAD detects ciphertext tampering.
 func TestAEADTamperDetection(t *testing.T) {
-	key, err := sm4gcm.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := randomSM4Key(t)
 	nonce := make([]byte, 12)
 
 	aead, err := NewAEAD(key, nonce)
@@ -421,10 +411,7 @@ func TestAEADTamperDetection(t *testing.T) {
 
 // TestAEADInvalidNonce verifies that NewAEAD rejects non-12-byte nonces.
 func TestAEADInvalidNonce(t *testing.T) {
-	key, err := sm4gcm.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := randomSM4Key(t)
 
 	for _, nonceLen := range []int{0, 8, 11, 13, 16} {
 		_, err := NewAEAD(key, make([]byte, nonceLen))
@@ -437,10 +424,7 @@ func TestAEADInvalidNonce(t *testing.T) {
 // TestAEADMultipleRecords verifies that multiple records can be encrypted
 // and decrypted with incrementing sequence numbers.
 func TestAEADMultipleRecords(t *testing.T) {
-	key, err := sm4gcm.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := randomSM4Key(t)
 	nonce := make([]byte, 12)
 
 	aead, err := NewAEAD(key, nonce)

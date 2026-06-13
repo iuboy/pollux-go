@@ -735,7 +735,7 @@ tls13gm/
 ├── keyschedule.go      # 完整 TLS 1.3 key schedule（Early/Handshake/Master/Traffic/Finished/Resumption/Exporter）
 ├── keyexchange.go      # curveSM2 ECDHE 密钥交换
 ├── aead.go             # SM4-GCM AEAD（TLS 1.3 packet protection）
-├── aead_ccm.go         # SM4-CCM 占位（未实现，返回 errNotImplemented）
+├── aead_ccm.go         # SM4-CCM AEAD（TLS record protection，基于 gmsm/cipher CCM，RFC 8998 §A.2 向量验证）
 ├── signature.go        # SM2-SM3 签名/验签（RFC 8998 §3.2.1 SM2 identifier）
 ├── tls13gm_test.go     # 基础常量和 API 测试
 ├── testvectors_test.go # Wire format 编码、HKDF 一致性、AEAD round-trip 测试
@@ -760,7 +760,7 @@ tls13gm/
 | `GenerateCurveSM2KeyPair` | SM2 密钥对生成 |
 | `CurveSM2ECDHE` | curveSM2 ECDH 共享密钥计算（含 IsOnCurve 验证） |
 | `NewAEAD` | SM4-GCM AEAD 实例化 |
-| `NewCCMAEAD` | SM4-CCM 占位（未实现） |
+| `NewCCMAEAD` | SM4-CCM AEAD 实例化（基于 gmsm/cipher CCM，RFC 8998 §A.2 向量验证） |
 | `SignCertificateVerify` | CertificateVerify SM2-SM3 签名 |
 | `VerifyCertificateVerify` | CertificateVerify SM2-SM3 验签 |
 | `SignSM2SM3` | 通用 SM2-SM3 签名 |

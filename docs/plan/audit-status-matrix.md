@@ -267,3 +267,5 @@
 | TestHKDFExpandLabelBoundaryLengths | tls13gm/coverage_test.go | 边界长度（1, 255）和 HKDF 上限（8161） |
 | TestDeriveTrafficKeysInvalidParams | tls13gm/coverage_test.go | 零/负长度参数拒绝 |
 | TestNewCCMAEADInvalidKey | tls13gm/coverage_test.go | CCM 非法 key 长度拒绝 |
+| TestCCMAEAD_RFC8998_A2 | tls13gm/aead_ccm_test.go | RFC 8998 §A.2 SM4-CCM 官方向量 + 往返 |
+| TestCCMAEAD_RoundTrip | tls13gm/aead_ccm_test.go | 多 seqNum 往返 / 篡改拒绝 / AAD 绑定 |

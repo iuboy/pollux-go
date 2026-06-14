@@ -262,9 +262,10 @@ func TestDeriveSecretConsistency(t *testing.T) {
 		t.Fatal("DeriveSecret not deterministic with empty transcript")
 	}
 
-	// DeriveSecret with non-empty transcript
+	// DeriveSecret takes the transcript HASH, not the raw transcript.
 	transcript := []byte("hello tls 1.3 gm")
-	out3, err := DeriveSecret(secret, "e exp master", transcript)
+	transcriptHash := sm3.Sum(transcript)
+	out3, err := DeriveSecret(secret, "e exp master", transcriptHash[:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,10 +273,9 @@ func TestDeriveSecretConsistency(t *testing.T) {
 		t.Fatalf("output length: got %d, want 32", len(out3))
 	}
 
-	// Cross-verify: DeriveSecret(secret, label, transcript) should equal
-	// HKDFExpandLabel(secret, label, SM3(transcript), 32)
-	expectedHash := sm3.Sum(transcript)
-	out4, err := HKDFExpandLabel(secret, "e exp master", expectedHash[:], 32)
+	// Cross-verify: DeriveSecret(secret, label, hash) should equal
+	// HKDFExpandLabel(secret, label, hash, 32)
+	out4, err := HKDFExpandLabel(secret, "e exp master", transcriptHash[:], 32)
 	if err != nil {
 		t.Fatal(err)
 	}

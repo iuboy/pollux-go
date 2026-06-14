@@ -24,7 +24,10 @@ func DeriveEarlySecret(ikm []byte) []byte {
 // DeriveHandshakeSecret derives the handshake secret from the early secret
 // and the shared secret from ECDHE key exchange.
 func DeriveHandshakeSecret(earlySecret, sharedSecret []byte) ([]byte, error) {
-	derivedSecret, err := DeriveSecret(earlySecret, LabelDerived, nil)
+	// The "derived" label uses an empty transcript (RFC 8446 §7.1), i.e. the
+	// SM3 hash of the empty string.
+	emptyHash := sm3.Sum(nil)
+	derivedSecret, err := DeriveSecret(earlySecret, LabelDerived, emptyHash[:])
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: derive handshake derived secret: %w", err)
 	}
@@ -33,7 +36,8 @@ func DeriveHandshakeSecret(earlySecret, sharedSecret []byte) ([]byte, error) {
 
 // DeriveMasterSecret derives the master secret from the handshake secret.
 func DeriveMasterSecret(handshakeSecret []byte) ([]byte, error) {
-	derivedSecret, err := DeriveSecret(handshakeSecret, LabelDerived, nil)
+	emptyHash := sm3.Sum(nil)
+	derivedSecret, err := DeriveSecret(handshakeSecret, LabelDerived, emptyHash[:])
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: derive master derived secret: %w", err)
 	}

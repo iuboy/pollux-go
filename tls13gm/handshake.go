@@ -230,10 +230,10 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 	if err != nil {
 		return err
 	}
-	if c.clientHSTraffic, err = DeriveSecret(c.handshakeSecret, LabelClientHSTraffic, c.transcript.Bytes()); err != nil {
+	if c.clientHSTraffic, err = DeriveSecret(c.handshakeSecret, LabelClientHSTraffic, c.transcript.Sum()); err != nil {
 		return err
 	}
-	if c.serverHSTraffic, err = DeriveSecret(c.handshakeSecret, LabelServerHSTraffic, c.transcript.Bytes()); err != nil {
+	if c.serverHSTraffic, err = DeriveSecret(c.handshakeSecret, LabelServerHSTraffic, c.transcript.Sum()); err != nil {
 		return err
 	}
 	if c.secrets.ClientHandshakeKeys, err = DeriveQUICPacketKeys(c.clientHSTraffic); err != nil {
@@ -308,7 +308,7 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 	if !ok {
 		return fmt.Errorf("tls13gm: server cert public key is not ECDSA")
 	}
-	if !VerifyCertificateVerify(serverPubCert, ServerCertificateVerifyContext, c.transcript.Bytes(), cv.Signature) {
+	if !VerifyCertificateVerify(serverPubCert, ServerCertificateVerifyContext, c.transcript.Sum(), cv.Signature) {
 		return fmt.Errorf("tls13gm: CertificateVerify signature verification failed")
 	}
 	c.transcript.AddMessage(cvType, cvBody)
@@ -329,7 +329,7 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 	if err != nil {
 		return err
 	}
-	expected, err := ComputeFinishedVerifyData(serverFinishedKey, c.transcript.Bytes())
+	expected, err := ComputeFinishedVerifyData(serverFinishedKey, c.transcript.Sum())
 	if err != nil {
 		return err
 	}
@@ -343,11 +343,11 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 	if err != nil {
 		return err
 	}
-	cAP, err := DeriveSecret(c.masterSecret, LabelClientAPTraffic, c.transcript.Bytes())
+	cAP, err := DeriveSecret(c.masterSecret, LabelClientAPTraffic, c.transcript.Sum())
 	if err != nil {
 		return err
 	}
-	sAP, err := DeriveSecret(c.masterSecret, LabelServerAPTraffic, c.transcript.Bytes())
+	sAP, err := DeriveSecret(c.masterSecret, LabelServerAPTraffic, c.transcript.Sum())
 	if err != nil {
 		return err
 	}
@@ -371,7 +371,7 @@ func (c *ClientHandshaker) ClientFinished() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	verifyData, err := ComputeFinishedVerifyData(finishedKey, c.transcript.Bytes())
+	verifyData, err := ComputeFinishedVerifyData(finishedKey, c.transcript.Sum())
 	if err != nil {
 		return nil, err
 	}
@@ -542,10 +542,10 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	if s.clientHSTraffic, err = DeriveSecret(s.handshakeSecret, LabelClientHSTraffic, s.transcript.Bytes()); err != nil {
+	if s.clientHSTraffic, err = DeriveSecret(s.handshakeSecret, LabelClientHSTraffic, s.transcript.Sum()); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	if s.serverHSTraffic, err = DeriveSecret(s.handshakeSecret, LabelServerHSTraffic, s.transcript.Bytes()); err != nil {
+	if s.serverHSTraffic, err = DeriveSecret(s.handshakeSecret, LabelServerHSTraffic, s.transcript.Sum()); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
 	if s.secrets.ClientHandshakeKeys, err = DeriveQUICPacketKeys(s.clientHSTraffic); err != nil {
@@ -570,7 +570,7 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	s.transcript.AddMessage(HandshakeTypeCertificate, certificate[4:])
 
 	// --- CertificateVerify (sign over transcript = CH+SH+EE+Cert) ---
-	sig, err := SignCertificateVerify(s.serverKey, ServerCertificateVerifyContext, s.transcript.Bytes())
+	sig, err := SignCertificateVerify(s.serverKey, ServerCertificateVerifyContext, s.transcript.Sum())
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
@@ -584,7 +584,7 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	verifyData, err := ComputeFinishedVerifyData(serverFinishedKey, s.transcript.Bytes())
+	verifyData, err := ComputeFinishedVerifyData(serverFinishedKey, s.transcript.Sum())
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
@@ -598,11 +598,11 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	cAP, err := DeriveSecret(s.masterSecret, LabelClientAPTraffic, s.transcript.Bytes())
+	cAP, err := DeriveSecret(s.masterSecret, LabelClientAPTraffic, s.transcript.Sum())
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	sAP, err := DeriveSecret(s.masterSecret, LabelServerAPTraffic, s.transcript.Bytes())
+	sAP, err := DeriveSecret(s.masterSecret, LabelServerAPTraffic, s.transcript.Sum())
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
@@ -635,7 +635,7 @@ func (s *ServerHandshaker) HandleClientFinished(cf []byte) error {
 	if err != nil {
 		return err
 	}
-	expected, err := ComputeFinishedVerifyData(finishedKey, s.transcript.Bytes())
+	expected, err := ComputeFinishedVerifyData(finishedKey, s.transcript.Sum())
 	if err != nil {
 		return err
 	}

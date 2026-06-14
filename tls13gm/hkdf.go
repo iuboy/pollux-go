@@ -51,10 +51,13 @@ func buildHKDFLabel(label string, context []byte, length int) ([]byte, error) {
 }
 
 // DeriveSecret implements TLS 1.3 Derive-Secret with SM3.
-// When transcript is nil, sm3.Sum(nil) returns the hash of empty input, which is
-// the correct behavior for the "derived" label in the key schedule (RFC 8446 §7.1
-// uses an empty hash as context for derived secrets).
-func DeriveSecret(secret []byte, label string, transcript []byte) ([]byte, error) {
-	hash := sm3.Sum(transcript)
-	return HKDFExpandLabel(secret, label, hash[:], sm3.Size)
+//
+// transcriptHash MUST be the SM3 hash of the handshake transcript (i.e. a
+// Transcript.Sum() snapshot, 32 bytes), NOT the raw transcript bytes. RFC 8446
+// §7.1 defines Derive-Secret(secret, label, transcript) as
+// HKDF-Expand-Label(secret, label, Hash(transcript), Hash.length); the hash is
+// taken at the call site so it can be amortized via the incremental Transcript
+// digest instead of re-hashing the full buffer each time.
+func DeriveSecret(secret []byte, label string, transcriptHash []byte) ([]byte, error) {
+	return HKDFExpandLabel(secret, label, transcriptHash, sm3.Size)
 }

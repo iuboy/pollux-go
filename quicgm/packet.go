@@ -1,8 +1,10 @@
 package quicgm
 
 import (
+	"crypto/cipher"
 	"fmt"
 
+	"github.com/iuboy/pollux-go/sm4"
 	"github.com/iuboy/pollux-go/tls13gm"
 )
 
@@ -10,8 +12,9 @@ import (
 // the RFC 8998 SM4-GCM cipher suite. It consumes the cryptographic primitives
 // exported by tls13gm, mirroring how quic-go consumes crypto/tls.
 type QUICPacketProtector struct {
-	keys *tls13gm.QUICPacketKeys
-	aead *tls13gm.AEAD
+	keys    *tls13gm.QUICPacketKeys
+	aead    *tls13gm.AEAD
+	hpBlock cipher.Block // SM4-ECB for header protection; created once, reused per packet
 }
 
 // NewQUICPacketProtector derives packet protection keys from a QUIC traffic
@@ -26,7 +29,12 @@ func NewQUICPacketProtector(trafficSecret []byte) (*QUICPacketProtector, error) 
 		keys.Zero()
 		return nil, err
 	}
-	return &QUICPacketProtector{keys: keys, aead: aead}, nil
+	hpBlock, err := sm4.NewCipher(keys.HeaderKey)
+	if err != nil {
+		keys.Zero()
+		return nil, fmt.Errorf("quicgm: header protection cipher: %w", err)
+	}
+	return &QUICPacketProtector{keys: keys, aead: aead, hpBlock: hpBlock}, nil
 }
 
 // NewQUICPacketProtectorFromKeys constructs a protector directly from keys
@@ -41,7 +49,11 @@ func NewQUICPacketProtectorFromKeys(keys *tls13gm.QUICPacketKeys) (*QUICPacketPr
 	if err != nil {
 		return nil, err
 	}
-	return &QUICPacketProtector{keys: keys, aead: aead}, nil
+	hpBlock, err := sm4.NewCipher(keys.HeaderKey)
+	if err != nil {
+		return nil, fmt.Errorf("quicgm: header protection cipher: %w", err)
+	}
+	return &QUICPacketProtector{keys: keys, aead: aead, hpBlock: hpBlock}, nil
 }
 
 // EncryptPayload encrypts a QUIC packet payload with SM4-GCM. The full packet
@@ -123,7 +135,11 @@ func (p *QUICPacketProtector) headerMask(buffer []byte, pnOffset int) ([]byte, e
 		return nil, fmt.Errorf("quicgm: packet too short for header protection sample (need %d bytes at offset %d, have %d)",
 			tls13gm.QUICHeaderSampleLen, sampleStart, len(buffer))
 	}
-	return tls13gm.HeaderProtectionMask(p.keys.HeaderKey, buffer[sampleStart:sampleEnd])
+	// Reuse the pre-scheduled SM4 block cipher instead of re-creating it per
+	// packet (sm4.NewCipher + key schedule) via tls13gm.HeaderProtectionMask.
+	mask := make([]byte, tls13gm.QUICHeaderSampleLen)
+	p.hpBlock.Encrypt(mask, buffer[sampleStart:sampleEnd])
+	return mask, nil
 }
 
 func validateHeaderArgs(buffer []byte, pnOffset, pnLen int) error {

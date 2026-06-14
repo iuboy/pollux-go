@@ -36,18 +36,17 @@ const (
 //
 //	0x20 repeated 64 times || context string || 0x00 || SM3(transcript)
 //
-// The transcript parameter is the raw handshake transcript bytes; this function
-// hashes it with SM3 before concatenation.
-func BuildCertificateVerifyInput(context string, transcript []byte) []byte {
-	transcriptHash := sm3.Sum(transcript)
-
+// transcriptHash MUST be the SM3 hash of the handshake transcript (a
+// Transcript.Sum() snapshot), so the hash is taken once at the call site and
+// reused by both signing and verification.
+func BuildCertificateVerifyInput(context string, transcriptHash []byte) []byte {
 	input := make([]byte, 0, 64+len(context)+1+sm3.Size)
 	for range 64 {
 		input = append(input, 0x20)
 	}
 	input = append(input, context...)
 	input = append(input, 0x00)
-	input = append(input, transcriptHash[:]...)
+	input = append(input, transcriptHash...)
 	return input
 }
 

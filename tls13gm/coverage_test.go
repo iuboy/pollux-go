@@ -384,8 +384,10 @@ func TestSignatureConstants(t *testing.T) {
 func TestBuildCertificateVerifyInput(t *testing.T) {
 	context := ServerCertificateVerifyContext
 	transcript := []byte("handshake messages")
+	transcriptHash := sm3.Sum(transcript)
 
-	input := BuildCertificateVerifyInput(context, transcript)
+	// BuildCertificateVerifyInput takes the transcript HASH, not raw bytes.
+	input := BuildCertificateVerifyInput(context, transcriptHash[:])
 
 	// Must start with 64 spaces (0x20)
 	if len(input) != 64+len(context)+1+sm3.Size {
@@ -410,7 +412,6 @@ func TestBuildCertificateVerifyInput(t *testing.T) {
 	}
 
 	// SM3(transcript) follows
-	transcriptHash := sm3.Sum(transcript)
 	hashStart := contextEnd + 1
 	if !bytes.Equal(input[hashStart:], transcriptHash[:]) {
 		t.Fatalf("transcript hash mismatch")

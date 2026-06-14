@@ -97,7 +97,20 @@ type ClientHandshaker struct {
 
 	// phase enforces server-flight ordering across the step-wise Handle* methods.
 	phase clientHandshakePhase
+
+	// localTransportParams is the raw QUIC transport parameters advertised in
+	// the ClientHello (RFC 9001 §8). May be nil for a non-QUIC (TCP record layer)
+	// consumer; a QUIC transport always supplies it.
+	localTransportParams []byte
+	// peerTransportParams is the raw QUIC transport parameters received in the
+	// server's EncryptedExtensions. Available after HandleEncryptedExtensions.
+	peerTransportParams []byte
 }
+
+// PeerTransportParams returns the raw QUIC transport parameters received from
+// the peer (server EncryptedExtensions / client ClientHello). Empty until the
+// relevant message has been processed. The QUIC transport layer unmarshals it.
+func (c *ClientHandshaker) PeerTransportParams() []byte { return c.peerTransportParams }
 
 // ClientConfig configures a TLS 1.3 GM client handshaker.
 //
@@ -131,6 +144,12 @@ type ClientConfig struct {
 	// overrides nothing — the default verification (or InsecureSkipVerify) still
 	// runs first unless Roots is nil. Use it for certificate pinning.
 	VerifyPeerCertificate func(rawCerts [][]byte) error
+
+	// TransportParameters is the raw marshaled QUIC transport parameters to
+	// advertise in the ClientHello (RFC 9001 §8). Optional for a non-QUIC
+	// consumer; a QUIC transport layer supplies it so the peer can configure the
+	// connection. tls13gm carries the bytes verbatim.
+	TransportParameters []byte
 }
 
 // NewClientHandshaker prepares a client handshaker from an explicit, fail-closed
@@ -168,6 +187,7 @@ func NewClientHandshakerWithConfig(cfg ClientConfig) (*ClientHandshaker, error) 
 		serverName:         cfg.ServerName,
 		verifyPeerCert:     cfg.VerifyPeerCertificate,
 		secrets:            HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
+		localTransportParams: cfg.TransportParameters,
 	}, nil
 }
 
@@ -207,6 +227,9 @@ func (c *ClientHandshaker) ClientHello() ([]byte, error) {
 			{Type: ExtensionTypeSupportedGroups, Data: []byte{0x00, 0x02, byte(CurveSM2 >> 8), byte(CurveSM2 & 0xff)}},
 			{Type: ExtensionTypeKeyShare, Data: marshalClientKeyShare(CurveSM2, sm2.MarshalUncompressed(pub))},
 		},
+	}
+	if c.localTransportParams != nil {
+		ch.Extensions = append(ch.Extensions, Extension{Type: ExtensionTypeQUICTransportParams, Data: c.localTransportParams})
 	}
 	full, err := MarshalHandshakeMessage(ch)
 	if err != nil {
@@ -304,9 +327,21 @@ func (c *ClientHandshaker) HandleEncryptedExtensions(encryptedExt []byte) error 
 	if c.phase != clientAfterServerHello {
 		return fmt.Errorf("tls13gm: HandleEncryptedExtensions called out of order (phase %d)", c.phase)
 	}
-	if err := c.addRawMessage(encryptedExt, HandshakeTypeEncryptedExtensions); err != nil {
-		return err
+	eeType, eeBody, _, err := ReadHandshakeMessage(encryptedExt)
+	if err != nil {
+		return fmt.Errorf("tls13gm: read EncryptedExtensions: %w", err)
 	}
+	if eeType != HandshakeTypeEncryptedExtensions {
+		return fmt.Errorf("tls13gm: expected EncryptedExtensions, got type %d", eeType)
+	}
+	var ee EncryptedExtensionsMsg
+	if err := ee.unmarshalBody(eeBody); err != nil {
+		return fmt.Errorf("tls13gm: EncryptedExtensions: %w", err)
+	}
+	if tp := findExtension(ee.Extensions, ExtensionTypeQUICTransportParams); tp != nil {
+		c.peerTransportParams = tp
+	}
+	c.transcript.AddMessage(eeType, eeBody)
 	c.phase = clientAfterEncryptedExtensions
 	return nil
 }
@@ -473,18 +508,6 @@ func (c *ClientHandshaker) ClientFinished() ([]byte, error) {
 	return full, nil
 }
 
-func (c *ClientHandshaker) addRawMessage(msg []byte, wantType uint8) error {
-	mt, body, _, err := ReadHandshakeMessage(msg)
-	if err != nil {
-		return fmt.Errorf("tls13gm: read type %d message: %w", wantType, err)
-	}
-	if mt != wantType {
-		return fmt.Errorf("tls13gm: expected message type %d, got %d", wantType, mt)
-	}
-	c.transcript.AddMessage(mt, body)
-	return nil
-}
-
 // ServerHandshaker drives the TLS 1.3 GM handshake from the server side.
 type ServerHandshaker struct {
 	dcid       []byte
@@ -500,22 +523,47 @@ type ServerHandshaker struct {
 	clientHSTraffic []byte
 	serverHSTraffic []byte
 	secrets         HandshakeSecrets
+
+	// localTransportParams is advertised in EncryptedExtensions (RFC 9001 §8).
+	localTransportParams []byte
+	// peerTransportParams is taken from the client's ClientHello.
+	peerTransportParams []byte
 }
 
-// NewServerHandshaker prepares a server handshaker. serverCert/serverKey are the
-// server's SM2 certificate and its private key; dcid seeds the Initial keys.
-func NewServerHandshaker(dcid []byte, serverCert *x509.Certificate, serverKey *sm2.PrivateKey) (*ServerHandshaker, error) {
-	if len(dcid) == 0 {
+// PeerTransportParams returns the raw QUIC transport parameters received from
+// the client's ClientHello. Empty until HandleClientHello has run.
+func (s *ServerHandshaker) PeerTransportParams() []byte { return s.peerTransportParams }
+
+// ServerConfig configures a TLS 1.3 GM server handshaker.
+type ServerConfig struct {
+	// DCID seeds the QUIC Initial packet-protection keys. Required.
+	DCID []byte
+	// Certificate is the server's SM2 leaf certificate. Required.
+	Certificate *x509.Certificate
+	// PrivateKey is the certificate's SM2 private key, used to sign
+	// CertificateVerify. Required.
+	PrivateKey *sm2.PrivateKey
+	// TransportParameters is the raw marshaled QUIC transport parameters to
+	// advertise in EncryptedExtensions (RFC 9001 §8). Optional for a non-QUIC
+	// consumer; a QUIC transport layer supplies it so the peer can configure the
+	// connection. tls13gm carries the bytes verbatim.
+	TransportParameters []byte
+}
+
+// NewServerHandshakerWithConfig prepares a server handshaker from an explicit
+// ServerConfig. See ServerConfig for field semantics.
+func NewServerHandshakerWithConfig(cfg ServerConfig) (*ServerHandshaker, error) {
+	if len(cfg.DCID) == 0 {
 		return nil, fmt.Errorf("tls13gm: dcid is required to seed Initial keys")
 	}
-	if serverCert == nil || serverKey == nil {
+	if cfg.Certificate == nil || cfg.PrivateKey == nil {
 		return nil, fmt.Errorf("tls13gm: server certificate and key are required")
 	}
 	priv, err := GenerateCurveSM2KeyPair(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: generate ECDHE keypair: %w", err)
 	}
-	clientIn, serverIn, err := DeriveQUICInitialSecrets(dcid)
+	clientIn, serverIn, err := DeriveQUICInitialSecrets(cfg.DCID)
 	if err != nil {
 		return nil, err
 	}
@@ -528,13 +576,26 @@ func NewServerHandshaker(dcid []byte, serverCert *x509.Certificate, serverKey *s
 		return nil, err
 	}
 	return &ServerHandshaker{
-		dcid:       dcid,
-		ephemeral:  priv,
-		serverCert: serverCert,
-		serverKey:  serverKey,
-		transcript: NewTranscript(),
-		secrets:    HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
+		dcid:                 cfg.DCID,
+		ephemeral:            priv,
+		serverCert:           cfg.Certificate,
+		serverKey:            cfg.PrivateKey,
+		transcript:           NewTranscript(),
+		secrets:              HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
+		localTransportParams: cfg.TransportParameters,
 	}, nil
+}
+
+// NewServerHandshaker prepares a server handshaker. dcid seeds the Initial keys.
+//
+// Deprecated: this constructor cannot carry QUIC transport parameters. QUIC
+// callers should use NewServerHandshakerWithConfig.
+func NewServerHandshaker(dcid []byte, serverCert *x509.Certificate, serverKey *sm2.PrivateKey) (*ServerHandshaker, error) {
+	return NewServerHandshakerWithConfig(ServerConfig{
+		DCID:        dcid,
+		Certificate: serverCert,
+		PrivateKey:  serverKey,
+	})
 }
 
 // Secrets returns the packet-protection keys derived so far.
@@ -587,6 +648,9 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 	}
 	s.transcript.AddMessage(mt, body)
 	s.clientPub = clientPub
+	if tp := findExtension(chMsg.Extensions, ExtensionTypeQUICTransportParams); tp != nil {
+		s.peerTransportParams = tp
+	}
 	return nil
 }
 
@@ -645,8 +709,12 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 		return nil, nil, nil, nil, nil, err
 	}
 
-	// --- EncryptedExtensions (empty, minimal) ---
-	if encExt, err = MarshalHandshakeMessage(&EncryptedExtensionsMsg{}); err != nil {
+	// --- EncryptedExtensions (carries QUIC transport params if configured) ---
+	ee := &EncryptedExtensionsMsg{}
+	if s.localTransportParams != nil {
+		ee.Extensions = append(ee.Extensions, Extension{Type: ExtensionTypeQUICTransportParams, Data: s.localTransportParams})
+	}
+	if encExt, err = MarshalHandshakeMessage(ee); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
 	s.transcript.AddMessage(HandshakeTypeEncryptedExtensions, encExt[4:])

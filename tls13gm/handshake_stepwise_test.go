@@ -176,3 +176,55 @@ func TestHandshake_StepwisePhaseGuard(t *testing.T) {
 		t.Fatalf("server rejected client Finished from step-wise path: %v", err)
 	}
 }
+
+// TestHandshake_TransportParametersExchange confirms QUIC transport parameters
+// (RFC 9001 §8) are carried in ClientHello (client) and EncryptedExtensions
+// (server) and recovered by each side. This is the contract GMCryptoSetup relies
+// on to surface transport parameters to quic-go's connection layer.
+func TestHandshake_TransportParametersExchange(t *testing.T) {
+	dcid := []byte{0x09, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02}
+	cert, serverKey := generateTestSM2Cert(t)
+	clientTP := []byte("client-transport-params")
+	serverTP := []byte("server-transport-params")
+
+	server, err := NewServerHandshakerWithConfig(ServerConfig{
+		DCID:               dcid,
+		Certificate:        cert,
+		PrivateKey:         serverKey,
+		TransportParameters: serverTP,
+	})
+	if err != nil {
+		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
+	}
+	client, err := NewClientHandshakerWithConfig(ClientConfig{
+		DCID:               dcid,
+		InsecureSkipVerify: true,
+		TransportParameters: clientTP,
+	})
+	if err != nil {
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
+	}
+
+	ch, err := client.ClientHello()
+	if err != nil {
+		t.Fatalf("ClientHello: %v", err)
+	}
+	if err := server.HandleClientHello(ch); err != nil {
+		t.Fatalf("HandleClientHello: %v", err)
+	}
+	if got := server.PeerTransportParams(); !bytes.Equal(got, clientTP) {
+		t.Fatalf("server peer TP = %q, want %q", got, clientTP)
+	}
+
+	sh, ee, certMsg, cv, fin, err := server.ServerFlight()
+	if err != nil {
+		t.Fatalf("ServerFlight: %v", err)
+	}
+	if err := client.HandleServerFlight(sh, ee, certMsg, cv, fin); err != nil {
+		t.Fatalf("HandleServerFlight: %v", err)
+	}
+	if got := client.PeerTransportParams(); !bytes.Equal(got, serverTP) {
+		t.Fatalf("client peer TP = %q, want %q", got, serverTP)
+	}
+}
+

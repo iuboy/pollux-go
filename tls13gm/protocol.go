@@ -41,6 +41,11 @@ const (
 	ExtensionTypePreSharedKey        uint16 = 41
 	ExtensionTypeSupportedVersions   uint16 = 43
 	ExtensionTypePSKKeyExchangeModes uint16 = 45
+	// ExtensionTypeQUICTransportParams (RFC 9001 §8) carries the QUIC transport
+	// parameters in ClientHello (client) / EncryptedExtensions (server). The value
+	// is the raw marshaled wire.TransportParameters; tls13gm carries the bytes
+	// verbatim and the QUIC transport layer unmarshals them.
+	ExtensionTypeQUICTransportParams uint16 = 57 // 0x0039
 )
 
 // Alert levels and descriptions (RFC 8446 §6).

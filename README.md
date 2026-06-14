@@ -35,6 +35,7 @@ tls13gm quicgm                # RFC 8998 / RFC 9001 GM 栈（Route C，实验）
 tls tls13 quic                # 标准 TLS/QUIC（Route A）
 http                          # TLS / TLCP / TLS1.3 HTTP 辅助
 internal/memsecure            # 密钥材料安全清零
+internal/panicsafe            # panic 安全辅助
 ```
 
 ## 快速上手

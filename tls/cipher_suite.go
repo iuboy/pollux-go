@@ -21,14 +21,23 @@ const (
 	CryptoModeHybrid        CryptoMode = "hybrid"
 )
 
-// National cipher suite IDs (GB/T 38636-2020 表2).
+// National cipher suite IDs (GB/T 38636-2020 表2; 0x00C6/0x00C7 from RFC 8998 §3).
 const (
-	TLS_SM2_GCM_SM3            = 0x00C6
+	// TLS_SM4_GCM_SM3 is the RFC 8998 §3 TLS 1.3 suite: SM4-GCM AEAD + SM3 hash.
+	// The bulk cipher is SM4 (not SM2); SM2 provides key exchange/signature separately.
+	TLS_SM4_GCM_SM3            = 0x00C6
 	TLS_SM4_CCM_SM3            = 0x00C7
 	ECDHE_SM2_WITH_SM4_GCM_SM3 = 0xE051
 	ECDHE_SM2_WITH_SM4_CBC_SM3 = 0xE011
 	ECC_SM2_WITH_SM4_GCM_SM3   = 0xE053
 	ECC_SM2_WITH_SM4_CBC_SM3   = 0xE013
+
+	// TLS_SM2_GCM_SM3 was a misnomer for 0x00C6 — RFC 8998 §3 names it
+	// TLS_SM4_GCM_SM3 (SM4 is the GCM bulk cipher). Kept as an alias for one release
+	// to avoid breaking external callers.
+	//
+	// Deprecated: use TLS_SM4_GCM_SM3.
+	TLS_SM2_GCM_SM3 = TLS_SM4_GCM_SM3
 )
 
 // GetCipherSuites returns cipher suites for the given mode.
@@ -71,7 +80,7 @@ func getNational() []uint16 {
 // IsNationalCipherSuite reports whether a cipher suite ID is a national suite.
 func IsNationalCipherSuite(id uint16) bool {
 	switch id {
-	case TLS_SM2_GCM_SM3, TLS_SM4_CCM_SM3,
+	case TLS_SM4_GCM_SM3, TLS_SM4_CCM_SM3,
 		ECC_SM2_WITH_SM4_GCM_SM3, ECC_SM2_WITH_SM4_CBC_SM3,
 		ECDHE_SM2_WITH_SM4_GCM_SM3, ECDHE_SM2_WITH_SM4_CBC_SM3:
 		return true
@@ -82,8 +91,8 @@ func IsNationalCipherSuite(id uint16) bool {
 // CipherSuiteName returns the name of a cipher suite.
 func CipherSuiteName(id uint16) string {
 	switch id {
-	case TLS_SM2_GCM_SM3:
-		return "TLS_SM2_GCM_SM3"
+	case TLS_SM4_GCM_SM3:
+		return "TLS_SM4_GCM_SM3"
 	case TLS_SM4_CCM_SM3:
 		return "TLS_SM4_CCM_SM3"
 	case ECC_SM2_WITH_SM4_GCM_SM3:

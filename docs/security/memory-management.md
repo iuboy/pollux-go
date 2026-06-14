@@ -2,161 +2,148 @@
 
 ## 1. 概述
 
-pollux-go 是一个国密算法库，处理大量敏感密钥材料。本文档说明密钥生命周期管理和内存安全机制。
+pollux-go 处理大量敏感密钥材料（SM2/SM4 会话密钥、握手预主密钥、QUIC 包保护密钥）。
+本文档说明密钥生命周期管理、`internal/memsecure` 安全清零机制，以及各模块的自动清零位置。
+
+封装层的密码运算委托 `emmansun/gmsm`；pollux-go 自身在内存安全上的职责集中在两点：
+**密钥使用后及时清零**与**避免不必要的密钥复制**。
+
+> 模块路径统一为 `github.com/iuboy/pollux-go/...`（见仓库 `go.mod`）。
 
 ## 2. 密钥生命周期
 
 ### 2.1 密钥生成
 
-密钥生成使用 `crypto/rand` 作为随机源，确保密码学安全：
+密钥生成使用 `crypto/rand` 作为随机源：
 
 ```go
 import (
     "crypto/rand"
-    "github.com/ycq/pollux/sm4"
-    "github.com/ycq/pollux/quicgm"
+
+    "github.com/iuboy/pollux-go/sm4gcm"
 )
 
-// SM4 密钥生成
+// SM4 密钥（16 字节）
 key, err := sm4gcm.GenerateKey(rand.Reader)
 
-// QUICGM 会话密钥生成
-keys, err := quicgm.GenerateSessionKeys(rand.Reader)
+// SM4-GCM 随机 nonce（12 字节）
+nonce, err := sm4gcm.GenerateNonce(rand.Reader)
 ```
+
+> Route C 的 QUIC 包保护密钥不由调用方直接生成——它们由 `tls13gm` 握手引擎从
+> traffic secret 派生（`tls13gm.DeriveQUICPacketKeys`），调用方拿到的是
+> `*tls13gm.QUICPacketKeys`，用完应调用其 `Zero()`。
 
 ### 2.2 密钥使用
 
-密钥在使用过程中保持内存中的明文形式。重要原则：
+密钥在使用期间以明文驻留内存。三条原则：
 
-1. **最小化密钥暴露范围**：密钥只在必要的函数中可见
-2. **限制密钥生命周期**：密钥在使用完毕后应立即清零
-3. **避免密钥复制**：优先使用引用而非复制密钥字节
+1. **最小化暴露范围**：密钥只在必要函数内可见，不向日志/错误信息泄露。
+2. **限制生命周期**：使用完毕立即清零，优先用 `defer`。
+3. **避免复制**：传切片引用，不要 `append`/`copy` 出副本。
 
 ### 2.3 密钥清零
 
-pollux-go 提供了 `internal/memsecure` 包用于安全内存操作：
+`internal/memsecure` 提供防编译器优化的安全清零：
 
 ```go
-import "github.com/ycq/pollux/internal/memsecure"
+import "github.com/iuboy/pollux-go/internal/memsecure"
 
-// 清零字节切片
-memsecure.ZeroBytes(key)
-
-// 清零会话密钥
-quicgm.ZeroKeys(&keys)
-
-// 清零 SM4 密钥和 nonce
-sm4gcm.ZeroKey(key)
-sm4gcm.ZeroNonce(nonce)
+memsecure.ZeroBytes(key)        // 清零字节切片
+memsecure.ZeroUint32(words)     // 清零 []uint32
+memsecure.ZeroUint64(words)     // 清零 []uint64
 ```
 
-**重要**：`ZeroBytes` 使用了防止编译器优化的技术，确保清零操作不会被优化掉。
+`ZeroBytes` 通过 `unsafe` 指针写入 + `runtime.KeepAlive` 确保清零不被编译器优化删除
+（见 §5.1）。模块导出的便捷封装：`sm4gcm.ZeroKey`、`sm4gcm.ZeroNonce` 内部即调用
+`memsecure.ZeroBytes`。
 
 ## 3. 自动清零位置
 
-以下位置已实现自动密钥清零：
+以下位置已在库内实现自动清零，调用方无需额外处理：
 
-### 3.1 TLCP 握手
+### 3.1 SM4-GCM 辅助（`sm4gcm`）
 
-- **preMasterSecret**：在派生 masterSecret 后立即清零（`handshake.go:211, 434`）
-- **keyMaterial**：在创建 cipher 后立即清零（`handshake.go:665-669`）
+- **密钥 / Nonce**：`sm4gcm.ZeroKey(key)`、`sm4gcm.ZeroNonce(nonce)` —— 内部 `memsecure.ZeroBytes`。
+- `SealRandomNonce` 生成的密文结构在使用后应连同密钥一并清零。
 
 ```go
-// 派生主密钥
-hs.masterSecret = masterSecret(preMasterSecret, hs.clientRandom[:], hs.serverRandom[:])
+key, _ := sm4gcm.GenerateKey(rand.Reader)
+defer sm4gcm.ZeroKey(key)
+nonce, _ := sm4gcm.GenerateNonce(rand.Reader)
+defer sm4gcm.ZeroNonce(nonce)
 
-// 清零 preMasterSecret（敏感密钥材料）
-memsecure.ZeroBytes(preMasterSecret)
+ct, _ := sm4gcm.Seal(key, nonce, plaintext, aad)
 ```
 
-### 3.2 QUICGM 加密
+### 3.2 SM2 信封与压缩（`sm2`）
 
-- **SessionKeys**：提供 `ZeroKeys` 函数用于显式清零
-- **Envelope**：密文密钥材料在验证失败时不会被解密
+- **`sm2/envelope.go`**：SM4 内容加密密钥（`sm4Key`）在加解密结束后 `defer memsecure.ZeroBytes(sm4Key)`。
+- **`sm2/compress.go`**：压缩中间态字节 `s.bytes` 在归还池前 `memsecure.ZeroBytes`。
+- **`sm2/key_exchange.go`**：密钥交换返回的共享密钥切片由调用方负责清零（函数文档已标注）。
 
-### 3.3 SM4-GCM
+### 3.3 SM2 感知 X.509（`smx509`）
 
-- **密钥和 Nonce**：提供 `ZeroKey` 和 `ZeroNonce` 函数
+- **`smx509/cert.go`**：PKCS#8 / 证书密钥派生出的 `derivedKey` 用完即 `defer memsecure.ZeroBytes(derivedKey)`。
+
+### 3.4 Route C 握手与 QUIC 包保护（`tls13gm` / `quicgm`）
+
+- **`tls13gm.QUICPacketKeys.Zero()`**：清零 `AEADKey` / `AEADIV` / `HeaderKey` 三项。
+- **`tls13gm.HandshakeSecrets.Zero()`**：清零三级（Initial / Handshake / Application）全部 QUIC 密钥。
+- **`quicgm.QUICPacketProtector.Zero()`**：清零其持有的 `QUICPacketKeys`。
+
+```go
+keys, err := tls13gm.DeriveQUICPacketKeys(trafficSecret)
+if err != nil { return err }
+defer keys.Zero()
+```
+
+> 注意：`quicgm` 已从早期的 Route B「应用层 envelope」重构为 Route C transport-level
+> RFC 8998 包保护。Route B 的 `Envelope`/`GenerateSessionKeys`/`ZeroKeys` API 已不存在；
+> 当前密钥来自 `tls13gm.DeriveQUICPacketKeys`，清零通过 `QUICPacketKeys.Zero()` /
+> `HandshakeSecrets.Zero()` / `QUICPacketProtector.Zero()`。
 
 ## 4. 开发者指南
 
-### 4.1 密钥管理最佳实践
-
-#### ✅ 推荐
+### 4.1 临时密钥材料的 defer 清零
 
 ```go
-// 使用 defer 确保密钥清零
-func processKey() {
-    key, _ := sm4gcm.GenerateKey(rand.Reader)
+func processKey() error {
+    key, err := sm4gcm.GenerateKey(rand.Reader)
+    if err != nil { return err }
     defer sm4gcm.ZeroKey(key)
 
-    // 使用密钥...
-    plaintext, _ := sm4gcm.Open(key, nonce, ciphertext, aad)
-    _ = plaintext
-}
-```
-
-#### ❌ 避免
-
-```go
-// 密钥在函数返回后仍然存在于内存中
-func processKey() {
-    key, _ := sm4gcm.GenerateKey(rand.Reader)
-    // 使用密钥...
-    // 忘记清零！
-}
-```
-
-### 4.2 会话密钥管理
-
-对于长期运行的会话（如 QUIC 连接），应考虑：
-
-1. **定期轮换**：定期生成新的会话密钥
-2. **安全存储**：使用时才解密，使用后立即清零
-3. **错误处理**：发生错误时确保密钥被清零
-
-```go
-func handleSession() error {
-    keys, err := quicgm.GenerateSessionKeys(rand.Reader)
-    if err != nil {
-        return err
-    }
-    defer quicgm.ZeroKeys(&keys)
-
-    // 使用会话密钥...
+    pt, err := sm4gcm.Open(key, nonce, ct, aad)
+    _ = pt
     return nil
 }
 ```
 
-### 4.3 临时密钥材料
+### 4.2 长期会话密钥
 
-对于临时密钥材料（如 nonce、IV）：
+对长期运行的会话（如 QUIC 连接），应：
 
-```go
-// nonce 应在加密/解密完成后清零
-nonce, _ := sm4gcm.GenerateNonce(rand.Reader)
-defer sm4gcm.ZeroNonce(nonce)
+1. **定期轮换**：长连接依赖 QUIC key update（`tls13gm.QUICKeyUpdate`）规避 nonce 复用。
+2. **错误路径清零**：握手失败时确保 `HandshakeSecrets.Zero()` 被调用（fail-closed）。
+3. **连接关闭清零**：`QUICPacketProtector.Zero()` 在连接 Close 时执行。
 
-ciphertext, _ := sm4gcm.Seal(key, nonce, plaintext, aad)
-```
+### 4.3 日志与调试
 
-### 4.4 日志和调试
-
-**切勿在日志中输出敏感密钥材料**：
+切勿输出敏感密钥材料：
 
 ```go
 // ❌ 错误
-log.Printf("Key: %x", key)
+log.Printf("key=%x", key)
 
 // ✅ 正确
-log.Printf("Key length: %d bytes", len(key))
+log.Printf("key length=%d bytes", len(key))
 ```
 
 ## 5. 内存安全机制
 
 ### 5.1 防止编译器优化
 
-`memsecure.ZeroBytes` 使用以下技术防止编译器优化：
+`memsecure.ZeroBytes` 通过 `unsafe` 指针写入 + `runtime.KeepAlive` 确保清零不被优化掉：
 
 ```go
 for i := range data {
@@ -165,62 +152,46 @@ for i := range data {
 runtime.KeepAlive(data)
 ```
 
-- **unsafe 指针写入**：防止编译器优化掉写入操作
-- **runtime.KeepAlive**：确保数据在清零后仍被视为存活
+- **unsafe 指针写入**：绕过「赋值后不再读取即死存储」的优化判定。
+- **runtime.KeepAlive**：保证清零后数据仍被视为存活，避免提前回收绕过写入。
 
 ### 5.2 常量时间比较
 
-密钥比较使用常量时间算法，防止时序攻击：
-
-```go
-import "crypto/subtle"
-
-// MAC 验证使用常量时间比较
-func VerifyMACSM3(key, data, mac []byte) bool {
-    expected := MACSM3(key, data)
-    return subtle.ConstantTimeCompare(expected, mac) == 1
-}
-```
+MAC / Finished 校验使用常量时间比较（`crypto/subtle.ConstantTimeCompare` 或等价实现），
+防止时序侧信道。tls13gm 的 Finished 验证、sm4 CBC 的 MAC 比较均走此路径。
 
 ## 6. 已知限制
 
 ### 6.1 Go 垃圾回收
 
-Go 的垃圾回收器可能会移动对象，但不会修改对象内容。密钥清零后，即使对象被移动，清零的内容仍保持为零。
+Go GC 可能移动对象，但不修改对象内容——清零后的内容保持为零。
 
-### 6.2 堆转储
+### 6.2 堆转储 / 核心转储
 
-进程崩溃时，堆转储可能包含敏感密钥材料。建议在生产环境中：
+进程崩溃的 core dump 可能包含密钥。生产建议：
 
-1. 禁用核心转储：`ulimit -c 0`
-2. 使用安全的内存锁（mlock）机制（需平台特定实现）
-3. 定期轮换密钥
+1. 禁用 core dump：`ulimit -c 0`。
+2. 内存锁定（`mlock`）需平台特定实现，pollux-go 未提供跨平台封装。
+3. 定期轮换密钥。
 
 ### 6.3 交换文件
 
-操作系统可能将内存页交换到磁盘。建议：
-
-1. 使用 `mlock` 系统调用锁定敏感内存（需平台特定实现）
-2. 配置操作系统禁用交换或使用加密交换
+操作系统可能将内存页换出到磁盘。建议禁用 swap 或使用加密 swap；`mlock` 锁定同样需平台特定实现。
 
 ## 7. 安全检查清单
 
-在处理密钥时，请检查：
+处理密钥时核对：
 
-- [ ] 密钥是否使用 `crypto/rand` 生成？
-- [ ] 密钥是否在使用完毕后立即清零？
-- [ ] 是否使用了 `defer` 确保密钥清零？
-- [ ] 日志中是否包含敏感密钥材料？
-- [ ] 错误处理路径是否正确清零密钥？
+- [ ] 密钥是否用 `crypto/rand` 生成？
+- [ ] 密钥使用后是否立即清零（优先 `defer`）？
+- [ ] 错误路径是否也清零（fail-closed）？
+- [ ] 日志是否泄露密钥字节？
 - [ ] 是否避免了不必要的密钥复制？
-- [ ] 长期运行的会话是否定期轮换密钥？
+- [ ] 长连接是否启用 key update 规避 nonce 复用？
 
 ## 8. 相关文档
 
 - [安全审计报告](./audit.md)
 - [gosec 配置](./gosec-configuration.md)
 - [架构与设计](../design/architecture.md)
-
-## 9. 联系方式
-
-如发现内存安全问题，请通过 GitHub Issues 报告。
+- [Route C 设计（RFC 8998 QUIC Packet Protection）](../design/route-c-quic-gm.md)

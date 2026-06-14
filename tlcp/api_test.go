@@ -88,27 +88,6 @@ func indexOf(s, sub string) int {
 	return -1
 }
 
-// TestLoadConfigFile 覆盖空路径、不存在文件、存在文件(not implemented)分支。
-func TestLoadConfigFile(t *testing.T) {
-	// 空路径
-	if _, err := LoadConfigFile(""); err == nil {
-		t.Error("LoadConfigFile(\"\") err = nil, want error")
-	}
-	// 不存在的文件
-	_, err := LoadConfigFile("/nonexistent/path/to/config.yaml")
-	if err == nil {
-		t.Error("LoadConfigFile(nonexistent) err = nil, want error")
-	}
-	// 存在的文件 → YAML 解析未实现
-	_, err = LoadConfigFile("tlcp_test.go") // 用自身作为存在的文件
-	if err == nil {
-		t.Error("LoadConfigFile(existing) err = nil, want ErrNotImplemented")
-	}
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Errorf("LoadConfigFile(existing) err = %v, want ErrNotImplemented", err)
-	}
-}
-
 // TestEnableDisable 验证在 tls.Config 上启用/禁用国密套件。
 func TestEnableDisable(t *testing.T) {
 	national := polluxtls.NationalCipherSuites()

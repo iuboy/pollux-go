@@ -53,9 +53,6 @@ var (
 
 	// ErrInvalidCipherSuite invalid cipher suite
 	ErrInvalidCipherSuite = errors.New("tlcp: invalid cipher suite")
-
-	// ErrNotImplemented not implemented
-	ErrNotImplemented = errors.New("tlcp: not implemented")
 )
 
 // Version TLCP version
@@ -637,17 +634,6 @@ func (c *Config) BuildServerConfig() (*tls.Config, error) {
 	}
 
 	return cfg, nil
-}
-
-// LoadConfigFile loads TLCP configuration from config file (not implemented)
-func LoadConfigFile(configFile string) (*Config, error) {
-	if configFile == "" {
-		return nil, fmt.Errorf("tlcp: config file path is empty")
-	}
-	if _, err := os.Stat(configFile); errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("tlcp: config file not found: %s", configFile)
-	}
-	return nil, fmt.Errorf("%w: YAML config parsing not implemented", ErrNotImplemented)
 }
 
 // Enable enables TLCP Cipher Suites on existing TLS configuration

@@ -18,3 +18,10 @@ require (
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 )
+
+// Route C: vendored quic-go fork. Adds a GMCryptoSetup implementation of the
+// (internal) CryptoSetup interface driven by pollux-go's tls13gm handshake
+// engine + quicgm packet protection. Fork source kept under third_party/quic-go
+// with the upstream module name preserved so internal imports are unchanged.
+// See third_party/quic-go/PATCHES.md for the patch set relative to upstream.
+replace github.com/quic-go/quic-go => ./third_party/quic-go

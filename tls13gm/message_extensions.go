@@ -69,3 +69,26 @@ func findExtension(exts []Extension, typ uint16) []byte {
 	}
 	return nil
 }
+
+// marshalCookieExtension encodes a cookie as the TLS opaque cookie vector
+// [length(2) | cookie] used by the cookie extension (RFC 8446 §4.2.2).
+func marshalCookieExtension(cookie []byte) []byte {
+	out := make([]byte, 2+len(cookie))
+	out[0] = byte(len(cookie) >> 8)
+	out[1] = byte(len(cookie))
+	copy(out[2:], cookie)
+	return out
+}
+
+// parseCookieExtension decodes the cookie extension value ([length(2) | cookie])
+// and returns the cookie bytes.
+func parseCookieExtension(data []byte) ([]byte, error) {
+	if len(data) < 2 {
+		return nil, fmt.Errorf("tls13gm: cookie extension truncated (length)")
+	}
+	l := int(data[0])<<8 | int(data[1])
+	if len(data) < 2+l {
+		return nil, fmt.Errorf("tls13gm: cookie extension truncated (declared %d, have %d)", l, len(data)-2)
+	}
+	return data[2 : 2+l], nil
+}

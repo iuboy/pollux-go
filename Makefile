@@ -5,13 +5,25 @@
 ##   make cover       # coverage with -coverpkg (counts test/ integration coverage)
 ##   make cover-html  # same, rendered as HTML (opens coverage.html)
 ##   make vet         # go vet
+##   make gosec       # security scan (excludes reviewed-as-safe rules)
 ##   make build       # build all packages
 
 GO ?= go
 COVER_PROFILE ?= coverage.out
 COVER_HTML ?= coverage.html
 
-.PHONY: test cover cover-html vet build clean fmt
+# gosec rules excluded after manual review (see .gosec.json for the rationale):
+#   G104 — ignored errors are conn.Close() on already-failed TLS handshakes
+#   G115 — integer narrowing in protocol fixed-width field encoding (big-endian
+#          length/version/cipher bytes, nonce counter XOR); values are protocol-bounded
+#   G304 — path inclusion from configurable cert/key paths (caller-controlled config)
+#   G401/G405/G501/G502/G505 — legacy crypto (MD5/SHA1/DES) used only by smx509
+#          PBE/legacy-cert compatibility paths
+#   G402  — InsecureSkipVerify is a caller config flag with fail-closed defaults
+# Listed on the command line because gosec dev ignores the config's "exclude" key.
+GOSEC_EXCLUDE ?= G104,G115,G304,G401,G402,G405,G501,G502,G505
+
+.PHONY: test cover cover-html vet gosec build clean fmt
 
 ## build: compile all packages
 build:
@@ -20,6 +32,12 @@ build:
 ## vet: run go vet
 vet:
 	$(GO) vet ./...
+
+## gosec: run gosec, excluding reviewed-as-safe rules (see GOSEC_EXCLUDE above).
+## G103 (memsecure unsafe for key zeroing) remains reported by design — it must
+## stay visible so new unsafe uses are noticed.
+gosec:
+	gosec -exclude $(GOSEC_EXCLUDE) -quiet ./...
 
 ## test: run all tests (race detector enabled)
 test:

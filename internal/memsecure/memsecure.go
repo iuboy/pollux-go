@@ -30,7 +30,7 @@ func ZeroBytes(data []byte) {
 
 	// Layer 2: unsafe pointer write as additional guarantee.
 	for i := range data {
-		*(*byte)(unsafe.Pointer(&data[i])) = 0
+		*(*byte)(unsafe.Pointer(&data[i])) = 0 // #nosec G103 -- intentional direct write to defeat dead-store elimination
 	}
 
 	// Layer 3: prevent GC from collecting data before zeroing completes.
@@ -45,7 +45,7 @@ func SliceFromBytes(data []byte) []byte {
 	if len(data) == 0 {
 		return nil
 	}
-	return unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), len(data))
+	return unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), len(data)) // #nosec G103 -- intentional aliasing for legacy callers
 }
 
 // ZeroUint32 securely zeroes a uint32 slice using the same multi-layer
@@ -59,14 +59,14 @@ func ZeroUint32(data []uint32) {
 	byteLen := len(data) * 4
 	zeros := make([]byte, byteLen)
 	subtle.XORBytes(
-		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen),
-		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen),
+		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen), // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
+		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen), // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
 		zeros,
 	)
 
 	// Layer 2: direct write.
 	for i := range data {
-		*(*uint32)(unsafe.Pointer(&data[i])) = 0
+		*(*uint32)(unsafe.Pointer(&data[i])) = 0 // #nosec G103 -- intentional direct write to defeat dead-store elimination
 	}
 
 	runtime.KeepAlive(data)
@@ -83,14 +83,14 @@ func ZeroUint64(data []uint64) {
 	byteLen := len(data) * 8
 	zeros := make([]byte, byteLen)
 	subtle.XORBytes(
-		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen),
-		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen),
+		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen), // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
+		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen), // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
 		zeros,
 	)
 
 	// Layer 2: direct write.
 	for i := range data {
-		*(*uint64)(unsafe.Pointer(&data[i])) = 0
+		*(*uint64)(unsafe.Pointer(&data[i])) = 0 // #nosec G103 -- intentional direct write to defeat dead-store elimination
 	}
 
 	runtime.KeepAlive(data)

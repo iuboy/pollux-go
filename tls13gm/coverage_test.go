@@ -3,6 +3,7 @@ package tls13gm
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"math/big"
 	"testing"
@@ -349,6 +350,16 @@ func TestCurveSM2ECDHE(t *testing.T) {
 	_, err = CurveSM2ECDHE(aliceKey, nil)
 	if err == nil {
 		t.Fatal("expected error for nil peerPublic, got nil")
+	}
+
+	// Non-SM2 curve must be rejected. A NIST P-256 peer key would otherwise be
+	// multiplied by the SM2 private scalar — a catastrophic cross-curve error.
+	p256Key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate P-256 key: %v", err)
+	}
+	if _, err := CurveSM2ECDHE(aliceKey, &p256Key.PublicKey); err == nil {
+		t.Fatal("expected error for non-SM2 peer curve, got nil")
 	}
 }
 

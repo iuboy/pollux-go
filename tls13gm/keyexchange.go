@@ -37,10 +37,19 @@ func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]b
 	if peerPublic == nil {
 		return nil, fmt.Errorf("tls13gm: peerPublic is nil")
 	}
-	// Verify the peer's public key is on the curve to prevent invalid-curve attacks.
-	// Without this check, a malicious peer could send a point on a different curve
-	// to extract information about the private scalar.
-	if !peerPublic.Curve.IsOnCurve(peerPublic.X, peerPublic.Y) {
+	// Curve identity check. The ECDH scalar below is the SM2 private scalar, so it
+	// MUST only ever be multiplied on the SM2 curve. Performing it on a different
+	// (e.g. NIST) curve would be a catastrophic cross-curve error leaking the
+	// private scalar. sm2.PublicKey is a type alias for ecdsa.PublicKey, so the
+	// type system cannot enforce this — the check must be explicit.
+	if peerPublic.Curve != sm2.P256() {
+		return nil, fmt.Errorf("tls13gm: peer public key is not on the SM2 curve")
+	}
+	// Defense in depth: even with the correct curve, reject off-curve points to
+	// prevent invalid-curve attacks. Callers arriving via sm2.UnmarshalUncompressed
+	// have already validated this, but CurveSM2ECDHE is a public API and must not
+	// rely on that invariant.
+	if !peerPublic.Curve.IsOnCurve(peerPublic.X, peerPublic.Y) { //nolint:staticcheck // SM2 curve; crypto/ecdh has no SM2 support
 		return nil, fmt.Errorf("tls13gm: peer public key is not on the SM2 curve")
 	}
 	// sm2.PrivateKey embeds ecdsa.PrivateKey (via PublicKey), so .D and .Curve
@@ -59,7 +68,7 @@ func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]b
 	rawD := privateKey.D.Bytes()
 	copy(dBytes[scalarSize-len(rawD):], rawD)
 
-	x, _ := peerPublic.Curve.ScalarMult(peerPublic.X, peerPublic.Y, dBytes)
+	x, _ := peerPublic.Curve.ScalarMult(peerPublic.X, peerPublic.Y, dBytes) //nolint:staticcheck // SM2 raw ECDHE; crypto/ecdh has no SM2 support, scalar padded to 32B for gmsm constant-time path
 	if x == nil {
 		return nil, fmt.Errorf("tls13gm: ECDH scalar multiplication failed")
 	}

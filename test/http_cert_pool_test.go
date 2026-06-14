@@ -53,7 +53,7 @@ func generateHTTPCACert(t *testing.T) (*x509.Certificate, *polluxSM2.PrivateKey,
 	return cert, priv, der
 }
 
-//nolint:unused
+//lint:ignore U1000 retained for future HTTP server certificate chain tests
 func generateHTTPServerCert(t *testing.T, caCert *x509.Certificate, caPriv *polluxSM2.PrivateKey, cn string) (*x509.Certificate, *polluxSM2.PrivateKey, tls.Certificate) {
 	t.Helper()
 

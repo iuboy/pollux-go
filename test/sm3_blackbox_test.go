@@ -8,9 +8,8 @@ import (
 )
 
 func TestBlackBox_SM3_Sum_EmptyInput(t *testing.T) {
-	h := polluxSM3.Sum(nil) //nolint:staticcheck
-	if len(h) != 32 {
-		t.Errorf("SM3 hash length: got %d, want 32", len(h))
+	if len(polluxSM3.Sum(nil)) != 32 {
+		t.Errorf("SM3 hash length: got %d, want 32", len(polluxSM3.Sum(nil)))
 	}
 }
 

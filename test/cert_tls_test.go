@@ -53,7 +53,7 @@ func generateSelfSignedCert(t *testing.T, cn string) (*x509.Certificate, *pollux
 	return cert, priv, der
 }
 
-//nolint:unused
+//lint:ignore U1000 retained for future TLS leaf certificate chain tests
 func generateTLSLeafCert(t *testing.T, caCert *x509.Certificate, caPriv *polluxSM2.PrivateKey, cn string) (*x509.Certificate, *polluxSM2.PrivateKey, tls.Certificate) {
 	t.Helper()
 

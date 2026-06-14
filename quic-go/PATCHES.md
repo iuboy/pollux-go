@@ -30,9 +30,24 @@ lives in `connection.go` (the call sites), not inside the `cryptoSetup` struct.
 
 ## Upgrade procedure
 
-1. Bump the upstream tag in the repo-root `go.mod` `require` + `replace`.
-2. Re-copy the new upstream tree into `quic-go/`.
-3. Re-apply every patch listed above (this file is the checklist).
-4. `git diff v0.60.0 v<N> -- connection.go config.go interface.go`
-   to spot new upstream conflicts in the touched files.
-5. `go build ./... && go test ./...`.
+The fork is a git subtree, so upstream upgrades merge normally (conflicts in the
+patched files are visible to git, unlike the old vendored-copy approach).
+
+```bash
+# one-time: register the upstream remote (kept in .git/config, not committed)
+git remote add quic-go-upstream https://github.com/quic-go/quic-go.git
+
+# upgrade
+git subtree pull --prefix=quic-go quic-go-upstream <new-tag> --squash
+```
+
+If the merge conflicts, resolve in the patched files
+(`connection.go`, `config.go`, `interface.go`, and the `gm_*.go` additions —
+this file is the patch checklist), then:
+
+```bash
+go build ./... && go test ./...
+```
+
+The upstream module name is unchanged, so the repo-root `go.mod` `replace` needs
+no edit unless the upstream tag in `require` should be bumped for clarity.

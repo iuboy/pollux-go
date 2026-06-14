@@ -610,6 +610,11 @@ type ServerHandshaker struct {
 	localTransportParams []byte
 	// peerTransportParams is taken from the client's ClientHello.
 	peerTransportParams []byte
+
+	// resumptionMasterSecret is derived after the client Finished (transcript
+	// CH..client Finished) and seeds NewSessionTicket via DeriveResumptionPSK.
+	// Empty until HandleClientFinished.
+	resumptionMasterSecret []byte
 }
 
 // PeerTransportParams returns the raw QUIC transport parameters received from
@@ -883,7 +888,39 @@ func (s *ServerHandshaker) HandleClientFinished(cf []byte) error {
 		return fmt.Errorf("tls13gm: client Finished verify_data mismatch")
 	}
 	s.transcript.AddMessage(mt, body)
+	// Resumption master secret over the full transcript (CH..client Finished);
+	// seeds NewSessionTicket for a future PSK resumption.
+	s.resumptionMasterSecret, err = DeriveResumptionMasterSecret(s.masterSecret, s.transcript.Sum())
+	if err != nil {
+		return fmt.Errorf("tls13gm: derive resumption master secret: %w", err)
+	}
 	return nil
+}
+
+// NewSessionTicket produces a NewSessionTicket handshake message carrying a
+// fresh resumption PSK, for the server to send post-handshake under the 1-RTT
+// keys. HandleClientFinished must have completed. ticketLifetime is the PSK
+// validity in seconds; ticketAgeAdd obfuscates the ticket age the client
+// reports when resuming. In tls13gm the Ticket field IS the PSK (it travels
+// inside the encrypted 1-RTT channel), so the client resumes directly from it.
+func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32, ticketAgeAdd uint32) ([]byte, error) {
+	if s.resumptionMasterSecret == nil {
+		return nil, fmt.Errorf("tls13gm: HandleClientFinished must complete before NewSessionTicket")
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nil, fmt.Errorf("tls13gm: generate ticket nonce: %w", err)
+	}
+	psk, err := DeriveResumptionPSK(s.resumptionMasterSecret, nonce[:])
+	if err != nil {
+		return nil, err
+	}
+	return MarshalHandshakeMessage(&NewSessionTicketMsg{
+		TicketLifetime: ticketLifetime,
+		TicketAgeAdd:   ticketAgeAdd,
+		TicketNonce:    nonce[:],
+		Ticket:         psk,
+	})
 }
 
 // containsCipherSuite reports whether list offers the cipher suite want.

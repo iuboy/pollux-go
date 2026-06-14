@@ -424,8 +424,14 @@ func (g *GMCryptoSetup) DiscardInitialKeys() {
 }
 
 func (g *GMCryptoSetup) SetHandshakeConfirmed() {
-	// P0: no-op. The server needs this to send 1-RTT ACKs freely; the GM engine
-	// already has 1-RTT keys after the flight, so nothing to do.
+	// Once the handshake is confirmed, the Handshake encryption level is dropped
+	// (quic-go calls dropEncryptionLevel(Handshake), which removes the packet-
+	// number space). Drop the handshake sealer/opener in lockstep so
+	// GetHandshakeSealer returns ErrKeysDropped and packers skip the level —
+	// otherwise a CONNECTION_CLOSE would try to packet-number-allocate for a
+	// level whose pnSpace is gone and nil-deref.
+	g.handshakeDropped = true
+	g.handshakeSealer, g.handshakeOpener = nil, nil
 }
 
 // SetLargest1RTTAcked is a no-op in P0. P3 wires tls13gm.QUICKeyUpdate for key

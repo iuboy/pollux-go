@@ -5,22 +5,22 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/iuboy/pollux-go/quicgm"
+	"github.com/iuboy/pollux-go/sm4"
 	"github.com/iuboy/pollux-go/tls13gm"
 	"github.com/quic-go/quic-go/internal/protocol"
 )
 
 // fixedGMSecret is a deterministic traffic secret used to derive identical
-// QUICPacketKeys for both the adapter and the quicgm reference path.
+// QUICPacketKeys for the adapter and the reference computations.
 func fixedGMSecret() []byte { return bytes.Repeat([]byte{0x42}, 32) }
 
-// TestGMSealer_HeaderProtectionMatchesQuicgm proves the adapter's header
-// protection (applyGMHeaderMask via EncryptHeader) produces byte-identical output
-// to the standalone quicgm.QUICPacketProtector.ApplyHeaderProtection for the same
-// keys, sample, and header bytes. This is the contract that lets quic-go packets
-// sealed through GMCryptoSetup interoperate with the quicgm packet-protection
-// reference implementation.
-func TestGMSealer_HeaderProtectionMatchesQuicgm(t *testing.T) {
+// TestGMSealer_HeaderProtectionRoundTrip verifies the adapter's header
+// protection is self-consistent: EncryptHeader then DecryptHeader (via the
+// matching opener) recovers the original first byte and packet-number bytes.
+// The mask is SM4-ECB over the 16-byte sample per RFC 9001 §5.4.3, with the low
+// 4 bits (long header) or 5 bits (short header) of the first byte and the
+// packet-number bytes XOR-ed — mirrored exactly by applyGMHeaderMask.
+func TestGMSealer_HeaderProtectionRoundTrip(t *testing.T) {
 	keys, err := tls13gm.DeriveQUICPacketKeys(fixedGMSecret())
 	if err != nil {
 		t.Fatalf("DeriveQUICPacketKeys: %v", err)
@@ -29,43 +29,104 @@ func TestGMSealer_HeaderProtectionMatchesQuicgm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newGMLongSealer: %v", err)
 	}
-	prot, err := quicgm.NewQUICPacketProtectorFromKeys(keys)
+	opener, err := newGMLongOpener(keys)
 	if err != nil {
-		t.Fatalf("NewQUICPacketProtectorFromKeys: %v", err)
+		t.Fatalf("newGMLongOpener: %v", err)
 	}
 
-	// Build a long-header buffer: [firstByte][3 filler][4-byte pn][payload room for sample].
-	const pnOffset, pnLen = 4, 4
-	original := make([]byte, pnOffset+pnLen+16+8)
-	original[0] = 0xC3 // long-header first byte
-	binary.BigEndian.PutUint32(original[pnOffset:], 0x11223344)
+	const pnLen = 4
+	originalFirst := byte(0xC3)
+	originalPN := make([]byte, pnLen)
+	binary.BigEndian.PutUint32(originalPN, 0x11223344)
+	sample := bytes.Repeat([]byte{0xAB}, 16)
 
-	// quicgm path: applies HP in place over the whole buffer.
-	quicgmBuf := append([]byte(nil), original...)
-	if err := prot.ApplyHeaderProtection(quicgmBuf, pnOffset, pnLen, true); err != nil {
-		t.Fatalf("quicgm ApplyHeaderProtection: %v", err)
-	}
-
-	// adapter path: the packer hands us the sample, firstByte pointer, and pn bytes
-	// separately (quic-go's EncryptHeader signature). Extract them from the original.
-	sample := append([]byte(nil), original[pnOffset+4:pnOffset+4+16]...)
-	firstByte := original[0]
-	pnBytes := append([]byte(nil), original[pnOffset:pnOffset+pnLen]...)
+	firstByte := originalFirst
+	pnBytes := append([]byte(nil), originalPN...)
 	sealer.EncryptHeader(sample, &firstByte, pnBytes)
-
-	if firstByte != quicgmBuf[0] {
-		t.Fatalf("first byte mismatch: adapter %#02x, quicgm %#02x", firstByte, quicgmBuf[0])
+	if firstByte == originalFirst {
+		t.Fatal("EncryptHeader did not change the first byte")
 	}
-	if !bytes.Equal(pnBytes, quicgmBuf[pnOffset:pnOffset+pnLen]) {
-		t.Fatalf("packet-number bytes mismatch: adapter %x, quicgm %x", pnBytes, quicgmBuf[pnOffset:pnOffset+pnLen])
+
+	// DecryptHeader is the XOR inverse with the same mask; it must recover the
+	// originals so the unpacker can read the true packet number.
+	opener.DecryptHeader(sample, &firstByte, pnBytes)
+	if firstByte != originalFirst {
+		t.Fatalf("first byte not restored: %#02x", firstByte)
+	}
+	if !bytes.Equal(pnBytes, originalPN) {
+		t.Fatalf("packet number not restored: %x", pnBytes)
 	}
 }
 
-// TestGMSealer_PayloadSealMatchesQuicgm proves the adapter's Seal produces the
-// same ciphertext+tag as the quicgm reference for the same key, packet number,
-// AAD, and plaintext. Both delegate to tls13gm.AEAD, so this guards against a
-// future divergence in nonce construction.
-func TestGMSealer_PayloadSealMatchesQuicgm(t *testing.T) {
+// TestGMSealer_HeaderProtectionMatchesManualMask proves the adapter's
+// EncryptHeader matches a hand-computed SM4-ECB mask (RFC 9001 §5.4.3). This is
+// the same computation quicgm.QUICPacketProtector performs, so the two paths
+// produce byte-identical header protection without this test importing quicgm
+// (which would form a test import cycle through the fork's top-level package).
+func TestGMSealer_HeaderProtectionMatchesManualMask(t *testing.T) {
+	keys, err := tls13gm.DeriveQUICPacketKeys(fixedGMSecret())
+	if err != nil {
+		t.Fatalf("DeriveQUICPacketKeys: %v", err)
+	}
+	hpBlock, err := sm4.NewCipher(keys.HeaderKey)
+	if err != nil {
+		t.Fatalf("sm4.NewCipher: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		isLong  bool
+		first   byte
+	}{
+		{"long", true, 0xC3},
+		{"short", false, 0x40},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newGMShortSealerForTest(t, keys, tc.isLong)
+			sample := bytes.Repeat([]byte{0x55}, 16)
+			first := tc.first
+			pn := []byte{0x11, 0x22, 0x33, 0x44}
+			adapterFirst, adapterPN := first, append([]byte(nil), pn...)
+			s.EncryptHeader(sample, &adapterFirst, adapterPN)
+
+			// Manual mask: SM4-ECB(sample), then XOR per RFC 9001 §5.4.3.
+			var mask [16]byte
+			hpBlock.Encrypt(mask[:], sample)
+			wantFirst := first
+			if tc.isLong {
+				wantFirst ^= mask[0] & 0x0f
+			} else {
+				wantFirst ^= mask[0] & 0x1f
+			}
+			wantPN := append([]byte(nil), pn...)
+			for i := range wantPN {
+				wantPN[i] ^= mask[1+i]
+			}
+			if adapterFirst != wantFirst {
+				t.Fatalf("first byte: adapter %#02x, manual %#02x", adapterFirst, wantFirst)
+			}
+			if !bytes.Equal(adapterPN, wantPN) {
+				t.Fatalf("pn bytes: adapter %x, manual %x", adapterPN, wantPN)
+			}
+		})
+	}
+}
+
+// newGMShortSealerForTest builds a sealer with an explicit isLong flag for the
+// header-protection mask test (long vs short header).
+func newGMShortSealerForTest(t *testing.T, keys *tls13gm.QUICPacketKeys, isLong bool) *gmLongSealer {
+	t.Helper()
+	km, err := newGMKeyMaterial(keys)
+	if err != nil {
+		t.Fatalf("newGMKeyMaterial: %v", err)
+	}
+	return &gmLongSealer{km: km, isLong: isLong}
+}
+
+// TestGMSealer_PayloadSealMatchesTLS13AEAD confirms the adapter's Seal delegates
+// to tls13gm.AEAD (same nonce scheme), producing identical ciphertext. Both
+// quicgm and the adapter share this AEAD, so packets are byte-compatible.
+func TestGMSealer_PayloadSealMatchesTLS13AEAD(t *testing.T) {
 	keys, err := tls13gm.DeriveQUICPacketKeys(fixedGMSecret())
 	if err != nil {
 		t.Fatalf("DeriveQUICPacketKeys: %v", err)
@@ -74,9 +135,9 @@ func TestGMSealer_PayloadSealMatchesQuicgm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newGMLongSealer: %v", err)
 	}
-	prot, err := quicgm.NewQUICPacketProtectorFromKeys(keys)
+	refAEAD, err := tls13gm.NewAEAD(keys.AEADKey, keys.AEADIV)
 	if err != nil {
-		t.Fatalf("NewQUICPacketProtectorFromKeys: %v", err)
+		t.Fatalf("tls13gm.NewAEAD: %v", err)
 	}
 
 	header := []byte{0xC3, 0x00, 0x00, 0x00, 0x01, 0x08, 0x01, 0x02, 0x03, 0x04}
@@ -84,15 +145,15 @@ func TestGMSealer_PayloadSealMatchesQuicgm(t *testing.T) {
 	const pn uint64 = 42
 
 	adapterCT := sealer.Seal(nil, payload, protocol.PacketNumber(pn), header)
-	quicgmCT, err := prot.EncryptPayload(pn, header, payload)
+	refCT, err := refAEAD.Seal(pn, payload, header)
 	if err != nil {
-		t.Fatalf("quicgm EncryptPayload: %v", err)
+		t.Fatalf("ref AEAD.Seal: %v", err)
 	}
-	if !bytes.Equal(adapterCT, quicgmCT) {
-		t.Fatalf("payload ciphertext mismatch:\n adapter %x\n quicgm  %x", adapterCT, quicgmCT)
+	if !bytes.Equal(adapterCT, refCT) {
+		t.Fatalf("ciphertext mismatch:\n adapter %x\n ref     %x", adapterCT, refCT)
 	}
 
-	// Round-trip: the matching opener must recover the plaintext.
+	// Round-trip through the matching opener.
 	opener, err := newGMLongOpener(keys)
 	if err != nil {
 		t.Fatalf("newGMLongOpener: %v", err)
@@ -102,7 +163,7 @@ func TestGMSealer_PayloadSealMatchesQuicgm(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	if !bytes.Equal(pt, payload) {
-		t.Fatalf("round-trip plaintext mismatch: got %q want %q", pt, payload)
+		t.Fatalf("round-trip plaintext mismatch: %q", pt)
 	}
 }
 
@@ -123,7 +184,7 @@ func TestGMSealer_RejectsTamperedTag(t *testing.T) {
 	}
 	header := []byte{0xC3, 0x00, 0x00, 0x00, 0x01}
 	ct := sealer.Seal(nil, []byte("x"), 7, header)
-	ct[len(ct)-1] ^= 0xff // corrupt the GCM tag
+	ct[len(ct)-1] ^= 0xff
 	if _, err := opener.Open(nil, ct, 7, header); err != ErrDecryptionFailed {
 		t.Fatalf("Open on tampered tag returned %v, want ErrDecryptionFailed", err)
 	}

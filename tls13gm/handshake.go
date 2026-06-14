@@ -47,6 +47,24 @@ func equalConstantTime(a, b []byte) bool {
 	return subtle.ConstantTimeCompare(a, b) == 1
 }
 
+// clientHandshakePhase tracks client-side handshake progress so the step-wise
+// Handle* methods enforce the RFC 8446 server-flight ordering (ServerHello,
+// EncryptedExtensions, Certificate, CertificateVerify, Finished). The QUIC
+// transport feeds these messages one at a time via CRYPTO frames; the phase
+// guard makes each step idempotent-by-refusal (calling a step out of order or
+// twice is an error rather than silently corrupting the transcript hash).
+type clientHandshakePhase uint8
+
+const (
+	clientPhaseNone clientHandshakePhase = iota // ClientHello not yet sent
+	clientAfterClientHello
+	clientAfterServerHello
+	clientAfterEncryptedExtensions
+	clientAfterCertificate
+	clientAfterCertificateVerify
+	clientAfterServerFinished
+)
+
 // ClientHandshaker drives the TLS 1.3 GM handshake from the client side. It is
 // transport-agnostic: it produces and consumes raw handshake-message bytes
 // (4-byte header + body), which QUIC carries in CRYPTO frames.
@@ -71,6 +89,14 @@ type ClientHandshaker struct {
 	clientHSTraffic []byte
 	serverHSTraffic []byte
 	secrets         HandshakeSecrets
+
+	// leafCert is the verified server leaf from the Certificate step; the
+	// CertificateVerify step needs its public key. Held across steps because the
+	// step-wise API processes the flight one message at a time.
+	leafCert *x509.Certificate
+
+	// phase enforces server-flight ordering across the step-wise Handle* methods.
+	phase clientHandshakePhase
 }
 
 // ClientConfig configures a TLS 1.3 GM client handshaker.
@@ -187,15 +213,40 @@ func (c *ClientHandshaker) ClientHello() ([]byte, error) {
 		return nil, err
 	}
 	c.transcript.AddMessage(HandshakeTypeClientHello, full[4:])
+	c.phase = clientAfterClientHello
 	return full, nil
 }
 
-// HandleServerFlight processes the server's flight: ServerHello, EncryptedExtensions,
-// Certificate, CertificateVerify, Finished. It derives the Handshake and
-// Application keys, and verifies the server CertificateVerify and Finished. Each
-// argument is a complete handshake message (header + body).
+// HandleServerFlight processes the complete server flight (ServerHello,
+// EncryptedExtensions, Certificate, CertificateVerify, Finished) in order. It is
+// a convenience wrapper around the step-wise Handle* methods for callers that
+// receive the whole flight at once. Each argument is a complete handshake message
+// (4-byte header + body). Callers receiving messages incrementally (e.g. a QUIC
+// transport feeding one CRYPTO frame at a time) should call the step-wise methods
+// directly in the same order.
 func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certificate, certVerify, finished []byte) error {
-	// --- ServerHello: extract server key share, derive handshake secret ---
+	if err := c.HandleServerHello(serverHello); err != nil {
+		return err
+	}
+	if err := c.HandleEncryptedExtensions(encryptedExt); err != nil {
+		return err
+	}
+	if err := c.HandleCertificate(certificate); err != nil {
+		return err
+	}
+	if err := c.HandleCertificateVerify(certVerify); err != nil {
+		return err
+	}
+	return c.HandleServerFinished(finished)
+}
+
+// HandleServerHello processes the ServerHello: it extracts the server key share,
+// completes curveSM2 ECDHE, derives the handshake secret, and derives the
+// Handshake-level QUIC packet keys. The transcript now spans ClientHello..ServerHello.
+func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
+	if c.phase != clientAfterClientHello {
+		return fmt.Errorf("tls13gm: HandleServerHello called out of order (phase %d)", c.phase)
+	}
 	shType, shBody, _, err := ReadHandshakeMessage(serverHello)
 	if err != nil {
 		return fmt.Errorf("tls13gm: read ServerHello: %w", err)
@@ -242,13 +293,32 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 	if c.secrets.ServerHandshakeKeys, err = DeriveQUICPacketKeys(c.serverHSTraffic); err != nil {
 		return err
 	}
+	c.phase = clientAfterServerHello
+	return nil
+}
 
-	// --- EncryptedExtensions: record in transcript ---
+// HandleEncryptedExtensions records EncryptedExtensions in the transcript. No
+// keys are derived; it exists to keep the transcript hash consistent for the
+// later CertificateVerify/Finished computations.
+func (c *ClientHandshaker) HandleEncryptedExtensions(encryptedExt []byte) error {
+	if c.phase != clientAfterServerHello {
+		return fmt.Errorf("tls13gm: HandleEncryptedExtensions called out of order (phase %d)", c.phase)
+	}
 	if err := c.addRawMessage(encryptedExt, HandshakeTypeEncryptedExtensions); err != nil {
 		return err
 	}
+	c.phase = clientAfterEncryptedExtensions
+	return nil
+}
 
-	// --- Certificate: parse leaf, verify chain, record in transcript ---
+// HandleCertificate parses the server Certificate chain, verifies the leaf
+// against the configured roots (fail-closed unless InsecureSkipVerify), runs the
+// optional VerifyPeerCertificate callback, and records it. The verified leaf is
+// retained for HandleCertificateVerify.
+func (c *ClientHandshaker) HandleCertificate(certificate []byte) error {
+	if c.phase != clientAfterEncryptedExtensions {
+		return fmt.Errorf("tls13gm: HandleCertificate called out of order (phase %d)", c.phase)
+	}
 	_, certBody, _, err := ReadHandshakeMessage(certificate)
 	if err != nil {
 		return fmt.Errorf("tls13gm: read Certificate: %w", err)
@@ -288,8 +358,17 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 		}
 	}
 	c.transcript.AddMessage(HandshakeTypeCertificate, certBody)
+	c.leafCert = leaf
+	c.phase = clientAfterCertificate
+	return nil
+}
 
-	// --- CertificateVerify: verify against the verified leaf (transcript = CH..Cert) ---
+// HandleCertificateVerify verifies the server's CertificateVerify against the
+// verified leaf's public key (transcript = ClientHello..Certificate).
+func (c *ClientHandshaker) HandleCertificateVerify(certVerify []byte) error {
+	if c.phase != clientAfterCertificate {
+		return fmt.Errorf("tls13gm: HandleCertificateVerify called out of order (phase %d)", c.phase)
+	}
 	cvType, cvBody, _, err := ReadHandshakeMessage(certVerify)
 	if err != nil {
 		return fmt.Errorf("tls13gm: read CertificateVerify: %w", err)
@@ -304,7 +383,7 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 	if cv.SignatureScheme != SM2SigSM3 {
 		return fmt.Errorf("tls13gm: CertificateVerify signature scheme %04x is not SM2SigSM3", cv.SignatureScheme)
 	}
-	serverPubCert, ok := leaf.PublicKey.(*ecdsa.PublicKey)
+	serverPubCert, ok := c.leafCert.PublicKey.(*ecdsa.PublicKey)
 	if !ok {
 		return fmt.Errorf("tls13gm: server cert public key is not ECDSA")
 	}
@@ -312,8 +391,18 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 		return fmt.Errorf("tls13gm: CertificateVerify signature verification failed")
 	}
 	c.transcript.AddMessage(cvType, cvBody)
+	c.phase = clientAfterCertificateVerify
+	return nil
+}
 
-	// --- Finished: verify (transcript = CH..CertVerify) ---
+// HandleServerFinished verifies the server Finished (transcript =
+// ClientHello..CertificateVerify), records it, and derives the Application-level
+// (1-RTT) QUIC packet keys from the master secret. After this returns, Secrets()
+// exposes the full Initial/Handshake/Application key set.
+func (c *ClientHandshaker) HandleServerFinished(finished []byte) error {
+	if c.phase != clientAfterCertificateVerify {
+		return fmt.Errorf("tls13gm: HandleServerFinished called out of order (phase %d)", c.phase)
+	}
 	finType, finBody, _, err := ReadHandshakeMessage(finished)
 	if err != nil {
 		return fmt.Errorf("tls13gm: read Finished: %w", err)
@@ -338,7 +427,7 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 	}
 	c.transcript.AddMessage(finType, finBody)
 
-	// --- Application keys (transcript = CH..server Finished) ---
+	// Application keys (transcript = CH..server Finished)
 	c.masterSecret, err = DeriveMasterSecret(c.handshakeSecret)
 	if err != nil {
 		return err
@@ -357,6 +446,7 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 	if c.secrets.ServerApplicationKeys, err = DeriveQUICPacketKeys(sAP); err != nil {
 		return err
 	}
+	c.phase = clientAfterServerFinished
 	return nil
 }
 
@@ -364,8 +454,8 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 // transcript CH..server Finished, keyed by the client handshake traffic secret)
 // and records it. HandleServerFlight must have completed.
 func (c *ClientHandshaker) ClientFinished() ([]byte, error) {
-	if c.masterSecret == nil {
-		return nil, fmt.Errorf("tls13gm: HandleServerFlight must complete before ClientFinished")
+	if c.phase != clientAfterServerFinished {
+		return nil, fmt.Errorf("tls13gm: HandleServerFinished must complete before ClientFinished")
 	}
 	finishedKey, err := DeriveFinishedKey(c.clientHSTraffic)
 	if err != nil {

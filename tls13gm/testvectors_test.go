@@ -24,7 +24,10 @@ import (
 // invocation for the "derived" label with an empty context and length=32.
 // The encoded label bytes are algorithm-independent (same regardless of hash).
 func TestBuildHKDFLabelEncoding(t *testing.T) {
-	label := buildHKDFLabel("derived", nil, 32)
+	label, err := buildHKDFLabel("derived", nil, 32)
+	if err != nil {
+		t.Fatalf("buildHKDFLabel: %v", err)
+	}
 
 	// Expected layout:
 	//   00 20                                      — length = 32
@@ -63,7 +66,10 @@ func TestBuildHKDFLabelEncoding(t *testing.T) {
 // TestBuildHKDFLabelWithContext verifies buildHKDFLabel with a non-empty context.
 func TestBuildHKDFLabelWithContext(t *testing.T) {
 	ctx := []byte{0x01, 0x02, 0x03}
-	label := buildHKDFLabel("key", ctx, 16)
+	label, err := buildHKDFLabel("key", ctx, 16)
+	if err != nil {
+		t.Fatalf("buildHKDFLabel: %v", err)
+	}
 
 	// length = 16 → 0x0010
 	if label[0] != 0x00 || label[1] != 0x10 {

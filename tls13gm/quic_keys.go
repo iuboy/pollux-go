@@ -52,6 +52,16 @@ func DeriveQUICPacketKeys(trafficSecret []byte) (*QUICPacketKeys, error) {
 // "quic ku" label (RFC 9001 §6). The output length matches the input secret
 // length, which for RFC 8998 is the SM3 hash length (32 bytes). Feed the result
 // back into DeriveQUICPacketKeys to obtain the next set of packet protection keys.
+//
+// Caller responsibility — rekey cadence: AEAD nonces are IV XOR packet-number,
+// so they stay unique within a key generation as long as packet numbers are
+// monotonic, but a single generation must not protect an unbounded number of
+// packets. RFC 9001 §6 requires a key update well before the AEAD nonces or
+// counters could repeat; for TLS 1.3 records the update threshold is ~2^24.5
+// records (RFC 8446 §5.5), and for QUIC packets it is governed by the packet
+// number space. The transport layer (e.g. quic-go) is responsible for initiating
+// the update at the appropriate threshold by calling this function and
+// reconstructing the packet protector — pollux does not enforce the cadence.
 func QUICKeyUpdate(trafficSecret []byte) ([]byte, error) {
 	if len(trafficSecret) == 0 {
 		return nil, fmt.Errorf("tls13gm: QUIC traffic secret must not be empty")

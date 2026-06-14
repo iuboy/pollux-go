@@ -19,11 +19,14 @@ func HKDFExpandLabel(secret []byte, label string, context []byte, length int) ([
 	if length > maxHKDFExpandLen {
 		return nil, fmt.Errorf("tls13gm: HKDFExpandLabel length %d exceeds HKDF-Expand maximum of %d (255 × SM3 hash size)", length, maxHKDFExpandLen)
 	}
-	hkdfLabel := buildHKDFLabel(label, context, length)
+	hkdfLabel, err := buildHKDFLabel(label, context, length)
+	if err != nil {
+		return nil, err
+	}
 	return sm3.HKDFExpand(secret, hkdfLabel, length)
 }
 
-func buildHKDFLabel(label string, context []byte, length int) []byte {
+func buildHKDFLabel(label string, context []byte, length int) ([]byte, error) {
 	// RFC 8446 Section 7.1: HkdfLabel
 	// length (2 bytes) + label length (1 byte) + "tls13 " + label + context length (1 byte) + context
 	prefix := "tls13 "
@@ -32,11 +35,11 @@ func buildHKDFLabel(label string, context []byte, length int) []byte {
 	// We don't enforce this at runtime since all callers use well-known labels, but the
 	// fullLabel length must fit in one byte (≤255).
 	if len(fullLabel) > 255 {
-		panic(fmt.Sprintf("tls13gm: HKDF label too long: %d bytes (max 255)", len(fullLabel)))
+		return nil, fmt.Errorf("tls13gm: HKDF label too long: %d bytes (max 255)", len(fullLabel))
 	}
 	// RFC 8446 Section 7.1: opaque context<0..255> — context length must fit in one byte.
 	if len(context) > 255 {
-		panic(fmt.Sprintf("tls13gm: HKDF context too long: %d bytes (max 255)", len(context)))
+		return nil, fmt.Errorf("tls13gm: HKDF context too long: %d bytes (max 255)", len(context))
 	}
 	result := make([]byte, 0, 2+1+len(fullLabel)+1+len(context))
 	result = append(result, byte(length>>8), byte(length))
@@ -44,7 +47,7 @@ func buildHKDFLabel(label string, context []byte, length int) []byte {
 	result = append(result, fullLabel...)
 	result = append(result, byte(len(context)))
 	result = append(result, context...)
-	return result
+	return result, nil
 }
 
 // DeriveSecret implements TLS 1.3 Derive-Secret with SM3.

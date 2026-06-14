@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/iuboy/pollux-go/sm2"
+	"github.com/iuboy/pollux-go/smx509"
 )
 
 // HandshakeSecrets holds the QUIC packet-protection keys for all three
@@ -53,7 +54,16 @@ type ClientHandshaker struct {
 	dcid       []byte
 	ephemeral  *sm2.PrivateKey // ECDHE key for this handshake
 	transcript *Transcript
-	serverCert *x509.Certificate // peer cert used to verify CertificateVerify
+
+	// Peer certificate verification. When insecureSkipVerify is false the server
+	// leaf (taken from the Certificate message) is verified against rootPool and
+	// serverName via smx509.Verify before its public key is trusted for
+	// CertificateVerify. insecureSkipVerify disables that check (testing only).
+	insecureSkipVerify bool
+	rootPool           *smx509.CertPool
+	intermediates      *smx509.CertPool
+	serverName         string
+	verifyPeerCert     func(rawCerts [][]byte) error
 
 	// derived secrets
 	handshakeSecret []byte
@@ -63,21 +73,54 @@ type ClientHandshaker struct {
 	secrets         HandshakeSecrets
 }
 
-// NewClientHandshaker prepares a client handshaker. dcid seeds the Initial
-// keys; serverCert is the expected server certificate whose public key must
-// match the CertificateVerify signature.
-func NewClientHandshaker(dcid []byte, serverCert *x509.Certificate) (*ClientHandshaker, error) {
-	if len(dcid) == 0 {
+// ClientConfig configures a TLS 1.3 GM client handshaker.
+//
+// Security model: the server leaf is taken from the peer's Certificate message
+// (not pre-supplied) and verified against Roots with ServerName before its
+// public key is trusted for CertificateVerify. This is fail-closed — when
+// InsecureSkipVerify is false, Roots MUST be non-empty or the handshake aborts.
+type ClientConfig struct {
+	// DCID seeds the QUIC Initial packet-protection keys (RFC 9001 §5.2). Required.
+	DCID []byte
+
+	// ServerName is the DNS name matched against the server leaf's SAN/CN
+	// during PKI verification. Leave empty only when pinning via
+	// VerifyPeerCertificate.
+	ServerName string
+
+	// Roots is the trusted root certificate pool for chain verification.
+	// Required unless InsecureSkipVerify or VerifyPeerCertificate is set.
+	Roots *smx509.CertPool
+
+	// Intermediates is an optional pool of non-root intermediary certificates
+	// used to build the chain when they are not sent in the Certificate message.
+	Intermediates *smx509.CertPool
+
+	// InsecureSkipVerify disables PKI verification. Intended for self-signed
+	// test fixtures ONLY. Never enable in production code.
+	InsecureSkipVerify bool
+
+	// VerifyPeerCertificate, if set, is invoked with the raw DER certificate
+	// chain from the Certificate message after default chain verification. It
+	// overrides nothing — the default verification (or InsecureSkipVerify) still
+	// runs first unless Roots is nil. Use it for certificate pinning.
+	VerifyPeerCertificate func(rawCerts [][]byte) error
+}
+
+// NewClientHandshaker prepares a client handshaker from an explicit, fail-closed
+// ClientConfig. See ClientConfig for the security model.
+func NewClientHandshakerWithConfig(cfg ClientConfig) (*ClientHandshaker, error) {
+	if len(cfg.DCID) == 0 {
 		return nil, fmt.Errorf("tls13gm: dcid is required to seed Initial keys")
 	}
-	if serverCert == nil {
-		return nil, fmt.Errorf("tls13gm: server certificate is required")
+	if !cfg.InsecureSkipVerify && cfg.VerifyPeerCertificate == nil && cfg.Roots == nil {
+		return nil, fmt.Errorf("tls13gm: ClientConfig.Roots is required (use InsecureSkipVerify only for testing)")
 	}
 	priv, err := GenerateCurveSM2KeyPair(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: generate ECDHE keypair: %w", err)
 	}
-	clientIn, serverIn, err := DeriveQUICInitialSecrets(dcid)
+	clientIn, serverIn, err := DeriveQUICInitialSecrets(cfg.DCID)
 	if err != nil {
 		return nil, err
 	}
@@ -90,12 +133,28 @@ func NewClientHandshaker(dcid []byte, serverCert *x509.Certificate) (*ClientHand
 		return nil, err
 	}
 	return &ClientHandshaker{
-		dcid:       dcid,
-		ephemeral:  priv,
-		transcript: NewTranscript(),
-		serverCert: serverCert,
-		secrets:    HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
+		dcid:               cfg.DCID,
+		ephemeral:          priv,
+		transcript:         NewTranscript(),
+		insecureSkipVerify: cfg.InsecureSkipVerify,
+		rootPool:           cfg.Roots,
+		intermediates:      cfg.Intermediates,
+		serverName:         cfg.ServerName,
+		verifyPeerCert:     cfg.VerifyPeerCertificate,
+		secrets:            HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
 	}, nil
+}
+
+// NewClientHandshaker prepares a client handshaker. dcid seeds the Initial keys.
+//
+// Deprecated: this constructor skips PKI verification. The serverCert parameter
+// is ignored — the peer leaf is always taken from the Certificate message. Use
+// NewClientHandshakerWithConfig with explicit Roots for production callers.
+func NewClientHandshaker(dcid []byte, _ *x509.Certificate) (*ClientHandshaker, error) {
+	return NewClientHandshakerWithConfig(ClientConfig{
+		DCID:               dcid,
+		InsecureSkipVerify: true,
+	})
 }
 
 // Secrets returns the packet-protection keys derived so far.
@@ -184,15 +243,53 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 		return err
 	}
 
-	// --- EncryptedExtensions, Certificate: record in transcript ---
+	// --- EncryptedExtensions: record in transcript ---
 	if err := c.addRawMessage(encryptedExt, HandshakeTypeEncryptedExtensions); err != nil {
 		return err
 	}
-	if err := c.addRawMessage(certificate, HandshakeTypeCertificate); err != nil {
-		return err
-	}
 
-	// --- CertificateVerify: verify against server cert (transcript = CH..Cert) ---
+	// --- Certificate: parse leaf, verify chain, record in transcript ---
+	_, certBody, _, err := ReadHandshakeMessage(certificate)
+	if err != nil {
+		return fmt.Errorf("tls13gm: read Certificate: %w", err)
+	}
+	var certMsg CertificateMsg
+	if err := certMsg.unmarshalBody(certBody); err != nil {
+		return fmt.Errorf("tls13gm: Certificate: %w", err)
+	}
+	if len(certMsg.CertificateList) == 0 {
+		return fmt.Errorf("tls13gm: server sent an empty Certificate chain")
+	}
+	leaf, err := smx509.ParseCertificate(certMsg.CertificateList[0].Certificate)
+	if err != nil {
+		return fmt.Errorf("tls13gm: parse server leaf certificate: %w", err)
+	}
+	// PKI verification: chain to a trusted root, hostname match, validity,
+	// SM2 signature. Fail-closed unless the caller opted out explicitly.
+	if !c.insecureSkipVerify {
+		opts := smx509.VerifyOptions{DNSName: c.serverName}
+		if c.rootPool != nil {
+			opts.Roots = c.rootPool
+		}
+		if c.intermediates != nil {
+			opts.Intermediates = c.intermediates
+		}
+		if err := smx509.Verify(leaf, opts); err != nil {
+			return fmt.Errorf("tls13gm: server certificate verification failed: %w", err)
+		}
+	}
+	if c.verifyPeerCert != nil {
+		rawCerts := make([][]byte, len(certMsg.CertificateList))
+		for i, e := range certMsg.CertificateList {
+			rawCerts[i] = e.Certificate
+		}
+		if err := c.verifyPeerCert(rawCerts); err != nil {
+			return fmt.Errorf("tls13gm: VerifyPeerCertificate: %w", err)
+		}
+	}
+	c.transcript.AddMessage(HandshakeTypeCertificate, certBody)
+
+	// --- CertificateVerify: verify against the verified leaf (transcript = CH..Cert) ---
 	cvType, cvBody, _, err := ReadHandshakeMessage(certVerify)
 	if err != nil {
 		return fmt.Errorf("tls13gm: read CertificateVerify: %w", err)
@@ -207,7 +304,7 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 	if cv.SignatureScheme != SM2SigSM3 {
 		return fmt.Errorf("tls13gm: CertificateVerify signature scheme %04x is not SM2SigSM3", cv.SignatureScheme)
 	}
-	serverPubCert, ok := c.serverCert.PublicKey.(*ecdsa.PublicKey)
+	serverPubCert, ok := leaf.PublicKey.(*ecdsa.PublicKey)
 	if !ok {
 		return fmt.Errorf("tls13gm: server cert public key is not ECDSA")
 	}

@@ -730,29 +730,22 @@ func TestNewAEADInvalidKey(t *testing.T) {
 	}
 }
 
-// TestBuildHKDFLabelPanics verifies that buildHKDFLabel panics on oversized inputs.
-func TestBuildHKDFLabelPanics(t *testing.T) {
+// TestBuildHKDFLabelRejectsOversized verifies that buildHKDFLabel returns an
+// error on oversized inputs (label/context must each fit in a single length byte).
+func TestBuildHKDFLabelRejectsOversized(t *testing.T) {
 	t.Run("label_too_long", func(t *testing.T) {
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Fatal("expected panic for label > 255 bytes, got none")
-			}
-		}()
 		// "tls13 " (6 bytes) + 250 "a"s = 256 bytes > 255
 		longLabel := string(bytes.Repeat([]byte("a"), 250))
-		buildHKDFLabel(longLabel, nil, 32)
+		if _, err := buildHKDFLabel(longLabel, nil, 32); err == nil {
+			t.Fatal("expected error for label > 255 bytes, got none")
+		}
 	})
 
 	t.Run("context_too_long", func(t *testing.T) {
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Fatal("expected panic for context > 255 bytes, got none")
-			}
-		}()
 		longContext := bytes.Repeat([]byte("x"), 256)
-		buildHKDFLabel("key", longContext, 32)
+		if _, err := buildHKDFLabel("key", longContext, 32); err == nil {
+			t.Fatal("expected error for context > 255 bytes, got none")
+		}
 	})
 }
 

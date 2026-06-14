@@ -29,7 +29,12 @@ type AEAD struct {
 	fixedNonce []byte
 }
 
-// Seal encrypts with a sequence-number-based nonce.
+// Seal encrypts with a sequence-number-based nonce (IV XOR seqNum, RFC 8446
+// §5.3). Within one key generation nonces are unique as long as seqNum is
+// strictly monotonic and never reused. The caller MUST initiate a key update
+// before the nonce space risks collision: TLS records at ~2^24.5 records
+// (RFC 8446 §5.5, via the "traffic upd" label), QUIC packets per RFC 9001 §6
+// (via tls13gm.QUICKeyUpdate). pollux does not enforce this cadence.
 func (a *AEAD) Seal(seqNum uint64, plaintext, aad []byte) ([]byte, error) {
 	nonce := a.computeNonce(seqNum)
 	return a.aead.Seal(nil, nonce, plaintext, aad), nil

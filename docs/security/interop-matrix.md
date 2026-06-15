@@ -79,9 +79,20 @@ go test ./test/ -run TestRFC8998_Tongsuo -v
 
 ## 已知差距
 
-- **PSK resumption / 0-RTT 互通**：Tongsuo `s_server` 的会话票据跨进程持久化
-  较难编排，未纳入 TCP 矩阵；pollux-go 内部端到端测试（`Test0RTT_DialEarly`、
-  `Test0RTT_TicketHarvest`）已验证 PSK 恢复 + 0-RTT + 防重放。
+- **PSK resumption / 0-RTT 与标准 server 不互通（结构性）**：这是协议设计
+  差异，不是编排问题。pollux-go 采用无状态设计，`NewSessionTicket.Ticket`
+  字段**直接承载 32 字节 resumption PSK**（明文，走加密通道故安全），client 把
+  它同时作为 `pre_shared_key` 的 identity 与 PSK（binder 用它派生 finished_key）。
+  而 RFC 8446 标准 server（如 Tongsuo）用 **stateless ticket**：`Ticket` 字段是
+  加密的 session-state 句柄（实测 Tongsuo 为 **192 字节**，见
+  `TestRFC8998_Tongsuo_NSTTicket`），真 PSK 由 server 从句柄内部重建。
+  两者结合时，pollux-go client 会把 server 的 192 字节句柄当作 PSK 计算 binder，
+  而 server 用重建出的真 PSK 计算 binder，必然不匹配 → PSK 恢复握手失败。
+  这使得 pollux-go 的 PSK resumption / 0-RTT 只在 **pollux-go ↔ pollux-go** 之间
+  成立，由 `quicgm` 端到端测试覆盖（`Test0RTT_TicketHarvest`、
+  `Test0RTT_DialEarly`）。若要与标准 server 互通 PSK resumption，需改造 pollux-go
+  为标准 stateless-ticket + PSK 派生模型（影响 `tls13gm`/`quicgm` 的 ticket 与
+  PSK store 设计，属较大架构改动）。
 
 ## 环境
 

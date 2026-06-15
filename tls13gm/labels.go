@@ -9,8 +9,11 @@ const (
 	// LabelFinished is used for the Finished message verify_data.
 	LabelFinished = "finished"
 
-	// LabelResumption is used for the resumption PSK.
-	LabelResumption = "resumption"
+	// LabelResumption is the RFC 8446 §7.1 label for deriving the resumption
+	// PSK from the resumption master secret: HKDF-Expand-Label(RMS, "res psk",
+	// ticket_nonce, Hash.length). (Was wrongly "resumption" — a self-loop-masked
+	// bug that only surfaced under cross-implementation resumption interop.)
+	LabelResumption = "res psk"
 
 	// Traffic secret labels.
 	LabelClientEarlyTraffic = "c e traffic"

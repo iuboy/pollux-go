@@ -28,6 +28,11 @@ type HandshakeSecrets struct {
 	ClientHandshakeKeys, ServerHandshakeKeys *QUICPacketKeys
 	// Application (1-RTT) level: derived from the master secret (c/s ap traffic).
 	ClientApplicationKeys, ServerApplicationKeys *QUICPacketKeys
+	// ClientApplicationTrafficSecret / ServerApplicationTrafficSecret are the raw
+	// 1-RTT traffic secrets, exposed so a QUIC transport can initiate key updates
+	// via tls13gm.QUICKeyUpdate. Not zeroed by Zero() (the transport owns the
+	// copy used for key rotation).
+	ClientApplicationTrafficSecret, ServerApplicationTrafficSecret []byte
 }
 
 // Zero securely zeroes every key set in the secret bundle. Call it once the
@@ -647,6 +652,8 @@ func (c *ClientHandshaker) HandleServerFinished(finished []byte) error {
 	if err != nil {
 		return err
 	}
+	c.secrets.ClientApplicationTrafficSecret = cAP
+	c.secrets.ServerApplicationTrafficSecret = sAP
 	if c.secrets.ClientApplicationKeys, err = DeriveQUICPacketKeys(cAP); err != nil {
 		return err
 	}
@@ -1038,6 +1045,8 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
+	s.secrets.ClientApplicationTrafficSecret = cAP
+	s.secrets.ServerApplicationTrafficSecret = sAP
 	if s.secrets.ClientApplicationKeys, err = DeriveQUICPacketKeys(cAP); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}

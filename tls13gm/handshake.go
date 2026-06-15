@@ -257,6 +257,15 @@ func (c *ClientHandshaker) ClientHello() ([]byte, error) {
 	c.clientHello1Full = full
 	c.transcript.AddMessage(HandshakeTypeClientHello, full[4:])
 	c.phase = clientAfterClientHello
+	// 0-RTT: when resuming with a PSK, derive the early traffic keys now (over
+	// the ClientHello transcript) so the transport can send 0-RTT data before
+	// the server responds.
+	if c.resumptionPSK != nil {
+		c.secrets.ClientEarlyKeys, err = DeriveEarlyTrafficKeys(c.resumptionPSK, c.transcript.Sum())
+		if err != nil {
+			return nil, fmt.Errorf("tls13gm: derive 0-RTT keys: %w", err)
+		}
+	}
 	return full, nil
 }
 
@@ -310,6 +319,9 @@ func (c *ClientHandshaker) appendPreSharedKey(ch *ClientHelloMsg) ([]byte, error
 		return nil, fmt.Errorf("tls13gm: marshal truncated pre_shared_key: %w", err)
 	}
 	ch.Extensions = append(ch.Extensions,
+		// early_data (RFC 8446 §4.2.10): empty value in ClientHello signals the
+		// client intends to send 0-RTT data. Must precede pre_shared_key (last).
+		Extension{Type: ExtensionTypeEarlyData},
 		Extension{Type: ExtensionTypePSKKeyExchangeModes, Data: marshalPSKKeyExchangeModesExtension([]uint8{PSKKeyExchangeModeDHEKE})},
 		Extension{Type: ExtensionTypePreSharedKey, Data: truncExt},
 	)
@@ -836,6 +848,15 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 	if pskExt := findExtension(chMsg.Extensions, ExtensionTypePreSharedKey); pskExt != nil {
 		if err := s.verifyPSKBinder(&chMsg, pskExt); err != nil {
 			return err
+		}
+		// 0-RTT: derive the early traffic keys (over the ClientHello transcript)
+		// so the server can decrypt any 0-RTT data the client sends. Whether the
+		// server actually accepts the 0-RTT is a transport-layer policy decision.
+		if findExtension(chMsg.Extensions, ExtensionTypeEarlyData) != nil {
+			s.secrets.ClientEarlyKeys, err = DeriveEarlyTrafficKeys(s.resumptionSelectedPSK, s.transcript.Sum())
+			if err != nil {
+				return fmt.Errorf("tls13gm: derive 0-RTT keys: %w", err)
+			}
 		}
 	}
 	return nil

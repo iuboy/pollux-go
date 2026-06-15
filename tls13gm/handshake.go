@@ -33,6 +33,11 @@ type HandshakeSecrets struct {
 	// via tls13gm.QUICKeyUpdate. Not zeroed by Zero() (the transport owns the
 	// copy used for key rotation).
 	ClientApplicationTrafficSecret, ServerApplicationTrafficSecret []byte
+	// ClientHandshakeTrafficSecret / ServerHandshakeTrafficSecret are the raw
+	// handshake-level traffic secrets, exposed so a non-QUIC consumer (e.g. a
+	// TLS 1.3 record-layer interop harness) can derive record keys for the
+	// Handshake flight. Not zeroed by Zero() (same ownership rule).
+	ClientHandshakeTrafficSecret, ServerHandshakeTrafficSecret []byte
 }
 
 // Zero securely zeroes every key set in the secret bundle. Call it once the
@@ -291,11 +296,11 @@ func (c *ClientHandshaker) buildClientHello(cookie []byte) ([]byte, error) {
 		return nil, fmt.Errorf("tls13gm: unexpected ECDHE public key type")
 	}
 	ch := &ClientHelloMsg{
-		LegacyVersion: uint16(VersionTLS13),
+		LegacyVersion: uint16(VersionTLS12),
 		Random:        random,
 		CipherSuites:  []uint16{TLS_SM4_GCM_SM3},
 		Extensions: []Extension{
-			{Type: ExtensionTypeSupportedVersions, Data: []byte{0x02, 0x03, 0x03}},
+			{Type: ExtensionTypeSupportedVersions, Data: []byte{0x02, 0x03, 0x04}},
 			{Type: ExtensionTypeSignatureAlgorithms, Data: []byte{0x00, 0x02, byte(SM2SigSM3 >> 8), byte(SM2SigSM3 & 0xff)}},
 			{Type: ExtensionTypeSupportedGroups, Data: []byte{0x00, 0x02, byte(CurveSM2 >> 8), byte(CurveSM2 & 0xff)}},
 			{Type: ExtensionTypeKeyShare, Data: marshalClientKeyShare(CurveSM2, sm2.MarshalUncompressed(pub))},
@@ -440,6 +445,8 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 	if c.secrets.ServerHandshakeKeys, err = DeriveQUICPacketKeys(c.serverHSTraffic); err != nil {
 		return err
 	}
+	c.secrets.ClientHandshakeTrafficSecret = c.clientHSTraffic
+	c.secrets.ServerHandshakeTrafficSecret = c.serverHSTraffic
 	c.phase = clientAfterServerHello
 	return nil
 }
@@ -1010,11 +1017,11 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 		return nil, nil, nil, nil, nil, fmt.Errorf("tls13gm: unexpected ECDHE public key type")
 	}
 	shMsg := &ServerHelloMsg{
-		LegacyVersion: uint16(VersionTLS13),
+		LegacyVersion: uint16(VersionTLS12),
 		Random:        random,
 		CipherSuite:   TLS_SM4_GCM_SM3,
 		Extensions: []Extension{
-			{Type: ExtensionTypeSupportedVersions, Data: []byte{0x03, 0x03}},
+			{Type: ExtensionTypeSupportedVersions, Data: []byte{0x03, 0x04}},
 			{Type: ExtensionTypeKeyShare, Data: marshalServerKeyShare(CurveSM2, sm2.MarshalUncompressed(pub))},
 		},
 	}
@@ -1053,6 +1060,8 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	if s.secrets.ServerHandshakeKeys, err = DeriveQUICPacketKeys(s.serverHSTraffic); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
+	s.secrets.ClientHandshakeTrafficSecret = s.clientHSTraffic
+	s.secrets.ServerHandshakeTrafficSecret = s.serverHSTraffic
 
 	// --- EncryptedExtensions (carries QUIC transport params if configured) ---
 	ee := &EncryptedExtensionsMsg{}

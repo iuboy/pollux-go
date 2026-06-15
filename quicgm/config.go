@@ -27,6 +27,12 @@ type ServerConfig struct {
 	ClientCAs          *smx509.CertPool
 	MaxIdleTimeout     time.Duration
 	MaxIncomingStreams int64
+	// SessionTicketKey optionally seeds the server's session-ticket encryption
+	// key (TEK). If nil, the Listener generates a random TEK on startup. For
+	// multi-replica deployments, inject the same key on every replica so tickets
+	// issued by one are resumable on another. The Listener rotates the TEK over
+	// time (current + previous) for forward secrecy.
+	SessionTicketKey []byte
 	// AllowEarlyData lets the server accept 0-RTT from resuming clients. It MUST
 	// be paired with a non-nil AntiReplay; if AntiReplay is nil, 0-RTT is
 	// rejected even when this is true (fail-safe).
@@ -41,9 +47,15 @@ type ClientConfig struct {
 	Roots              *smx509.CertPool
 	InsecureSkipVerify bool
 	MaxIdleTimeout     time.Duration
-	// ResumptionPSK enables PSK resumption. It is the Ticket from a server
-	// NewSessionTicket obtained on a prior connection.
+	// ResumptionPSK is the resumption PSK the client derived from a prior
+	// connection's NewSessionTicket (via the resumption master secret). It keys
+	// the pre_shared_key binder and the 0-RTT early secret. Pair with
+	// ResumptionIdentity and ResumptionObfuscatedTicketAge.
 	ResumptionPSK []byte
+	// ResumptionIdentity is the opaque pre_shared_key identity — the Ticket
+	// field from a server NewSessionTicket (an encrypted stateless ticket). The
+	// server decrypts it to recover the PSK; the client never uses it as a key.
+	ResumptionIdentity []byte
 	// ResumptionObfuscatedTicketAge is the obfuscated ticket age
 	// (age + ticket_age_add) for the pre_shared_key identity.
 	ResumptionObfuscatedTicketAge uint32
@@ -68,16 +80,13 @@ func (c *ClientConfig) idleTimeout() time.Duration {
 
 // tls13ServerConfig builds the tls13gm server handshaker config. DCID and
 // TransportParameters are filled by the QUIC transport (GMCryptoSetup), not here.
-// store records issued PSKs and resolves them on resumption (shared across all
-// connections accepted by one Listener).
-func (c *ServerConfig) tls13ServerConfig(store *pskStore) *tls13gm.ServerConfig {
+// ticketKeys returns the current TEK list (newest first) for stateless
+// session-ticket encrypt/decrypt; the Listener owns TEK rotation.
+func (c *ServerConfig) tls13ServerConfig(ticketKeys func() [][]byte) *tls13gm.ServerConfig {
 	cfg := &tls13gm.ServerConfig{
-		Certificate: c.Certificate,
-		PrivateKey:  c.PrivateKey,
-		// Record every issued PSK so a later connection can resume against it.
-		OnPSKIssued: store.record,
-		// Resolve a client-offered identity (== PSK) against the issued set.
-		PSKLookup: store.lookup,
+		Certificate:       c.Certificate,
+		PrivateKey:        c.PrivateKey,
+		SessionTicketKeys: ticketKeys,
 	}
 	// AllowEarlyData is honored only when an anti-replay cache is configured
 	// (fail-safe). PSK resumption itself works regardless of 0-RTT.
@@ -98,10 +107,11 @@ func (c *ClientConfig) tls13ClientConfig() (*tls13gm.ClientConfig, error) {
 		return nil, errNoServerName
 	}
 	return &tls13gm.ClientConfig{
-		ServerName:                   c.ServerName,
-		Roots:                        c.Roots,
-		InsecureSkipVerify:           c.InsecureSkipVerify,
-		ResumptionPSK:                c.ResumptionPSK,
+		ServerName:                    c.ServerName,
+		Roots:                         c.Roots,
+		InsecureSkipVerify:            c.InsecureSkipVerify,
+		ResumptionPSK:                 c.ResumptionPSK,
+		ResumptionIdentity:            c.ResumptionIdentity,
 		ResumptionObfuscatedTicketAge: c.ResumptionObfuscatedTicketAge,
 	}, nil
 }

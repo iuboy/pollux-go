@@ -1,7 +1,6 @@
 package tls13gm
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/subtle"
@@ -10,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/iuboy/pollux-go/sm2"
+	"github.com/iuboy/pollux-go/sm3"
 	"github.com/iuboy/pollux-go/smx509"
 )
 
@@ -106,11 +106,12 @@ type ClientHandshaker struct {
 	verifyPeerCert     func(rawCerts [][]byte) error
 
 	// derived secrets
-	handshakeSecret []byte
-	masterSecret    []byte
-	clientHSTraffic []byte
-	serverHSTraffic []byte
-	secrets         HandshakeSecrets
+	handshakeSecret        []byte
+	masterSecret           []byte
+	resumptionMasterSecret []byte
+	clientHSTraffic        []byte
+	serverHSTraffic        []byte
+	secrets                HandshakeSecrets
 
 	// leafCert is the verified server leaf from the Certificate step; the
 	// CertificateVerify step needs its public key. Held across steps because the
@@ -132,10 +133,13 @@ type ClientHandshaker struct {
 	// transcript can be reset per RFC 8446 §4.4.1. Cleared after use.
 	clientHello1Full []byte
 
-	// resumptionPSK / resumptionObfAge, when set, drive a PSK resumption
-	// ClientHello (pre_shared_key + binder). Copied from ClientConfig.
-	resumptionPSK    []byte
-	resumptionObfAge uint32
+	// resumptionPSK is the derived PSK keying the binder / early secret;
+	// resumptionIdentity is the opaque pre_shared_key identity (the server's
+	// encrypted ticket); resumptionObfAge is the obfuscated ticket age. Copied
+	// from ClientConfig.
+	resumptionPSK      []byte
+	resumptionIdentity []byte
+	resumptionObfAge   uint32
 	// pskMode is set in HandleServerHello when the server selected our PSK. It
 	// makes the handshake skip Certificate/CertificateVerify (server omits them
 	// in PSK mode) and derive the early secret from resumptionPSK.
@@ -189,13 +193,17 @@ type ClientConfig struct {
 	// connection. tls13gm carries the bytes verbatim.
 	TransportParameters []byte
 
-	// ResumptionPSK, if set, makes the client attempt a PSK resumption: the
-	// ClientHello carries a pre_shared_key extension with this PSK as the
-	// identity plus a binder, and psk_key_exchange_modes (psk_dhe_ke). The PSK
-	// is the Ticket field from a server NewSessionTicket. Pair with
-	// ResumptionObfuscatedTicketAge. When nil, a full (certificate) handshake
-	// is performed.
+	// ResumptionPSK is the resumption PSK (derived by this client from the
+	// resumption master secret via DeriveResumptionPSK, NOT the opaque ticket
+	// bytes). The client uses it to key the pre_shared_key binder and the 0-RTT
+	// early secret. Pair with ResumptionIdentity and ResumptionObfuscatedTicketAge.
+	// When nil, a full (certificate) handshake is performed.
 	ResumptionPSK []byte
+	// ResumptionIdentity is the opaque pre_shared_key identity sent in the
+	// ClientHello — the Ticket field from a server NewSessionTicket (an encrypted
+	// stateless ticket under RFC 8446). The server decrypts it to recover the
+	// PSK; the client never uses the identity bytes as a key.
+	ResumptionIdentity []byte
 	// ResumptionObfuscatedTicketAge is the obfuscated_ticket_age for the PSK
 	// identity: (ticket_age + ticket_age_add) mod 2^32, computed by the caller
 	// from the original NewSessionTicket's TicketAgeAdd and the elapsed time.
@@ -228,18 +236,19 @@ func NewClientHandshakerWithConfig(cfg ClientConfig) (*ClientHandshaker, error) 
 		return nil, err
 	}
 	return &ClientHandshaker{
-		dcid:               cfg.DCID,
-		ephemeral:          priv,
-		transcript:         NewTranscript(),
-		insecureSkipVerify: cfg.InsecureSkipVerify,
-		rootPool:           cfg.Roots,
-		intermediates:      cfg.Intermediates,
-		serverName:         cfg.ServerName,
-		verifyPeerCert:     cfg.VerifyPeerCertificate,
-		secrets:            HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
+		dcid:                 cfg.DCID,
+		ephemeral:            priv,
+		transcript:           NewTranscript(),
+		insecureSkipVerify:   cfg.InsecureSkipVerify,
+		rootPool:             cfg.Roots,
+		intermediates:        cfg.Intermediates,
+		serverName:           cfg.ServerName,
+		verifyPeerCert:       cfg.VerifyPeerCertificate,
+		secrets:              HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
 		localTransportParams: cfg.TransportParameters,
-		resumptionPSK:       cfg.ResumptionPSK,
-		resumptionObfAge:    cfg.ResumptionObfuscatedTicketAge,
+		resumptionPSK:        cfg.ResumptionPSK,
+		resumptionIdentity:   cfg.ResumptionIdentity,
+		resumptionObfAge:     cfg.ResumptionObfuscatedTicketAge,
 	}, nil
 }
 
@@ -326,8 +335,13 @@ func (c *ClientHandshaker) buildClientHello(cookie []byte) ([]byte, error) {
 // message. The binder is computed over the truncated form (binders list empty)
 // per RFC 8446 §4.2.11; pre_shared_key must be the last extension.
 func (c *ClientHandshaker) appendPreSharedKey(ch *ClientHelloMsg) ([]byte, error) {
-	identities := []PskIdentity{{Identity: c.resumptionPSK, ObfuscatedTicketAge: c.resumptionObfAge}}
-	truncExt, err := marshalPreSharedKeyExtension(identities, nil)
+	identities := []PskIdentity{{Identity: c.resumptionIdentity, ObfuscatedTicketAge: c.resumptionObfAge}}
+	// RFC 8446 §4.2.11: the binder transcript hashes a ClientHello whose binder
+	// field is the correct length but filled with zeros (NOT an empty binders
+	// list). The server zeroes the binder it received and recomputes over the
+	// same bytes.
+	zeroBinder := make([]byte, sm3.Size)
+	truncExt, err := marshalPreSharedKeyExtension(identities, [][]byte{zeroBinder})
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: marshal truncated pre_shared_key: %w", err)
 	}
@@ -496,7 +510,7 @@ func (c *ClientHandshaker) HandleHelloRetryRequest(hrr []byte) ([]byte, error) {
 		return nil, err
 	}
 	c.transcript.AddMessage(HandshakeTypeClientHello, ch2[4:])
-	c.clientHello1Full = nil     // ClientHello1 consumed
+	c.clientHello1Full = nil         // ClientHello1 consumed
 	c.phase = clientAfterClientHello // await the real ServerHello
 	return ch2, nil
 }
@@ -701,6 +715,38 @@ func (c *ClientHandshaker) ClientFinished() ([]byte, error) {
 	return full, nil
 }
 
+// HandleNewSessionTicket processes a post-handshake NewSessionTicket received
+// from the server. It derives the resumption master secret over the full
+// transcript (CH..client Finished, which is complete once ClientFinished has
+// run), then derives the resumption PSK from the ticket nonce (RFC 8446
+// §4.6.1). The returned identity is the opaque ticket (to send back as the
+// pre_shared_key identity on a later connection); psk is the keying material
+// for the binder / 0-RTT early secret; ageAdd is the ticket_age_add needed to
+// compute the obfuscated ticket age.
+//
+// This is the standard RFC 8446 client model: the client stores (identity,
+// psk, age) and never treats the ticket bytes as a key. It is what makes a
+// pollux-go client interoperable with any RFC 8446 server's resumption.
+func (c *ClientHandshaker) HandleNewSessionTicket(nstBody []byte) (identity, psk []byte, ageAdd uint32, err error) {
+	if c.masterSecret == nil {
+		return nil, nil, 0, fmt.Errorf("tls13gm: HandleNewSessionTicket before handshake complete")
+	}
+	msg := &NewSessionTicketMsg{}
+	if err := msg.unmarshalBody(nstBody); err != nil {
+		return nil, nil, 0, fmt.Errorf("tls13gm: NewSessionTicket: %w", err)
+	}
+	rms, err := DeriveResumptionMasterSecret(c.masterSecret, c.transcript.Sum())
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("tls13gm: resumption master secret: %w", err)
+	}
+	c.resumptionMasterSecret = rms
+	psk, err = DeriveResumptionPSK(rms, msg.TicketNonce)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("tls13gm: resumption PSK: %w", err)
+	}
+	return msg.Ticket, psk, msg.TicketAgeAdd, nil
+}
+
 // ServerHandshaker drives the TLS 1.3 GM handshake from the server side.
 type ServerHandshaker struct {
 	dcid       []byte
@@ -727,14 +773,13 @@ type ServerHandshaker struct {
 	// Empty until HandleClientFinished.
 	resumptionMasterSecret []byte
 
-	// resumptionPSKs are the PSKs accepted for resumption (from ServerConfig).
 	// resumptionSelectedPSK is set by HandleClientHello when the client's
-	// pre_shared_key binder validates; ServerFlight then derives the early
-	// secret from it instead of zeros.
-	resumptionPSKs        [][]byte
-	pskLookup             func(identity []byte) (psk []byte, ok bool)
-	onPSKIssued           func(psk []byte)
+	// pre_shared_key binder validates (PSK recovered by decrypting the ticket
+	// identity with the TEK); ServerFlight derives the early secret from it.
 	resumptionSelectedPSK []byte
+	// ticketKeys returns the current TEK list (newest first) for stateless
+	// session-ticket encrypt/decrypt. Mirrors ServerConfig.SessionTicketKeys.
+	ticketKeys func() [][]byte
 	// allowEarlyData echoes ServerConfig.AllowEarlyData; clientOfferedEarlyData
 	// is set in HandleClientHello when the ClientHello carries early_data.
 	allowEarlyData         bool
@@ -771,19 +816,14 @@ type ServerConfig struct {
 	// connection. tls13gm carries the bytes verbatim.
 	TransportParameters []byte
 
-	// ResumptionPSKs is the set of PSKs this server will accept for resumption.
-	// A client offering one of these in pre_shared_key (with a valid binder)
-	// gets a PSK-mode handshake (no Certificate/CertificateVerify). A production
-	// caller populates this from a ticket store; tls13gm does not maintain one.
-	ResumptionPSKs [][]byte
-
-	// PSKLookup, when non-nil, resolves a client-offered pre_shared_key identity
-	// to the resumption PSK the server issued for it (returns ok=false if the
-	// identity is unknown). It takes precedence over ResumptionPSKs and lets a
-	// stateful server accept tickets it issued on a prior connection (e.g. the
-	// QUIC GMCryptoSetup records each NewSessionTicket's PSK here). The binder is
-	// still verified, so an identity that maps to no issued PSK is rejected.
-	PSKLookup func(identity []byte) (psk []byte, ok bool)
+	// SessionTicketKeys returns the current session-ticket encryption keys
+	// (TEKs), newest first: typically [current, previous] to cover a rotation
+	// window. The server uses keys()[0] to encrypt new tickets and tries each
+	// key in turn when decrypting a resumption identity. This is the standard
+	// RFC 8446 stateless-ticket model: the PSK is not stored server-side; it is
+	// encrypted into the opaque NewSessionTicket.Ticket and recovered on
+	// resumption. Required for NewSessionTicket.
+	SessionTicketKeys func() [][]byte
 
 	// AllowEarlyData, when true, lets the server accept 0-RTT data from a
 	// resuming client (the EncryptedExtensions then carries early_data). A server
@@ -794,15 +834,9 @@ type ServerConfig struct {
 	// EarlyDataAcceptor, if set, is called when a client offers 0-RTT (early_data
 	// + PSK). It returns true to accept the 0-RTT, false to reject (replay
 	// suspected). If nil, AllowEarlyData alone decides. The psk argument is the
-	// client's offered resumption PSK; the acceptor typically consults an
-	// AntiReplayCache.
+	// recovered resumption PSK (decrypted from the client's ticket identity);
+	// the acceptor typically consults an AntiReplayCache.
 	EarlyDataAcceptor func(psk []byte) bool
-
-	// OnPSKIssued, when non-nil, is invoked with each freshly derived resumption
-	// PSK right before the NewSessionTicket carrying it is sealed. A stateful
-	// server records the PSK so a later PSKLookup can accept it for resumption
-	// (and 0-RTT) on another connection.
-	OnPSKIssued func(psk []byte)
 }
 
 // NewServerHandshakerWithConfig prepares a server handshaker from an explicit
@@ -838,9 +872,7 @@ func NewServerHandshakerWithConfig(cfg ServerConfig) (*ServerHandshaker, error) 
 		transcript:           NewTranscript(),
 		secrets:              HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
 		localTransportParams: cfg.TransportParameters,
-		resumptionPSKs:       cfg.ResumptionPSKs,
-		pskLookup:            cfg.PSKLookup,
-		onPSKIssued:          cfg.OnPSKIssued,
+		ticketKeys:           cfg.SessionTicketKeys,
 		allowEarlyData:       cfg.AllowEarlyData,
 		earlyDataAcceptor:    cfg.EarlyDataAcceptor,
 	}, nil
@@ -936,14 +968,15 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 	return nil
 }
 
-// verifyPSKBinder validates the client's pre_shared_key binder: it matches the
-// offered identity against the server's known PSKs, reconstructs the truncated
-// ClientHello (binders list empty), recomputes the binder, and compares in
-// constant time. On success s.resumptionSelectedPSK is set so ServerFlight can
-// derive the early secret from the PSK instead of zeros.
+// verifyPSKBinder validates the client's pre_shared_key binder: it recovers the
+// resumption PSK by decrypting the offered identity (the opaque stateless
+// ticket) with the configured TEKs, reconstructs the truncated ClientHello
+// (binders list empty), recomputes the binder, and compares in constant time.
+// On success s.resumptionSelectedPSK is set so ServerFlight can derive the
+// early secret from the PSK instead of zeros.
 func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte) error {
-	if len(s.resumptionPSKs) == 0 && s.pskLookup == nil {
-		return fmt.Errorf("tls13gm: client offered PSK but server has none configured")
+	if s.ticketKeys == nil {
+		return fmt.Errorf("tls13gm: client offered PSK but server has no session-ticket key configured")
 	}
 	identities, binders, err := parsePreSharedKeyExtension(pskExt)
 	if err != nil {
@@ -952,21 +985,13 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 	if len(identities) != 1 || len(binders) != 1 {
 		return fmt.Errorf("tls13gm: pre_shared_key must offer exactly one identity and binder")
 	}
-	var psk []byte
-	if s.pskLookup != nil {
-		if p, ok := s.pskLookup(identities[0].Identity); ok {
-			psk = p
-		}
-	} else {
-		for _, candidate := range s.resumptionPSKs {
-			if bytes.Equal(candidate, identities[0].Identity) {
-				psk = candidate
-				break
-			}
-		}
-	}
-	if psk == nil {
-		return fmt.Errorf("tls13gm: client PSK identity not recognized")
+	// Recover the PSK from the opaque ticket identity (stateless RFC 8446 model).
+	// This is what makes a pollux-go server interoperable with any RFC 8446
+	// client and vice-versa: the identity is a self-contained encrypted ticket,
+	// not the bare PSK.
+	psk, err := DecryptSessionTicket(s.ticketKeys(), identities[0].Identity)
+	if err != nil {
+		return fmt.Errorf("tls13gm: client PSK identity not recognized: %w", err)
 	}
 	// Reconstruct the truncated ClientHello (pre_shared_key binders empty) to
 	// recompute the binder over the same transcript the client used.
@@ -974,7 +999,11 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 	copy(truncExts, chMsg.Extensions)
 	for i, e := range truncExts {
 		if e.Type == ExtensionTypePreSharedKey {
-			trunc, err := marshalPreSharedKeyExtension(identities, nil)
+			// RFC 8446 §4.2.11: recompute the binder over the ClientHello with
+			// the binder field zeroed (correct length), matching what the client
+			// hashed.
+			zeroBinder := make([]byte, sm3.Size)
+			trunc, err := marshalPreSharedKeyExtension(identities, [][]byte{zeroBinder})
 			if err != nil {
 				return err
 			}
@@ -1186,15 +1215,24 @@ func (s *ServerHandshaker) AcceptedEarlyData() bool { return s.acceptedEarlyData
 // is processed.
 func (c *ClientHandshaker) EarlyDataAccepted() bool { return c.earlyDataAccepted }
 
+// ResumptionMasterSecret returns the resumption master secret computed during
+// HandleNewSessionTicket (nil before). Diagnostic / interop debugging aid.
+func (c *ClientHandshaker) ResumptionMasterSecret() []byte { return c.resumptionMasterSecret }
+
 // NewSessionTicket produces a NewSessionTicket handshake message carrying a
 // fresh resumption PSK, for the server to send post-handshake under the 1-RTT
 // keys. HandleClientFinished must have completed. ticketLifetime is the PSK
 // validity in seconds; ticketAgeAdd obfuscates the ticket age the client
-// reports when resuming. In tls13gm the Ticket field IS the PSK (it travels
-// inside the encrypted 1-RTT channel), so the client resumes directly from it.
+// reports when resuming. The Ticket field carries an opaque stateless ticket
+// (the PSK encrypted under the current TEK via EncryptSessionTicket); the
+// client recovers the PSK itself from the resumption master secret and the
+// ticket nonce (RFC 8446 §4.6.1), so the server keeps no per-ticket state.
 func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32, ticketAgeAdd uint32) ([]byte, error) {
 	if s.resumptionMasterSecret == nil {
 		return nil, fmt.Errorf("tls13gm: HandleClientFinished must complete before NewSessionTicket")
+	}
+	if s.ticketKeys == nil {
+		return nil, fmt.Errorf("tls13gm: session-ticket key required for NewSessionTicket")
 	}
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
@@ -1204,14 +1242,22 @@ func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32, ticketAgeAdd 
 	if err != nil {
 		return nil, err
 	}
-	if s.onPSKIssued != nil {
-		s.onPSKIssued(psk)
+	// Encrypt the PSK into the opaque ticket identity under the current TEK.
+	// ticketKeys()[0] is the current key; DecryptSessionTicket will also try
+	// historical keys during rotation.
+	keys := s.ticketKeys()
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("tls13gm: session-ticket key list is empty")
+	}
+	ticket, err := EncryptSessionTicket(keys[0], psk)
+	if err != nil {
+		return nil, fmt.Errorf("tls13gm: encrypt session ticket: %w", err)
 	}
 	return MarshalHandshakeMessage(&NewSessionTicketMsg{
 		TicketLifetime: ticketLifetime,
 		TicketAgeAdd:   ticketAgeAdd,
 		TicketNonce:    nonce[:],
-		Ticket:         psk,
+		Ticket:         ticket,
 	})
 }
 

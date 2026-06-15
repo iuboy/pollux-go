@@ -41,15 +41,17 @@ type GMCryptoSetup struct {
 
 	events []Event
 
-	// clientSessionPSK / clientTicketAgeAdd cache the resumption PSK and
-	// ticket_age_add from the last NewSessionTicket received (1-RTT
-	// post-handshake), so the application can reuse them for 0-RTT.
-	clientSessionPSK  []byte
-	clientTicketAgeAdd uint32
+	// clientSessionIdentity / clientSessionPSK / clientTicketAgeAdd cache the
+	// opaque ticket identity, the derived PSK, and ticket_age_add from the last
+	// NewSessionTicket received (1-RTT post-handshake), so the application can
+	// reuse them for a resumption / 0-RTT attempt.
+	clientSessionIdentity []byte
+	clientSessionPSK      []byte
+	clientTicketAgeAdd    uint32
 	// onClientSessionTicket, when non-nil, is invoked once per freshly received
-	// NewSessionTicket (client side only), delivering the resumption PSK and
-	// ticket_age_add to the application for a subsequent 0-RTT attempt.
-	onClientSessionTicket func(psk []byte, ticketAgeAdd uint32)
+	// NewSessionTicket (client side only), delivering the identity, the derived
+	// PSK and ticket_age_add to the application.
+	onClientSessionTicket func(identity, psk []byte, ticketAgeAdd uint32)
 
 	// Packet-protection codecs, populated lazily as keys become available.
 	initialSealer   LongHeaderSealer
@@ -75,7 +77,7 @@ func NewGMCryptoSetupClient(
 	tp *wire.TransportParameters,
 	logger utils.Logger,
 	version protocol.Version,
-	onClientSessionTicket func(psk []byte, ticketAgeAdd uint32),
+	onClientSessionTicket func(identity, psk []byte, ticketAgeAdd uint32),
 ) (*GMCryptoSetup, error) {
 	if clientCfg == nil {
 		return nil, fmt.Errorf("handshake: GM client config is required")
@@ -250,14 +252,15 @@ func (g *GMCryptoSetup) handleOneClient(msgType uint8, msg []byte, encLevel prot
 		// surfaces the PSK via the CRYPTO stream for the application to cache).
 		switch msgType {
 		case tls13gm.HandshakeTypeNewSessionTicket:
-			psk, ageAdd, err := tls13gm.ParseNewSessionTicketBody(msg[4:])
+			identity, psk, ageAdd, err := g.clientHs.HandleNewSessionTicket(msg[4:])
 			if err != nil {
-				return fmt.Errorf("handshake: GM parse NewSessionTicket: %w", err)
+				return fmt.Errorf("handshake: GM process NewSessionTicket: %w", err)
 			}
+			g.clientSessionIdentity = identity
 			g.clientSessionPSK = psk
 			g.clientTicketAgeAdd = ageAdd
 			if g.onClientSessionTicket != nil {
-				g.onClientSessionTicket(psk, ageAdd)
+				g.onClientSessionTicket(identity, psk, ageAdd)
 			}
 			return nil
 		default:
@@ -534,14 +537,16 @@ func (g *GMCryptoSetup) GetSessionTicket() ([]byte, error) {
 	return g.serverHs.NewSessionTicket(7200, 0)
 }
 
-// ClientSessionTicket returns the resumption PSK and ticket_age_add from the
-// most recent NewSessionTicket received from the server (client side), or
-// (nil, 0) if none. The PSK is the NewSessionTicket.Ticket field (carried
-// verbatim) and can be reused as ClientConfig.ResumptionPSK for a subsequent
-// 0-RTT attempt, paired with ticketAgeAdd as ResumptionObfuscatedTicketAge.
-// Not part of the CryptoSetup interface; cast to *GMCryptoSetup to access.
-func (g *GMCryptoSetup) ClientSessionTicket() (psk []byte, ticketAgeAdd uint32) {
-	return g.clientSessionPSK, g.clientTicketAgeAdd
+// ClientSessionTicket returns the opaque ticket identity, the derived
+// resumption PSK, and ticket_age_add from the most recent NewSessionTicket
+// received from the server (client side), or (nil, nil, 0) if none. The
+// identity is the pre_shared_key identity to echo on a later resumption; the
+// PSK keys the binder / 0-RTT early secret; ticketAgeAdd is the ticket_age_add.
+// Feed them back as ClientConfig.ResumptionIdentity / ResumptionPSK /
+// ResumptionObfuscatedTicketAge. Not part of the CryptoSetup interface; cast
+// to *GMCryptoSetup to access.
+func (g *GMCryptoSetup) ClientSessionTicket() (identity, psk []byte, ticketAgeAdd uint32) {
+	return g.clientSessionIdentity, g.clientSessionPSK, g.clientTicketAgeAdd
 }
 
 func (g *GMCryptoSetup) Close() error { return nil }

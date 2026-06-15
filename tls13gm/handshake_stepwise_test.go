@@ -327,12 +327,14 @@ func TestClientHandshake_HelloRetryRequest(t *testing.T) {
 func TestClientHello_PreSharedKey(t *testing.T) {
 	dcid := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
 	psk := bytes.Repeat([]byte{0xEE}, sm3.Size)
+	identity := bytes.Repeat([]byte{0xB0}, 40) // opaque ticket identity
 	const obfAge uint32 = 0x12345678
 
 	client, err := NewClientHandshakerWithConfig(ClientConfig{
 		DCID:                          dcid,
 		InsecureSkipVerify:            true,
 		ResumptionPSK:                 psk,
+		ResumptionIdentity:            identity,
 		ResumptionObfuscatedTicketAge: obfAge,
 	})
 	if err != nil {
@@ -360,7 +362,7 @@ func TestClientHello_PreSharedKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse pre_shared_key: %v", err)
 	}
-	if len(identities) != 1 || !bytes.Equal(identities[0].Identity, psk) || identities[0].ObfuscatedTicketAge != obfAge {
+	if len(identities) != 1 || !bytes.Equal(identities[0].Identity, identity) || identities[0].ObfuscatedTicketAge != obfAge {
 		t.Fatalf("identity mismatch: %+v", identities)
 	}
 	if len(binders) != 1 || len(binders[0]) != sm3.Size {
@@ -379,7 +381,7 @@ func TestClientHello_PreSharedKey(t *testing.T) {
 	copy(truncExts, chMsg.Extensions)
 	for i, e := range truncExts {
 		if e.Type == ExtensionTypePreSharedKey {
-			trunc, err := marshalPreSharedKeyExtension(identities, nil)
+			trunc, err := marshalPreSharedKeyExtension(identities, [][]byte{make([]byte, sm3.Size)})
 			if err != nil {
 				t.Fatalf("marshal truncated: %v", err)
 			}
@@ -409,11 +411,21 @@ func TestServerHandshake_VerifyPSKBinder(t *testing.T) {
 	dcid := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	cert, serverKey := generateTestSM2Cert(t)
 	psk := bytes.Repeat([]byte{0xEE}, sm3.Size)
+	// Standard RFC 8446 model: the PSK travels encrypted in the ticket identity
+	// under a TEK; the server recovers it by decrypting the identity.
+	tek := bytes.Repeat([]byte{0x9A}, SessionTicketKeyLen)
+	wrongTek := bytes.Repeat([]byte{0x88}, SessionTicketKeyLen)
+	identity, err := EncryptSessionTicket(tek, psk)
+	if err != nil {
+		t.Fatalf("EncryptSessionTicket: %v", err)
+	}
+	tekList := func(k []byte) func() [][]byte { return func() [][]byte { return [][]byte{k} } }
 
 	client, err := NewClientHandshakerWithConfig(ClientConfig{
 		DCID:                          dcid,
 		InsecureSkipVerify:            true,
 		ResumptionPSK:                 psk,
+		ResumptionIdentity:            identity,
 		ResumptionObfuscatedTicketAge: 1,
 	})
 	if err != nil {
@@ -426,10 +438,10 @@ func TestServerHandshake_VerifyPSKBinder(t *testing.T) {
 
 	// Server recognizing the PSK must accept the binder.
 	server, err := NewServerHandshakerWithConfig(ServerConfig{
-		DCID:           dcid,
-		Certificate:    cert,
-		PrivateKey:     serverKey,
-		ResumptionPSKs: [][]byte{psk},
+		DCID:              dcid,
+		Certificate:       cert,
+		PrivateKey:        serverKey,
+		SessionTicketKeys: tekList(tek),
 	})
 	if err != nil {
 		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
@@ -440,10 +452,10 @@ func TestServerHandshake_VerifyPSKBinder(t *testing.T) {
 
 	// Server without the PSK must reject.
 	server2, err := NewServerHandshakerWithConfig(ServerConfig{
-		DCID:           dcid,
-		Certificate:    cert,
-		PrivateKey:     serverKey,
-		ResumptionPSKs: [][]byte{bytes.Repeat([]byte{0xFF}, sm3.Size)},
+		DCID:              dcid,
+		Certificate:       cert,
+		PrivateKey:        serverKey,
+		SessionTicketKeys: tekList(wrongTek),
 	})
 	if err != nil {
 		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
@@ -461,9 +473,13 @@ func TestHandshake_PSKResumption(t *testing.T) {
 	dcid1 := []byte{0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8}
 	dcid2 := []byte{0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8}
 	cert, serverKey := generateTestSM2Cert(t)
+	// A single TEK is shared by both server instances so server2 can decrypt a
+	// ticket issued by server1 (stateless resumption).
+	tek := bytes.Repeat([]byte{0x7C}, SessionTicketKeyLen)
+	tekList := func() [][]byte { return [][]byte{tek} }
 
 	// 1. Initial (full) handshake to obtain a resumption ticket.
-	server1, err := NewServerHandshakerWithConfig(ServerConfig{DCID: dcid1, Certificate: cert, PrivateKey: serverKey})
+	server1, err := NewServerHandshakerWithConfig(ServerConfig{DCID: dcid1, Certificate: cert, PrivateKey: serverKey, SessionTicketKeys: tekList})
 	if err != nil {
 		t.Fatalf("server1: %v", err)
 	}
@@ -504,14 +520,22 @@ func TestHandshake_PSKResumption(t *testing.T) {
 	if err := nst.unmarshalBody(ticketBody); err != nil {
 		t.Fatalf("unmarshal ticket: %v", err)
 	}
-	psk := nst.Ticket
+	// Standard model: the client derives the PSK itself (from RMS + ticket
+	// nonce); the ticket bytes are the opaque identity, not the PSK.
+	identity, psk, ageAdd, err := client1.HandleNewSessionTicket(ticketBody)
+	if err != nil {
+		t.Fatalf("client1 HandleNewSessionTicket: %v", err)
+	}
+	if !bytes.Equal(identity, nst.Ticket) {
+		t.Fatalf("HandleNewSessionTicket identity != nst.Ticket")
+	}
 
 	// 2. PSK resumption handshake.
 	server2, err := NewServerHandshakerWithConfig(ServerConfig{
-		DCID:           dcid2,
-		Certificate:    cert,
-		PrivateKey:     serverKey,
-		ResumptionPSKs: [][]byte{psk},
+		DCID:              dcid2,
+		Certificate:       cert,
+		PrivateKey:        serverKey,
+		SessionTicketKeys: tekList,
 	})
 	if err != nil {
 		t.Fatalf("server2: %v", err)
@@ -520,7 +544,8 @@ func TestHandshake_PSKResumption(t *testing.T) {
 		DCID:                          dcid2,
 		InsecureSkipVerify:            true,
 		ResumptionPSK:                 psk,
-		ResumptionObfuscatedTicketAge: 1,
+		ResumptionIdentity:            identity,
+		ResumptionObfuscatedTicketAge: ageAdd,
 	})
 	if err != nil {
 		t.Fatalf("client2: %v", err)
@@ -574,22 +599,28 @@ func TestHandshake_EarlyTrafficKeys(t *testing.T) {
 	dcid := []byte{0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8}
 	cert, serverKey := generateTestSM2Cert(t)
 	psk := bytes.Repeat([]byte{0xEE}, sm3.Size)
+	tek := bytes.Repeat([]byte{0x5D}, SessionTicketKeyLen)
+	identity, err := EncryptSessionTicket(tek, psk)
+	if err != nil {
+		t.Fatalf("EncryptSessionTicket: %v", err)
+	}
 
 	client, err := NewClientHandshakerWithConfig(ClientConfig{
 		DCID:                          dcid,
 		InsecureSkipVerify:            true,
 		ResumptionPSK:                 psk,
+		ResumptionIdentity:            identity,
 		ResumptionObfuscatedTicketAge: 1,
 	})
 	if err != nil {
 		t.Fatalf("client: %v", err)
 	}
 	server, err := NewServerHandshakerWithConfig(ServerConfig{
-		DCID:           dcid,
-		Certificate:    cert,
-		PrivateKey:     serverKey,
-		ResumptionPSKs: [][]byte{psk},
-		AllowEarlyData: true,
+		DCID:              dcid,
+		Certificate:       cert,
+		PrivateKey:        serverKey,
+		SessionTicketKeys: func() [][]byte { return [][]byte{tek} },
+		AllowEarlyData:    true,
 	})
 	if err != nil {
 		t.Fatalf("server: %v", err)

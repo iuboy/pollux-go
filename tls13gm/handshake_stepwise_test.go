@@ -604,7 +604,7 @@ func TestHandshake_EarlyTrafficKeys(t *testing.T) {
 	if err := chMsg.unmarshalBody(chBody); err != nil {
 		t.Fatalf("unmarshal CH: %v", err)
 	}
-	if findExtension(chMsg.Extensions, ExtensionTypeEarlyData) == nil {
+	if !hasExtension(chMsg.Extensions, ExtensionTypeEarlyData) {
 		t.Fatal("PSK ClientHello missing early_data extension")
 	}
 	// Client derives 0-RTT keys right after the ClientHello.

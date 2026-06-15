@@ -60,7 +60,8 @@ func parseExtensions(b []byte) ([]Extension, int, error) {
 }
 
 // findExtension returns the data of the first extension of the given type, or
-// nil if absent.
+// nil if absent. Note: an extension that is present but carries no data (e.g.
+// early_data) also yields nil; use hasExtension to test for presence.
 func findExtension(exts []Extension, typ uint16) []byte {
 	for _, e := range exts {
 		if e.Type == typ {
@@ -68,6 +69,18 @@ func findExtension(exts []Extension, typ uint16) []byte {
 		}
 	}
 	return nil
+}
+
+// hasExtension reports whether an extension of the given type is present,
+// regardless of its data (use this for empty-valued extensions like early_data
+// where findExtension's nil return is ambiguous).
+func hasExtension(exts []Extension, typ uint16) bool {
+	for _, e := range exts {
+		if e.Type == typ {
+			return true
+		}
+	}
+	return false
 }
 
 // marshalCookieExtension encodes a cookie as the TLS opaque cookie vector

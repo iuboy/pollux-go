@@ -127,5 +127,6 @@ func populateConfig(config *Config) *Config {
 		Tracer:                           config.Tracer,
 		GMSM4GCM:                         config.GMSM4GCM,
 		GMHandshakeConfig:                config.GMHandshakeConfig,
+		GMOnClientSessionTicket:          config.GMOnClientSessionTicket,
 	}
 }

@@ -41,6 +41,10 @@ type GMCryptoSetup struct {
 
 	events []Event
 
+	// clientSessionTicket caches the last NewSessionTicket received (1-RTT
+	// post-handshake) so the application can extract the resumption PSK.
+	clientSessionTicket []byte
+
 	// Packet-protection codecs, populated lazily as keys become available.
 	initialSealer   LongHeaderSealer
 	initialOpener   LongHeaderOpener
@@ -238,6 +242,7 @@ func (g *GMCryptoSetup) handleOneClient(msgType uint8, msg []byte, encLevel prot
 		// surfaces the PSK via the CRYPTO stream for the application to cache).
 		switch msgType {
 		case tls13gm.HandshakeTypeNewSessionTicket:
+			g.clientSessionTicket = append(g.clientSessionTicket[:0], msg...)
 			return nil
 		default:
 			return fmt.Errorf("handshake: GM unexpected 1-RTT message type %d", msgType)
@@ -512,6 +517,13 @@ func (g *GMCryptoSetup) GetSessionTicket() ([]byte, error) {
 	}
 	return g.serverHs.NewSessionTicket(7200, 0)
 }
+
+// ClientSessionTicket returns the most recent NewSessionTicket received from
+// the server (client side), or nil if none. The application extracts the
+// resumption PSK (the Ticket field) to attempt resumption / 0-RTT on a later
+// connection. Not part of the CryptoSetup interface; cast to *GMCryptoSetup to
+// access.
+func (g *GMCryptoSetup) ClientSessionTicket() []byte { return g.clientSessionTicket }
 
 func (g *GMCryptoSetup) Close() error { return nil }
 

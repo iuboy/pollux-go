@@ -761,3 +761,37 @@ func TestRFC8998_DialFixed(t *testing.T) {
 		t.Fatalf("handshake: %v", err)
 	}
 }
+
+// TestRFC8998_DialFixedResume does a full handshake + PSK resume against the
+// external s_server at POLLUX_FIXED_PORT, for capture/tshark debugging of the
+// resume flight.
+func TestRFC8998_DialFixedResume(t *testing.T) {
+	port := os.Getenv("POLLUX_FIXED_PORT")
+	if port == "" {
+		t.Skip("set POLLUX_FIXED_PORT")
+	}
+	// Phase 1: full handshake + harvest ticket.
+	conn1, err := net.Dial("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		t.Fatalf("dial1: %v", err)
+	}
+	hs1, _, err := dialRFC8998(conn1, "localhost", nil, nil, 0)
+	if err != nil {
+		t.Fatalf("handshake1: %v", err)
+	}
+	identity, psk, ageAdd, err := readNewSessionTicket(conn1, hs1)
+	if err != nil {
+		t.Fatalf("read NST: %v", err)
+	}
+	conn1.Close()
+	t.Logf("harvested identity(%d) psk(%d) age=%d", len(identity), len(psk), ageAdd)
+	// Phase 2: PSK resume.
+	conn2, err := net.Dial("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		t.Fatalf("dial2: %v", err)
+	}
+	defer conn2.Close()
+	if _, _, err := dialRFC8998(conn2, "localhost", identity, psk, ageAdd); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+}

@@ -122,6 +122,10 @@ type ClientHandshaker struct {
 	// ClientHello (pre_shared_key + binder). Copied from ClientConfig.
 	resumptionPSK    []byte
 	resumptionObfAge uint32
+	// pskMode is set in HandleServerHello when the server selected our PSK. It
+	// makes the handshake skip Certificate/CertificateVerify (server omits them
+	// in PSK mode) and derive the early secret from resumptionPSK.
+	pskMode bool
 }
 
 // PeerTransportParams returns the raw QUIC transport parameters received from
@@ -335,11 +339,14 @@ func (c *ClientHandshaker) HandleServerFlight(serverHello, encryptedExt, certifi
 	if err := c.HandleEncryptedExtensions(encryptedExt); err != nil {
 		return err
 	}
-	if err := c.HandleCertificate(certificate); err != nil {
-		return err
-	}
-	if err := c.HandleCertificateVerify(certVerify); err != nil {
-		return err
+	// PSK mode: server omits Certificate/CertificateVerify.
+	if !c.pskMode {
+		if err := c.HandleCertificate(certificate); err != nil {
+			return err
+		}
+		if err := c.HandleCertificateVerify(certVerify); err != nil {
+			return err
+		}
 	}
 	return c.HandleServerFinished(finished)
 }
@@ -369,6 +376,11 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 		// ClientHello2 before re-invoking HandleServerHello.
 		return ErrHelloRetryRequest
 	}
+	if findExtension(sh.Extensions, ExtensionTypePreSharedKey) != nil {
+		// Server selected our PSK (psk_dhe_ke): derive the early secret from
+		// the resumption PSK and skip Certificate/CertificateVerify.
+		c.pskMode = true
+	}
 	ks := findExtension(sh.Extensions, ExtensionTypeKeyShare)
 	if ks == nil {
 		return fmt.Errorf("tls13gm: ServerHello missing key_share extension")
@@ -387,7 +399,7 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 	}
 	c.transcript.AddMessage(shType, shBody)
 
-	earlySecret := DeriveEarlySecret(nil)
+	earlySecret := DeriveEarlySecret(c.resumptionPSK)
 	c.handshakeSecret, err = DeriveHandshakeSecret(earlySecret, sharedSecret)
 	if err != nil {
 		return err
@@ -480,7 +492,13 @@ func (c *ClientHandshaker) HandleEncryptedExtensions(encryptedExt []byte) error 
 		c.peerTransportParams = tp
 	}
 	c.transcript.AddMessage(eeType, eeBody)
-	c.phase = clientAfterEncryptedExtensions
+	// In PSK mode the server omits Certificate/CertificateVerify, so advance
+	// straight to the Finished-expecting phase.
+	if c.pskMode {
+		c.phase = clientAfterCertificateVerify
+	} else {
+		c.phase = clientAfterEncryptedExtensions
+	}
 	return nil
 }
 
@@ -902,6 +920,12 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 			{Type: ExtensionTypeKeyShare, Data: marshalServerKeyShare(CurveSM2, sm2.MarshalUncompressed(pub))},
 		},
 	}
+	if s.resumptionSelectedPSK != nil {
+		// PSK resumption: select the offered identity (index 0). The
+		// ServerHello pre_shared_key extension carries the selected_identity
+		// (a single uint16).
+		shMsg.Extensions = append(shMsg.Extensions, Extension{Type: ExtensionTypePreSharedKey, Data: []byte{0x00, 0x00}})
+	}
 	if serverHello, err = MarshalHandshakeMessage(shMsg); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
@@ -912,7 +936,9 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("tls13gm: ECDHE: %w", err)
 	}
-	earlySecret := DeriveEarlySecret(nil)
+	// PSK resumption: derive the early secret from the selected PSK; otherwise
+	// (nil) DeriveEarlySecret uses zeros. psk_dhe_ke still mixes ECDHE below.
+	earlySecret := DeriveEarlySecret(s.resumptionSelectedPSK)
 	s.handshakeSecret, err = DeriveHandshakeSecret(earlySecret, sharedSecret)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
@@ -940,23 +966,25 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	}
 	s.transcript.AddMessage(HandshakeTypeEncryptedExtensions, encExt[4:])
 
-	// --- Certificate (single self-signed server cert) ---
-	if certificate, err = MarshalHandshakeMessage(&CertificateMsg{
-		CertificateList: []CertificateEntry{{Certificate: s.serverCert.Raw}},
-	}); err != nil {
-		return nil, nil, nil, nil, nil, err
-	}
-	s.transcript.AddMessage(HandshakeTypeCertificate, certificate[4:])
+	// --- Certificate / CertificateVerify (omitted in PSK resumption mode) ---
+	if s.resumptionSelectedPSK == nil {
+		if certificate, err = MarshalHandshakeMessage(&CertificateMsg{
+			CertificateList: []CertificateEntry{{Certificate: s.serverCert.Raw}},
+		}); err != nil {
+			return nil, nil, nil, nil, nil, err
+		}
+		s.transcript.AddMessage(HandshakeTypeCertificate, certificate[4:])
 
-	// --- CertificateVerify (sign over transcript = CH+SH+EE+Cert) ---
-	sig, err := SignCertificateVerify(s.serverKey, ServerCertificateVerifyContext, s.transcript.Sum())
-	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		// --- CertificateVerify (sign over transcript = CH+SH+EE+Cert) ---
+		sig, err := SignCertificateVerify(s.serverKey, ServerCertificateVerifyContext, s.transcript.Sum())
+		if err != nil {
+			return nil, nil, nil, nil, nil, err
+		}
+		if certVerify, err = MarshalHandshakeMessage(&CertificateVerifyMsg{SignatureScheme: SM2SigSM3, Signature: sig}); err != nil {
+			return nil, nil, nil, nil, nil, err
+		}
+		s.transcript.AddMessage(HandshakeTypeCertificateVerify, certVerify[4:])
 	}
-	if certVerify, err = MarshalHandshakeMessage(&CertificateVerifyMsg{SignatureScheme: SM2SigSM3, Signature: sig}); err != nil {
-		return nil, nil, nil, nil, nil, err
-	}
-	s.transcript.AddMessage(HandshakeTypeCertificateVerify, certVerify[4:])
 
 	// --- Finished (verify_data over transcript = CH+SH+EE+Cert+CV) ---
 	serverFinishedKey, err := DeriveFinishedKey(s.serverHSTraffic)

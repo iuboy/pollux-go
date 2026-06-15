@@ -589,6 +589,7 @@ func TestHandshake_EarlyTrafficKeys(t *testing.T) {
 		Certificate:    cert,
 		PrivateKey:     serverKey,
 		ResumptionPSKs: [][]byte{psk},
+		AllowEarlyData: true,
 	})
 	if err != nil {
 		t.Fatalf("server: %v", err)

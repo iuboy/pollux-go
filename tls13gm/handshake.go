@@ -719,6 +719,19 @@ type ServerHandshaker struct {
 	// secret from it instead of zeros.
 	resumptionPSKs        [][]byte
 	resumptionSelectedPSK []byte
+	// allowEarlyData echoes ServerConfig.AllowEarlyData; clientOfferedEarlyData
+	// is set in HandleClientHello when the ClientHello carries early_data.
+	allowEarlyData         bool
+	clientOfferedEarlyData bool
+}
+
+// DiscardEarlyKeys clears the 0-RTT keys (called by the transport once the
+// handshake is confirmed, or when the server rejects 0-RTT).
+func (s *ServerHandshaker) DiscardEarlyKeys() {
+	if s.secrets.ClientEarlyKeys != nil {
+		s.secrets.ClientEarlyKeys.Zero()
+		s.secrets.ClientEarlyKeys = nil
+	}
 }
 
 // PeerTransportParams returns the raw QUIC transport parameters received from
@@ -745,6 +758,12 @@ type ServerConfig struct {
 	// gets a PSK-mode handshake (no Certificate/CertificateVerify). A production
 	// caller populates this from a ticket store; tls13gm does not maintain one.
 	ResumptionPSKs [][]byte
+
+	// AllowEarlyData, when true, lets the server accept 0-RTT data from a
+	// resuming client (the EncryptedExtensions then carries early_data). A server
+	// accepting 0-RTT MUST pair this with an AntiReplayCache (quicgm); without
+	// one, 0-RTT is rejected even if this is true.
+	AllowEarlyData bool
 }
 
 // NewServerHandshakerWithConfig prepares a server handshaker from an explicit
@@ -781,6 +800,7 @@ func NewServerHandshakerWithConfig(cfg ServerConfig) (*ServerHandshaker, error) 
 		secrets:              HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
 		localTransportParams: cfg.TransportParameters,
 		resumptionPSKs:       cfg.ResumptionPSKs,
+		allowEarlyData:       cfg.AllowEarlyData,
 	}, nil
 }
 
@@ -860,9 +880,14 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 		// so the server can decrypt any 0-RTT data the client sends. Whether the
 		// server actually accepts the 0-RTT is a transport-layer policy decision.
 		if hasExtension(chMsg.Extensions, ExtensionTypeEarlyData) {
-			s.secrets.ClientEarlyKeys, err = DeriveEarlyTrafficKeys(s.resumptionSelectedPSK, s.transcript.Sum())
-			if err != nil {
-				return fmt.Errorf("tls13gm: derive 0-RTT keys: %w", err)
+			s.clientOfferedEarlyData = true
+			// Only derive 0-RTT keys when the server is willing to accept early
+			// data; otherwise the client's 0-RTT is rejected (no early_data in EE).
+			if s.allowEarlyData {
+				s.secrets.ClientEarlyKeys, err = DeriveEarlyTrafficKeys(s.resumptionSelectedPSK, s.transcript.Sum())
+				if err != nil {
+					return fmt.Errorf("tls13gm: derive 0-RTT keys: %w", err)
+				}
 			}
 		}
 	}
@@ -992,6 +1017,11 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	ee := &EncryptedExtensionsMsg{}
 	if s.localTransportParams != nil {
 		ee.Extensions = append(ee.Extensions, Extension{Type: ExtensionTypeQUICTransportParams, Data: s.localTransportParams})
+	}
+	if s.clientOfferedEarlyData && s.allowEarlyData {
+		// Accept the client's 0-RTT: echo early_data in EncryptedExtensions so
+		// the client knows its early data was accepted.
+		ee.Extensions = append(ee.Extensions, Extension{Type: ExtensionTypeEarlyData})
 	}
 	if encExt, err = MarshalHandshakeMessage(ee); err != nil {
 		return nil, nil, nil, nil, nil, err

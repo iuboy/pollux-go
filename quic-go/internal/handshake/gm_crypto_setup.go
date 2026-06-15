@@ -232,6 +232,16 @@ func (g *GMCryptoSetup) handleOneClient(msgType uint8, msg []byte, encLevel prot
 		default:
 			return fmt.Errorf("handshake: GM unexpected Handshake message type %d", msgType)
 		}
+	case protocol.Encryption1RTT:
+		// Post-handshake messages on the 1-RTT stream. The only one the GM
+		// server currently sends is NewSessionTicket; accept it (the client
+		// surfaces the PSK via the CRYPTO stream for the application to cache).
+		switch msgType {
+		case tls13gm.HandshakeTypeNewSessionTicket:
+			return nil
+		default:
+			return fmt.Errorf("handshake: GM unexpected 1-RTT message type %d", msgType)
+		}
 	default:
 		return fmt.Errorf("handshake: GM client received message at unexpected level %s", encLevel)
 	}
@@ -471,6 +481,12 @@ func (g *GMCryptoSetup) SetHandshakeConfirmed() {
 	// the handshake is confirmed.
 	if g.oneRTTAEAD != nil {
 		g.oneRTTAEAD.SetHandshakeConfirmed()
+	}
+	// 0-RTT keys are obsolete once the handshake is confirmed (1-RTT protects
+	// all further traffic). Only signal discard if 0-RTT was actually used.
+	if g.perspective == protocol.PerspectiveServer && g.serverHs != nil && g.serverHs.Secrets().ClientEarlyKeys != nil {
+		g.serverHs.DiscardEarlyKeys()
+		g.enqueue(Event{Kind: EventDiscard0RTTKeys})
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"github.com/iuboy/pollux-go/sm2"
-	"github.com/iuboy/pollux-go/sm3"
 	"github.com/iuboy/pollux-go/smx509"
 )
 
@@ -346,29 +345,22 @@ func (c *ClientHandshaker) buildClientHello(cookie []byte) ([]byte, error) {
 // per RFC 8446 §4.2.11; pre_shared_key must be the last extension.
 func (c *ClientHandshaker) appendPreSharedKey(ch *ClientHelloMsg) ([]byte, error) {
 	identities := []PskIdentity{{Identity: c.resumptionIdentity, ObfuscatedTicketAge: c.resumptionObfAge}}
-	// RFC 8446 §4.2.11: the binder transcript hashes a ClientHello whose binder
-	// field is the correct length but filled with zeros (NOT an empty binders
-	// list). The server zeroes the binder it received and recomputes over the
-	// same bytes.
-	zeroBinder := make([]byte, sm3.Size)
-	truncExt, err := marshalPreSharedKeyExtension(identities, [][]byte{zeroBinder})
-	if err != nil {
-		return nil, fmt.Errorf("tls13gm: marshal truncated pre_shared_key: %w", err)
-	}
 	// psk_key_exchange_modes is already in ch.Extensions (added in
 	// buildClientHello for every CH). Only append early_data (if offering
-	// 0-RTT) and pre_shared_key here.
+	// 0-RTT) here; pre_shared_key is appended after the binder is computed.
 	if c.offerEarlyData {
 		ch.Extensions = append(ch.Extensions, Extension{Type: ExtensionTypeEarlyData})
 	}
-	ch.Extensions = append(ch.Extensions,
-		Extension{Type: ExtensionTypePreSharedKey, Data: truncExt},
-	)
-	truncFull, err := MarshalHandshakeMessage(ch)
+	// RFC 8446 §4.2.11: the binder is computed over the ClientHello truncated
+	// just before the binders field — identities included, binders excluded,
+	// and the pre_shared_key ext_len keeps its full value. pskBinderTranscript
+	// adds a placeholder pre_shared_key extension, marshals the full message,
+	// and strips the trailing binders field, matching OpenSSL's binderoffset.
+	transcript, err := pskBinderTranscript(ch, identities)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("tls13gm: binder transcript: %w", err)
 	}
-	binder, err := computeResumptionBinder(c.resumptionPSK, truncFull)
+	binder, err := computeResumptionBinder(c.resumptionPSK, transcript)
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: compute binder: %w", err)
 	}
@@ -376,7 +368,7 @@ func (c *ClientHandshaker) appendPreSharedKey(ch *ClientHelloMsg) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	ch.Extensions[len(ch.Extensions)-1] = Extension{Type: ExtensionTypePreSharedKey, Data: fullExt}
+	ch.Extensions = append(ch.Extensions, Extension{Type: ExtensionTypePreSharedKey, Data: fullExt})
 	return MarshalHandshakeMessage(ch)
 }
 
@@ -1005,30 +997,14 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 	if err != nil {
 		return fmt.Errorf("tls13gm: client PSK identity not recognized: %w", err)
 	}
-	// Reconstruct the truncated ClientHello (pre_shared_key binders empty) to
-	// recompute the binder over the same transcript the client used.
-	truncExts := make([]Extension, len(chMsg.Extensions))
-	copy(truncExts, chMsg.Extensions)
-	for i, e := range truncExts {
-		if e.Type == ExtensionTypePreSharedKey {
-			// RFC 8446 §4.2.11: recompute the binder over the ClientHello with
-			// the binder field zeroed (correct length), matching what the client
-			// hashed.
-			zeroBinder := make([]byte, sm3.Size)
-			trunc, err := marshalPreSharedKeyExtension(identities, [][]byte{zeroBinder})
-			if err != nil {
-				return err
-			}
-			truncExts[i] = Extension{Type: ExtensionTypePreSharedKey, Data: trunc}
-		}
-	}
-	truncChMsg := *chMsg
-	truncChMsg.Extensions = truncExts
-	truncFull, err := MarshalHandshakeMessage(&truncChMsg)
+	// Recompute the binder over the same transcript the client used: the
+	// ClientHello truncated just before the binders field (identities included,
+	// binders excluded, pre_shared_key ext_len kept full) — RFC 8446 §4.2.11.
+	transcript, err := pskBinderTranscript(chMsg, identities)
 	if err != nil {
 		return err
 	}
-	expected, err := computeResumptionBinder(psk, truncFull)
+	expected, err := computeResumptionBinder(psk, transcript)
 	if err != nil {
 		return err
 	}

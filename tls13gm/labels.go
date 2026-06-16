@@ -9,11 +9,14 @@ const (
 	// LabelFinished is used for the Finished message verify_data.
 	LabelFinished = "finished"
 
-	// LabelResumption is the RFC 8446 §7.1 label for deriving the resumption
-	// PSK from the resumption master secret: HKDF-Expand-Label(RMS, "res psk",
-	// ticket_nonce, Hash.length). (Was wrongly "resumption" — a self-loop-masked
-	// bug that only surfaced under cross-implementation resumption interop.)
-	LabelResumption = "res psk"
+	// LabelResumption is the label for deriving the resumption PSK from the
+	// resumption master secret: HKDF-Expand-Label(RMS, LabelResumption,
+	// ticket_nonce, Hash.length). RFC 8446 §7.1 specifies "res psk", but
+	// BabaSSL/Tongsuo — the standard GM peer for Route C — uses the non-standard
+	// "resumption" label (verified at ssl/statem/statem_srvr.c:4260 in the
+	// Tongsuo tree, source-level diagnosis). pollux adopts "resumption" for
+	// interoperability; pollux <-> pollux stays consistent (both ends use it).
+	LabelResumption = "resumption"
 
 	// Traffic secret labels.
 	LabelClientEarlyTraffic = "c e traffic"

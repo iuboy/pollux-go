@@ -113,5 +113,6 @@ func (c *ClientConfig) tls13ClientConfig() (*tls13gm.ClientConfig, error) {
 		ResumptionPSK:                 c.ResumptionPSK,
 		ResumptionIdentity:            c.ResumptionIdentity,
 		ResumptionObfuscatedTicketAge: c.ResumptionObfuscatedTicketAge,
+		EarlyData:                     c.EarlyData,
 	}, nil
 }

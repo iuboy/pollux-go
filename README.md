@@ -87,15 +87,11 @@ make cover-html   # 生成覆盖率报告
   RFC 8998，QUIC 层为 pollux-go 自有实现。
 - **密钥更新职责**：pollux 仅提供 key update 原语（`tls13gm.QUICKeyUpdate`），
   **不强制**更新阈值——由传输层（quic-go）或直接集成方负责在阈值临近时发起更新，
-  避免长连接 SM4-GCM nonce 复用风险。详见
-  [Route C 设计 §8](docs/design/route-c-quic-gm.md#8-安全注意事项)。
-- 安全审计的完整记录见 [`docs/security/audit.md`](docs/security/audit.md)。
+  避免长连接 SM4-GCM nonce 复用风险。
 
 ## 文档
 
-- [架构与设计](docs/design/architecture.md) — 项目定位、概念边界、路线 A/B/C、包职责、标准依据
-- [Route C 设计（RFC 8998 QUIC Packet Protection）](docs/design/route-c-quic-gm.md)
-- [安全审计报告](docs/security/audit.md) — 问题清单、修复状态、回归测试映射
+- [架构与设计](docs/design/architecture.md) — 项目定位、概念边界、包职责、标准依据
 - [内存与密钥管理](docs/security/memory-management.md)
 - [RFC 8998 互通矩阵](docs/security/interop-matrix.md) — pollux-go × Tongsuo/BabaSSL 合规验证
 - [gosec 配置](docs/security/gosec-configuration.md)

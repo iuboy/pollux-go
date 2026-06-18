@@ -2,6 +2,7 @@ package quicgm
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"github.com/iuboy/pollux-go/tls13gm"
@@ -22,7 +23,7 @@ func Seal1RTTPacket(keys *tls13gm.QUICPacketKeys, dcid []byte, pn uint64, pnLen 
 		return nil, fmt.Errorf("quicgm: packet number length %d must be 1..4", pnLen)
 	}
 	if len(dcid) == 0 {
-		return nil, fmt.Errorf("quicgm: 1-RTT packet requires a non-empty dcid")
+		return nil, errors.New("quicgm: 1-RTT packet requires a non-empty dcid")
 	}
 	protector, err := NewQUICPacketProtectorFromKeys(keys)
 	if err != nil {
@@ -72,16 +73,16 @@ func Open1RTTPacket(keys *tls13gm.QUICPacketKeys, expectedDCID []byte, largestAc
 
 	dcidLen := len(expectedDCID)
 	if len(packet) < 1 {
-		return 0, nil, fmt.Errorf("quicgm: 1-RTT packet too short")
+		return 0, nil, errors.New("quicgm: 1-RTT packet too short")
 	}
 	if packet[0]&0x80 != 0 {
-		return 0, nil, fmt.Errorf("quicgm: not a short-header packet")
+		return 0, nil, errors.New("quicgm: not a short-header packet")
 	}
 	if 1+dcidLen > len(packet) {
 		return 0, nil, fmt.Errorf("quicgm: expected dcid length %d exceeds packet", dcidLen)
 	}
 	if !bytes.Equal(packet[1:1+dcidLen], expectedDCID) {
-		return 0, nil, fmt.Errorf("quicgm: dcid mismatch")
+		return 0, nil, errors.New("quicgm: dcid mismatch")
 	}
 	pnOffset := 1 + dcidLen
 	if pnOffset >= len(packet) {
@@ -103,12 +104,12 @@ func Open1RTTPacket(keys *tls13gm.QUICPacketKeys, expectedDCID []byte, largestAc
 
 	headerEnd := pnOffset + int(pnLen)
 	if headerEnd > len(packet) {
-		return 0, nil, fmt.Errorf("quicgm: packet number field exceeds packet length")
+		return 0, nil, errors.New("quicgm: packet number field exceeds packet length")
 	}
 	headerAAD := packet[:headerEnd]
 	ciphertext := packet[headerEnd:]
 	if len(ciphertext) < protector.TagSize() {
-		return 0, nil, fmt.Errorf("quicgm: 1-RTT payload shorter than GCM tag")
+		return 0, nil, errors.New("quicgm: 1-RTT payload shorter than GCM tag")
 	}
 	payload, err = protector.DecryptPayload(pn, headerAAD, ciphertext)
 	if err != nil {

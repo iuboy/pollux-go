@@ -1,6 +1,7 @@
 package tls13gm
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/iuboy/pollux-go/internal/memsecure"
@@ -31,7 +32,7 @@ type QUICPacketKeys struct {
 // (RFC 9001 §5.1). These labels differ from TLS 1.3's "key"/"iv" labels.
 func DeriveQUICPacketKeys(trafficSecret []byte) (*QUICPacketKeys, error) {
 	if len(trafficSecret) == 0 {
-		return nil, fmt.Errorf("tls13gm: QUIC traffic secret must not be empty")
+		return nil, errors.New("tls13gm: QUIC traffic secret must not be empty")
 	}
 	key, err := HKDFExpandLabel(trafficSecret, LabelQUICKey, nil, quicAEADKeyLen)
 	if err != nil {
@@ -64,7 +65,7 @@ func DeriveQUICPacketKeys(trafficSecret []byte) (*QUICPacketKeys, error) {
 // reconstructing the packet protector — pollux does not enforce the cadence.
 func QUICKeyUpdate(trafficSecret []byte) ([]byte, error) {
 	if len(trafficSecret) == 0 {
-		return nil, fmt.Errorf("tls13gm: QUIC traffic secret must not be empty")
+		return nil, errors.New("tls13gm: QUIC traffic secret must not be empty")
 	}
 	return HKDFExpandLabel(trafficSecret, LabelQUICKU, nil, len(trafficSecret))
 }
@@ -100,7 +101,7 @@ var quicV1InitialSalt = [20]byte{
 // Initial secrets, which in turn drive DeriveQUICPacketKeys.
 func DeriveQUICInitialSecret(destinationConnectionID []byte) ([]byte, error) {
 	if len(destinationConnectionID) == 0 {
-		return nil, fmt.Errorf("tls13gm: QUIC destination connection ID must not be empty")
+		return nil, errors.New("tls13gm: QUIC destination connection ID must not be empty")
 	}
 	return sm3.HKDFExtract(quicV1InitialSalt[:], destinationConnectionID), nil
 }

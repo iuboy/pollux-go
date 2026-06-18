@@ -2,6 +2,7 @@ package quicgm
 
 import (
 	"crypto/cipher"
+	"errors"
 	"fmt"
 
 	"github.com/iuboy/pollux-go/sm4"
@@ -43,7 +44,7 @@ func NewQUICPacketProtector(trafficSecret []byte) (*QUICPacketProtector, error) 
 // holds the pointer and zeroes it via Zero().
 func NewQUICPacketProtectorFromKeys(keys *tls13gm.QUICPacketKeys) (*QUICPacketProtector, error) {
 	if keys == nil {
-		return nil, fmt.Errorf("quicgm: nil packet keys")
+		return nil, errors.New("quicgm: nil packet keys")
 	}
 	aead, err := tls13gm.NewAEAD(keys.AEADKey, keys.AEADIV)
 	if err != nil {

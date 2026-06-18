@@ -3,7 +3,7 @@ package tls13gm
 import (
 	"crypto/ecdsa"
 	"crypto/rand"
-	"fmt"
+	"errors"
 	"io"
 
 	"github.com/iuboy/pollux-go/sm2"
@@ -32,10 +32,10 @@ func GenerateCurveSM2KeyPair(r io.Reader) (*sm2.PrivateKey, error) {
 // matching the TLS 1.3 key agreement semantics (not GM/T 0003.3 key exchange).
 func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]byte, error) {
 	if privateKey == nil {
-		return nil, fmt.Errorf("tls13gm: privateKey is nil")
+		return nil, errors.New("tls13gm: privateKey is nil")
 	}
 	if peerPublic == nil {
-		return nil, fmt.Errorf("tls13gm: peerPublic is nil")
+		return nil, errors.New("tls13gm: peerPublic is nil")
 	}
 	// Curve identity check. The ECDH scalar below is the SM2 private scalar, so it
 	// MUST only ever be multiplied on the SM2 curve. Performing it on a different
@@ -43,14 +43,14 @@ func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]b
 	// private scalar. sm2.PublicKey is a type alias for ecdsa.PublicKey, so the
 	// type system cannot enforce this — the check must be explicit.
 	if peerPublic.Curve != sm2.P256() {
-		return nil, fmt.Errorf("tls13gm: peer public key is not on the SM2 curve")
+		return nil, errors.New("tls13gm: peer public key is not on the SM2 curve")
 	}
 	// Defense in depth: even with the correct curve, reject off-curve points to
 	// prevent invalid-curve attacks. Callers arriving via sm2.UnmarshalUncompressed
 	// have already validated this, but CurveSM2ECDHE is a public API and must not
 	// rely on that invariant.
 	if !peerPublic.Curve.IsOnCurve(peerPublic.X, peerPublic.Y) { //nolint:staticcheck // SM2 curve; crypto/ecdh has no SM2 support
-		return nil, fmt.Errorf("tls13gm: peer public key is not on the SM2 curve")
+		return nil, errors.New("tls13gm: peer public key is not on the SM2 curve")
 	}
 	// sm2.PrivateKey embeds ecdsa.PrivateKey (via PublicKey), so .D and .Curve
 	// are directly accessible. Perform raw scalar multiplication on the peer's
@@ -70,7 +70,7 @@ func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]b
 
 	x, _ := peerPublic.Curve.ScalarMult(peerPublic.X, peerPublic.Y, dBytes) //nolint:staticcheck // SM2 raw ECDHE; crypto/ecdh has no SM2 support, scalar padded to 32B for gmsm constant-time path
 	if x == nil {
-		return nil, fmt.Errorf("tls13gm: ECDH scalar multiplication failed")
+		return nil, errors.New("tls13gm: ECDH scalar multiplication failed")
 	}
 	shared := x.Bytes()
 	// Pad shared secret to 32 bytes.

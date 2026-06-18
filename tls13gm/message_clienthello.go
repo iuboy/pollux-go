@@ -1,6 +1,9 @@
 package tls13gm
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // ClientHelloMsg is the TLS 1.3 ClientHello (RFC 8446 §4.1.2), carrying only
 // the fields the RFC 8998 handshake engine uses.
@@ -49,7 +52,7 @@ func (m *ClientHelloMsg) marshalBody() ([]byte, error) {
 func (m *ClientHelloMsg) unmarshalBody(b []byte) error {
 	p := 0
 	if len(b) < p+2+32 {
-		return fmt.Errorf("tls13gm: ClientHello truncated before session id")
+		return errors.New("tls13gm: ClientHello truncated before session id")
 	}
 	m.LegacyVersion = uint16(b[p])<<8 | uint16(b[p+1])
 	p += 2
@@ -57,7 +60,7 @@ func (m *ClientHelloMsg) unmarshalBody(b []byte) error {
 	p += 32
 
 	if p >= len(b) {
-		return fmt.Errorf("tls13gm: ClientHello truncated at session id length")
+		return errors.New("tls13gm: ClientHello truncated at session id length")
 	}
 	sidLen := int(b[p])
 	p++
@@ -68,7 +71,7 @@ func (m *ClientHelloMsg) unmarshalBody(b []byte) error {
 	p += sidLen
 
 	if p+2 > len(b) {
-		return fmt.Errorf("tls13gm: ClientHello truncated at cipher suites length")
+		return errors.New("tls13gm: ClientHello truncated at cipher suites length")
 	}
 	csLen := int(b[p])<<8 | int(b[p+1])
 	p += 2
@@ -82,7 +85,7 @@ func (m *ClientHelloMsg) unmarshalBody(b []byte) error {
 	p += csLen
 
 	if p >= len(b) {
-		return fmt.Errorf("tls13gm: ClientHello truncated at compression methods")
+		return errors.New("tls13gm: ClientHello truncated at compression methods")
 	}
 	cmLen := int(b[p])
 	p++

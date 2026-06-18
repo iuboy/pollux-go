@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/iuboy/pollux-go/internal/memsecure"
 	"github.com/iuboy/pollux-go/sm2"
 	"github.com/iuboy/pollux-go/smx509"
 )
@@ -41,6 +42,12 @@ type HandshakeSecrets struct {
 
 // Zero securely zeroes every key set in the secret bundle. Call it once the
 // connection that owns these keys has closed. Nil fields are skipped.
+//
+// Scope: Zero zeroes the packet-protection key sets (Initial/Handshake/1-RTT)
+// but NOT the raw traffic secrets (Client/ServerApplicationTrafficSecret,
+// Client/ServerHandshakeTrafficSecret) — those are owned by the transport for
+// key rotation. To also clear the traffic secrets (e.g. after a connection is
+// fully torn down and no further key update is possible), call ZeroAll instead.
 func (h *HandshakeSecrets) Zero() {
 	if h == nil {
 		return
@@ -53,6 +60,32 @@ func (h *HandshakeSecrets) Zero() {
 	} {
 		if k != nil {
 			k.Zero()
+		}
+	}
+}
+
+// ZeroAll zeroes the packet-protection key sets AND the raw traffic secrets
+// (Client/ServerApplicationTrafficSecret, Client/ServerHandshakeTrafficSecret).
+//
+// Use this instead of Zero when the owning connection is fully closed and will
+// never initiate another key update — for example, after a QUIC connection has
+// terminated and its transport-side copies of the traffic secrets have been
+// independently cleared. Calling ZeroAll while the transport still holds
+// references to these slices for ongoing key rotation would leave the transport
+// with zeroed keys; in that case prefer Zero.
+//
+// Like Zero, it skips nil fields and is safe to call on a nil receiver.
+func (h *HandshakeSecrets) ZeroAll() {
+	if h == nil {
+		return
+	}
+	h.Zero()
+	for _, s := range [][]byte{
+		h.ClientApplicationTrafficSecret, h.ServerApplicationTrafficSecret,
+		h.ClientHandshakeTrafficSecret, h.ServerHandshakeTrafficSecret,
+	} {
+		if len(s) > 0 {
+			memsecure.ZeroBytes(s)
 		}
 	}
 }
@@ -219,10 +252,10 @@ type ClientConfig struct {
 // ClientConfig. See ClientConfig for the security model.
 func NewClientHandshakerWithConfig(cfg ClientConfig) (*ClientHandshaker, error) {
 	if len(cfg.DCID) == 0 {
-		return nil, fmt.Errorf("tls13gm: dcid is required to seed Initial keys")
+		return nil, errors.New("tls13gm: dcid is required to seed Initial keys")
 	}
 	if !cfg.InsecureSkipVerify && cfg.VerifyPeerCertificate == nil && cfg.Roots == nil {
-		return nil, fmt.Errorf("tls13gm: ClientConfig.Roots is required (use InsecureSkipVerify only for testing)")
+		return nil, errors.New("tls13gm: ClientConfig.Roots is required (use InsecureSkipVerify only for testing)")
 	}
 	priv, err := GenerateCurveSM2KeyPair(rand.Reader)
 	if err != nil {
@@ -308,7 +341,7 @@ func (c *ClientHandshaker) buildClientHello(cookie []byte) ([]byte, error) {
 	}
 	pub, ok := c.ephemeral.Public().(*ecdsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("tls13gm: unexpected ECDHE public key type")
+		return nil, errors.New("tls13gm: unexpected ECDHE public key type")
 	}
 	ch := &ClientHelloMsg{
 		LegacyVersion: uint16(VersionTLS12),
@@ -430,7 +463,7 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 	}
 	ks := findExtension(sh.Extensions, ExtensionTypeKeyShare)
 	if ks == nil {
-		return fmt.Errorf("tls13gm: ServerHello missing key_share extension")
+		return errors.New("tls13gm: ServerHello missing key_share extension")
 	}
 	serverKeyBytes, err := parseServerKeyShare(ks, CurveSM2)
 	if err != nil {
@@ -482,7 +515,7 @@ func (c *ClientHandshaker) HandleHelloRetryRequest(hrr []byte) ([]byte, error) {
 		return nil, fmt.Errorf("tls13gm: HandleHelloRetryRequest called out of order (phase %d)", c.phase)
 	}
 	if c.clientHello1Full == nil {
-		return nil, fmt.Errorf("tls13gm: HandleHelloRetryRequest before ClientHello")
+		return nil, errors.New("tls13gm: HandleHelloRetryRequest before ClientHello")
 	}
 	hrrType, hrrBody, _, err := ReadHandshakeMessage(hrr)
 	if err != nil {
@@ -496,7 +529,7 @@ func (c *ClientHandshaker) HandleHelloRetryRequest(hrr []byte) ([]byte, error) {
 		return nil, fmt.Errorf("tls13gm: HelloRetryRequest: %w", err)
 	}
 	if hrrMsg.Random != helloRetryRequestRandom {
-		return nil, fmt.Errorf("tls13gm: HandleHelloRetryRequest given a non-HRR ServerHello")
+		return nil, errors.New("tls13gm: HandleHelloRetryRequest given a non-HRR ServerHello")
 	}
 	var cookie []byte
 	if cookieData := findExtension(hrrMsg.Extensions, ExtensionTypeCookie); cookieData != nil {
@@ -572,7 +605,7 @@ func (c *ClientHandshaker) HandleCertificate(certificate []byte) error {
 		return fmt.Errorf("tls13gm: Certificate: %w", err)
 	}
 	if len(certMsg.CertificateList) == 0 {
-		return fmt.Errorf("tls13gm: server sent an empty Certificate chain")
+		return errors.New("tls13gm: server sent an empty Certificate chain")
 	}
 	leaf, err := smx509.ParseCertificate(certMsg.CertificateList[0].Certificate)
 	if err != nil {
@@ -629,10 +662,10 @@ func (c *ClientHandshaker) HandleCertificateVerify(certVerify []byte) error {
 	}
 	serverPubCert, ok := c.leafCert.PublicKey.(*ecdsa.PublicKey)
 	if !ok {
-		return fmt.Errorf("tls13gm: server cert public key is not ECDSA")
+		return errors.New("tls13gm: server cert public key is not ECDSA")
 	}
 	if !VerifyCertificateVerify(serverPubCert, ServerCertificateVerifyContext, c.transcript.Sum(), cv.Signature) {
-		return fmt.Errorf("tls13gm: CertificateVerify signature verification failed")
+		return errors.New("tls13gm: CertificateVerify signature verification failed")
 	}
 	c.transcript.AddMessage(cvType, cvBody)
 	c.phase = clientAfterCertificateVerify
@@ -667,7 +700,7 @@ func (c *ClientHandshaker) HandleServerFinished(finished []byte) error {
 		return err
 	}
 	if !equalConstantTime(expected, fin.VerifyData) {
-		return fmt.Errorf("tls13gm: server Finished verify_data mismatch")
+		return errors.New("tls13gm: server Finished verify_data mismatch")
 	}
 	c.transcript.AddMessage(finType, finBody)
 
@@ -701,7 +734,7 @@ func (c *ClientHandshaker) HandleServerFinished(finished []byte) error {
 // and records it. HandleServerFlight must have completed.
 func (c *ClientHandshaker) ClientFinished() ([]byte, error) {
 	if c.phase != clientAfterServerFinished {
-		return nil, fmt.Errorf("tls13gm: HandleServerFinished must complete before ClientFinished")
+		return nil, errors.New("tls13gm: HandleServerFinished must complete before ClientFinished")
 	}
 	finishedKey, err := DeriveFinishedKey(c.clientHSTraffic)
 	if err != nil {
@@ -733,7 +766,7 @@ func (c *ClientHandshaker) ClientFinished() ([]byte, error) {
 // pollux-go client interoperable with any RFC 8446 server's resumption.
 func (c *ClientHandshaker) HandleNewSessionTicket(nstBody []byte) (identity, psk []byte, ageAdd uint32, err error) {
 	if c.masterSecret == nil {
-		return nil, nil, 0, fmt.Errorf("tls13gm: HandleNewSessionTicket before handshake complete")
+		return nil, nil, 0, errors.New("tls13gm: HandleNewSessionTicket before handshake complete")
 	}
 	msg := &NewSessionTicketMsg{}
 	if err := msg.unmarshalBody(nstBody); err != nil {
@@ -847,10 +880,10 @@ type ServerConfig struct {
 // ServerConfig. See ServerConfig for field semantics.
 func NewServerHandshakerWithConfig(cfg ServerConfig) (*ServerHandshaker, error) {
 	if len(cfg.DCID) == 0 {
-		return nil, fmt.Errorf("tls13gm: dcid is required to seed Initial keys")
+		return nil, errors.New("tls13gm: dcid is required to seed Initial keys")
 	}
 	if cfg.Certificate == nil || cfg.PrivateKey == nil {
-		return nil, fmt.Errorf("tls13gm: server certificate and key are required")
+		return nil, errors.New("tls13gm: server certificate and key are required")
 	}
 	priv, err := GenerateCurveSM2KeyPair(rand.Reader)
 	if err != nil {
@@ -916,23 +949,23 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 	// ClientHello that does not offer the required SM4-GCM-SM3 cipher suite, TLS
 	// 1.3, SM2SigSM3, and curveSM2 before doing any ECDHE work.
 	if !containsCipherSuite(chMsg.CipherSuites, TLS_SM4_GCM_SM3) {
-		return fmt.Errorf("tls13gm: ClientHello does not offer TLS_SM4_GCM_SM3")
+		return errors.New("tls13gm: ClientHello does not offer TLS_SM4_GCM_SM3")
 	}
 	if sv := findExtension(chMsg.Extensions, ExtensionTypeSupportedVersions); sv == nil ||
 		!containsUint16List(sv, 1, uint16(VersionTLS13)) {
-		return fmt.Errorf("tls13gm: ClientHello does not advertise TLS 1.3")
+		return errors.New("tls13gm: ClientHello does not advertise TLS 1.3")
 	}
 	if sa := findExtension(chMsg.Extensions, ExtensionTypeSignatureAlgorithms); sa == nil ||
 		!containsUint16List(sa, 2, SM2SigSM3) {
-		return fmt.Errorf("tls13gm: ClientHello does not offer SM2SigSM3")
+		return errors.New("tls13gm: ClientHello does not offer SM2SigSM3")
 	}
 	if sg := findExtension(chMsg.Extensions, ExtensionTypeSupportedGroups); sg == nil ||
 		!containsUint16List(sg, 2, CurveSM2) {
-		return fmt.Errorf("tls13gm: ClientHello does not offer curveSM2")
+		return errors.New("tls13gm: ClientHello does not offer curveSM2")
 	}
 	ks := findExtension(chMsg.Extensions, ExtensionTypeKeyShare)
 	if ks == nil {
-		return fmt.Errorf("tls13gm: ClientHello missing key_share extension")
+		return errors.New("tls13gm: ClientHello missing key_share extension")
 	}
 	clientKeyBytes, err := parseClientKeyShare(ks, CurveSM2)
 	if err != nil {
@@ -980,14 +1013,14 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 // early secret from the PSK instead of zeros.
 func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte) error {
 	if s.ticketKeys == nil {
-		return fmt.Errorf("tls13gm: client offered PSK but server has no session-ticket key configured")
+		return errors.New("tls13gm: client offered PSK but server has no session-ticket key configured")
 	}
 	identities, binders, err := parsePreSharedKeyExtension(pskExt)
 	if err != nil {
 		return fmt.Errorf("tls13gm: parse pre_shared_key: %w", err)
 	}
 	if len(identities) != 1 || len(binders) != 1 {
-		return fmt.Errorf("tls13gm: pre_shared_key must offer exactly one identity and binder")
+		return errors.New("tls13gm: pre_shared_key must offer exactly one identity and binder")
 	}
 	// Recover the PSK from the opaque ticket identity (stateless RFC 8446 model).
 	// This is what makes a pollux-go server interoperable with any RFC 8446
@@ -1009,7 +1042,7 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 		return err
 	}
 	if !equalConstantTime(expected, binders[0]) {
-		return fmt.Errorf("tls13gm: PSK binder verification failed")
+		return errors.New("tls13gm: PSK binder verification failed")
 	}
 	s.resumptionSelectedPSK = psk
 	return nil
@@ -1020,7 +1053,7 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 // Application keys, and records each message in the transcript.
 func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, certVerify, finished []byte, err error) {
 	if s.clientPub == nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("tls13gm: HandleClientHello must be called before ServerFlight")
+		return nil, nil, nil, nil, nil, errors.New("tls13gm: HandleClientHello must be called before ServerFlight")
 	}
 	clientPub := s.clientPub
 
@@ -1031,7 +1064,7 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	}
 	pub, ok := s.ephemeral.Public().(*ecdsa.PublicKey)
 	if !ok {
-		return nil, nil, nil, nil, nil, fmt.Errorf("tls13gm: unexpected ECDHE public key type")
+		return nil, nil, nil, nil, nil, errors.New("tls13gm: unexpected ECDHE public key type")
 	}
 	shMsg := &ServerHelloMsg{
 		LegacyVersion: uint16(VersionTLS12),
@@ -1181,7 +1214,7 @@ func (s *ServerHandshaker) HandleClientFinished(cf []byte) error {
 		return err
 	}
 	if !equalConstantTime(expected, fin.VerifyData) {
-		return fmt.Errorf("tls13gm: client Finished verify_data mismatch")
+		return errors.New("tls13gm: client Finished verify_data mismatch")
 	}
 	s.transcript.AddMessage(mt, body)
 	// Resumption master secret over the full transcript (CH..client Finished);
@@ -1224,10 +1257,10 @@ func (c *ClientHandshaker) MasterSecret() []byte { return c.masterSecret }
 // ticket nonce (RFC 8446 §4.6.1), so the server keeps no per-ticket state.
 func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32, ticketAgeAdd uint32) ([]byte, error) {
 	if s.resumptionMasterSecret == nil {
-		return nil, fmt.Errorf("tls13gm: HandleClientFinished must complete before NewSessionTicket")
+		return nil, errors.New("tls13gm: HandleClientFinished must complete before NewSessionTicket")
 	}
 	if s.ticketKeys == nil {
-		return nil, fmt.Errorf("tls13gm: session-ticket key required for NewSessionTicket")
+		return nil, errors.New("tls13gm: session-ticket key required for NewSessionTicket")
 	}
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
@@ -1242,7 +1275,7 @@ func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32, ticketAgeAdd 
 	// historical keys during rotation.
 	keys := s.ticketKeys()
 	if len(keys) == 0 {
-		return nil, fmt.Errorf("tls13gm: session-ticket key list is empty")
+		return nil, errors.New("tls13gm: session-ticket key list is empty")
 	}
 	ticket, err := EncryptSessionTicket(keys[0], psk)
 	if err != nil {

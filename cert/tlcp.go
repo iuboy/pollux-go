@@ -2,7 +2,7 @@ package cert
 
 import (
 	"crypto/tls"
-	"fmt"
+	"errors"
 
 	polluxTLCP "github.com/iuboy/pollux-go/tlcp"
 )
@@ -22,7 +22,7 @@ type TLCPProxyOptions struct {
 // BuildTLCPConfig builds a *tlcp.Config for TLCP (Transport Layer Cryptography Protocol).
 func BuildTLCPConfig(opts TLCPProxyOptions) (*polluxTLCP.Config, error) {
 	if opts.Certificates == nil {
-		return nil, fmt.Errorf("cert: dual certificate is required for TLCP")
+		return nil, errors.New("cert: dual certificate is required for TLCP")
 	}
 
 	cfg := &polluxTLCP.Config{

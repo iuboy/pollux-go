@@ -122,7 +122,7 @@ func ValidateDualCertPair(pair *DualCertPair) error {
 
 	// Verify same issuer (compare RawIssuer)
 	if !bytes.Equal(pair.SignCert.RawIssuer, pair.EncCert.RawIssuer) {
-		return fmt.Errorf("tlcp: sign and encrypt certs from different issuers")
+		return errors.New("tlcp: sign and encrypt certs from different issuers")
 	}
 
 	return nil
@@ -142,12 +142,12 @@ func ValidateTLCPCertificate(cert *x509.Certificate, isSignCert bool) error {
 	// Verify key usage
 	if isSignCert {
 		if cert.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
-			return fmt.Errorf("tlcp: sign cert missing digitalSignature key usage")
+			return errors.New("tlcp: sign cert missing digitalSignature key usage")
 		}
 	} else {
 		if cert.KeyUsage&x509.KeyUsageKeyEncipherment == 0 &&
 			cert.KeyUsage&x509.KeyUsageDataEncipherment == 0 {
-			return fmt.Errorf("tlcp: encrypt cert missing keyEncipherment or dataEncipherment key usage")
+			return errors.New("tlcp: encrypt cert missing keyEncipherment or dataEncipherment key usage")
 		}
 	}
 

@@ -1,6 +1,9 @@
 package quicgm
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // QUIC variable-length integer encoding per RFC 9000 §16.
 //
@@ -60,7 +63,7 @@ func AppendVarint(b []byte, v uint64) ([]byte, error) {
 // the encoded length.
 func ReadVarint(b []byte) (value uint64, n int, err error) {
 	if len(b) == 0 {
-		return 0, 0, fmt.Errorf("quicgm: varint buffer is empty")
+		return 0, 0, errors.New("quicgm: varint buffer is empty")
 	}
 	length := 1 << (b[0] >> 6) // 1, 2, 4, or 8
 	if len(b) < length {

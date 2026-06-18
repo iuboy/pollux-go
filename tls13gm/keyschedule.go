@@ -1,6 +1,7 @@
 package tls13gm
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/iuboy/pollux-go/sm3"
@@ -74,7 +75,7 @@ func DeriveFinishedKey(trafficSecret []byte) ([]byte, error) {
 // This uses HMAC-SM3, NOT HKDF-Expand-Label.
 func ComputeFinishedVerifyData(finishedKey, transcriptHash []byte) ([]byte, error) {
 	if len(finishedKey) == 0 {
-		return nil, fmt.Errorf("tls13gm: finishedKey is empty")
+		return nil, errors.New("tls13gm: finishedKey is empty")
 	}
 	mac := sm3.NewHMAC(finishedKey)
 	mac.Write(transcriptHash)

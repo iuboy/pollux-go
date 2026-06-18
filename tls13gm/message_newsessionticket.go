@@ -1,6 +1,9 @@
 package tls13gm
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // NewSessionTicketMsg is the TLS 1.3 NewSessionTicket handshake message
 // (RFC 8446 §4.6.1), sent by the server post-handshake under the 1-RTT keys to
@@ -26,7 +29,7 @@ func (m *NewSessionTicketMsg) marshalBody() ([]byte, error) {
 		return nil, fmt.Errorf("tls13gm: NewSessionTicket ticket_nonce length %d exceeds 255", len(m.TicketNonce))
 	}
 	if len(m.Ticket) == 0 {
-		return nil, fmt.Errorf("tls13gm: NewSessionTicket ticket is empty")
+		return nil, errors.New("tls13gm: NewSessionTicket ticket is empty")
 	}
 	if len(m.Ticket) > 0xFFFF {
 		return nil, fmt.Errorf("tls13gm: NewSessionTicket ticket length %d exceeds 16 bits", len(m.Ticket))
@@ -51,7 +54,7 @@ func (m *NewSessionTicketMsg) marshalBody() ([]byte, error) {
 func (m *NewSessionTicketMsg) unmarshalBody(b []byte) error {
 	p := 0
 	if len(b) < p+8 {
-		return fmt.Errorf("tls13gm: NewSessionTicket truncated before nonce")
+		return errors.New("tls13gm: NewSessionTicket truncated before nonce")
 	}
 	m.TicketLifetime = uint32(b[p])<<24 | uint32(b[p+1])<<16 | uint32(b[p+2])<<8 | uint32(b[p+3])
 	p += 4
@@ -59,7 +62,7 @@ func (m *NewSessionTicketMsg) unmarshalBody(b []byte) error {
 	p += 4
 
 	if p >= len(b) {
-		return fmt.Errorf("tls13gm: NewSessionTicket truncated at nonce length")
+		return errors.New("tls13gm: NewSessionTicket truncated at nonce length")
 	}
 	nonceLen := int(b[p])
 	p++
@@ -70,7 +73,7 @@ func (m *NewSessionTicketMsg) unmarshalBody(b []byte) error {
 	p += nonceLen
 
 	if p+2 > len(b) {
-		return fmt.Errorf("tls13gm: NewSessionTicket truncated at ticket length")
+		return errors.New("tls13gm: NewSessionTicket truncated at ticket length")
 	}
 	ticketLen := int(b[p])<<8 | int(b[p+1])
 	p += 2

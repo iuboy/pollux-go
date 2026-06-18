@@ -2,7 +2,7 @@
 
 > 状态：**已实施 + 互通已验证**（密码原语层 + transport 组装层 + Initial 包端到端 + packet-number 截断 + 性能基线 + BabaSSL/Tongsuo 互操作 1-RTT/PSK resume/0-RTT） | 路线：Route C (QUIC + RFC 8998) | 优先级：P2
 >
-> **说明**: QUIC SM4-GCM Packet Protection 已按「tls13gm 密码原语层 + quicgm transport 组装层」分层实现，镜像 crypto/tls 与 quic-go 的关系。tls13gm 提供 QUIC 标签、`DeriveQUICPacketKeys`、`QUICKeyUpdate`、`HeaderProtectionMask` 原语；quicgm 消费这些原语组装 `QUICPacketProtector`（payload AEAD + header protection apply/remove）。注意：quicgm 已从 Route B（应用层 envelope）破坏性重构为 Route C（transport-level RFC 8998）。
+> **分层**: QUIC SM4-GCM Packet Protection 按「tls13gm 密码原语层 + quicgm transport 组装层」分层实现，镜像 crypto/tls 与 quic-go 的关系。tls13gm 提供 QUIC 标签、`DeriveQUICPacketKeys`、`QUICKeyUpdate`、`HeaderProtectionMask` 原语；quicgm 消费这些原语组装 `QUICPacketProtector`（payload AEAD + header protection apply/remove）。
 
 ## 1. 概述
 
@@ -147,101 +147,37 @@ mask = SM4_ECB_Encrypt(hp_key, sample[0:16])
 
 ## 5. 实现架构
 
-### 5.1 文件组织（已实施）
+### 5.1 文件组织
 
 采用两层分层：tls13gm 提供密码原语，quicgm 组装 transport 层，镜像 crypto/tls 与 quic-go 的关系。
 
 ```
 tls13gm/                          # 密码原语层（≈ crypto/tls 的密码能力）
-├── labels.go                     # [已新增] LabelQUICKey / LabelQUICIV / LabelQUICHP / LabelQUICKU
-├── quic_keys.go                  # [已新增] DeriveQUICPacketKeys, QUICKeyUpdate, QUICPacketKeys.Zero
-└── quic_header.go                # [已新增] HeaderProtectionMask (SM4-ECB on 16-byte sample)
+├── labels.go                     # LabelQUICKey / LabelQUICIV / LabelQUICHP / LabelQUICKU
+├── quic_keys.go                  # DeriveQUICPacketKeys, QUICKeyUpdate, QUICPacketKeys.Zero
+└── quic_header.go                # HeaderProtectionMask (SM4-ECB on 16-byte sample)
 
 quicgm/                           # transport 组装层（≈ quic-go 消费 crypto/tls）
-├── doc.go                        # [已重写] transport-level RFC 8998 定位
-├── packet.go                     # [已新增] QUICPacketProtector (EncryptPayload/DecryptPayload/ApplyHeaderProtection/RemoveHeaderProtection)
-├── varint.go                     # [已新增] QUIC 变长整数编解码 AppendVarint/ReadVarint (RFC 9000 §16)
-├── initial.go                    # [已新增] QUIC v1 Initial packet 端到端 SealInitialPacket/OpenInitialPacket
-├── packetnumber.go               # [已新增] packet-number 截断编解码 ChoosePacketNumberLen/TruncatePacketNumber/DecodePacketNumber (RFC 9000 §17.1)
-├── packet_test.go                # [已新增] 包内白盒测试
-├── varint_test.go                # [已新增] varint 边界/往返测试
-├── packetnumber_test.go          # [已新增] packet-number 截断往返/阈值/重建分支测试
-├── initial_test.go               # [已新增] Initial 包端到端/篡改/隔离测试
-├── bench_test.go                 # [已新增] SM4-GCM vs AES-128-GCM 性能基线
-└── test/quicgm_blackbox_test.go  # [已重写] 黑盒测试
-
-# 已删除（Route B 应用层 envelope，破坏性重构）
-# quicgm/envelope.go, quicgm/keys.go, quicgm/mac.go, quicgm/quicgm_test.go
+├── doc.go                        # transport-level RFC 8998 定位
+├── packet.go                     # QUICPacketProtector (EncryptPayload/DecryptPayload/ApplyHeaderProtection/RemoveHeaderProtection)
+├── varint.go                     # QUIC 变长整数编解码 AppendVarint/ReadVarint (RFC 9000 §16)
+├── initial.go                    # QUIC v1 Initial packet 端到端 SealInitialPacket/OpenInitialPacket
+├── packetnumber.go               # packet-number 截断编解码 ChoosePacketNumberLen/TruncatePacketNumber/DecodePacketNumber (RFC 9000 §17.1)
+├── packet_test.go                # 包内白盒测试
+├── varint_test.go                # varint 边界/往返测试
+├── packetnumber_test.go          # packet-number 截断往返/阈值/重建分支测试
+├── initial_test.go               # Initial 包端到端/篡改/隔离测试
+├── bench_test.go                 # SM4-GCM vs AES-128-GCM 性能基线
+└── test/quicgm_blackbox_test.go  # 黑盒测试
 ```
 
 ### 5.2 核心接口
 
-```go
-// quic_keys.go
+密码原语层（`tls13gm`）与 transport 组装层（`quicgm`）的完整 API 见各包的 godoc
+（`go doc ./tls13gm`、`go doc ./quicgm`）。关键符号：
 
-// QUIC label constants per RFC 9001 §5.1.
-const (
-    LabelQUICKey = "quic key"
-    LabelQUICIV  = "quic iv"
-    LabelQUICHP  = "quic hp"
-    LabelQUICKU  = "quic ku"
-)
-
-// QUICPacketKeys holds the AEAD key, IV, and header protection key.
-type QUICPacketKeys struct {
-    AEADKey   []byte // 16 bytes (SM4-GCM)
-    AEADIV    []byte // 12 bytes
-    HeaderKey []byte // 16 bytes (SM4-ECB for header protection)
-}
-
-// DeriveQUICPacketKeys derives all QUIC packet protection keys from a traffic secret.
-func DeriveQUICPacketKeys(trafficSecret []byte) (*QUICPacketKeys, error) {
-    key, err := HKDFExpandLabel(trafficSecret, LabelQUICKey, nil, 16)
-    if err != nil {
-        return nil, fmt.Errorf("tls13gm: derive QUIC AEAD key: %w", err)
-    }
-    iv, err := HKDFExpandLabel(trafficSecret, LabelQUICIV, nil, 12)
-    if err != nil {
-        return nil, fmt.Errorf("tls13gm: derive QUIC AEAD IV: %w", err)
-    }
-    hp, err := HKDFExpandLabel(trafficSecret, LabelQUICHP, nil, 16)
-    if err != nil {
-        return nil, fmt.Errorf("tls13gm: derive QUIC header protection key: %w", err)
-    }
-    return &QUICPacketKeys{AEADKey: key, AEADIV: iv, HeaderKey: hp}, nil
-}
-```
-
-```go
-// quic_protection.go
-
-// QUICPacketProtector provides QUIC packet protection using SM4-GCM.
-type QUICPacketProtector struct {
-    keys *QUICPacketKeys
-    aead *AEAD
-}
-
-// NewQUICPacketProtector creates a protector from a traffic secret.
-func NewQUICPacketProtector(trafficSecret []byte) (*QUICPacketProtector, error) {
-    keys, err := DeriveQUICPacketKeys(trafficSecret)
-    if err != nil { return nil, err }
-    aead, err := NewAEAD(keys.AEADKey, keys.AEADIV)
-    if err != nil { return nil, err }
-    return &QUICPacketProtector{keys: keys, aead: aead}, nil
-}
-
-// EncryptPacket encrypts a QUIC packet payload with header protection.
-func (p *QUICPacketProtector) EncryptPacket(pn uint64, header, payload []byte) ([]byte, error)
-
-// DecryptPacket decrypts a QUIC packet (removes header protection first).
-func (p *QUICPacketProtector) DecryptPacket(pn uint64, header, ciphertext []byte) ([]byte, error)
-
-// ApplyHeaderProtection applies QUIC header protection using SM4-ECB.
-func ApplyHeaderProtection(hpKey, header, sample []byte) error
-
-// RemoveHeaderProtection removes QUIC header protection.
-func RemoveHeaderProtection(hpKey, header, sample []byte) (uint64, error)
-```
+- `tls13gm.QUICPacketKeys`（`AEADKey` / `AEADIV` / `HeaderKey`）+ `DeriveQUICPacketKeys`、`QUICKeyUpdate`、`HeaderProtectionMask`
+- `quicgm.QUICPacketProtector`（`EncryptPayload` / `DecryptPayload` / `ApplyHeaderProtection` / `RemoveHeaderProtection`）+ `NewQUICPacketProtectorFromKeys`
 
 ### 5.3 QUIC 包编码与 Initial packet 端到端
 
@@ -262,7 +198,7 @@ const QUICVersion1 uint32 = 0x00000001
 
 **packet-number 截断**：`packetnumber.go` 提供 RFC 9000 §17.1 的完整截断原语：`ChoosePacketNumberLen`（发送端据 largestAcked 选最小字节数，阈值 `2^7/2^15/2^23/2^31`，nil 反馈→4 字节）、`TruncatePacketNumber`、`DecodePacketNumber`（接收端重建，int64 运算规避 uint64 下溢）、`AppendPacketNumber`（大端低 N 字节）。Initial 包因首个包无 ACK 反馈，始终用 4 字节（`ChoosePacketNumberLen(pn, nil)` 等价），其余加密级别（Handshake/1-RTT）由未来连接层在收到 ACK 后调用截断原语以节省字节。
 
-**注意**：此 API 覆盖 Initial 包的密码保护全链路（步骤 6a）+ packet-number 截断原语（步骤 6c）。步骤 6b 已补齐 TLS 1.3 GM 握手引擎（`tls13gm` 的协议常量/transcript/握手消息编解码/`ClientHandshaker`+`ServerHandshaker` 状态机）与 quicgm 的 CRYPTO frame + Handshake 长头部包 + 1-RTT 短头部包；握手产出 Initial/Handshake/Application 三级密钥，经 `NewQUICPacketProtectorFromKeys` 喂入对应加密级别的包保护器。TCP TLS 1.3 record layer（互通测试 harness）已在 `test/tongsuo_rfc8998_test.go` 实现（`dialRFC8998`/`readRecord`/`writeRecord`），完成与 BabaSSL/Tongsuo 的全场景互通验证（步骤 8 / P4）。仍留作后续迭代的是 QUIC 连接状态机（ACK/重传/流复用/拥塞，归 quic-go）。
+**注意**：上述 API 覆盖 Initial 包的密码保护全链路与 packet-number 截断原语。配套的 TLS 1.3 GM 握手引擎（`tls13gm` 的协议常量/transcript/握手消息编解码/`ClientHandshaker`+`ServerHandshaker` 状态机）与 quicgm 的 CRYPTO frame + Handshake 长头部包 + 1-RTT 短头部包已实现；握手产出 Initial/Handshake/Application 三级密钥，经 `NewQUICPacketProtectorFromKeys` 喂入对应加密级别的包保护器。TLS 握手层已与 BabaSSL/Tongsuo 完成全场景互通验证（见 [`../security/interop-matrix.md`](../security/interop-matrix.md)）。仍留作后续迭代的是 QUIC 连接状态机（ACK/重传/流复用/拥塞，归 quic-go）。
 
 ## 6. Key Update
 
@@ -282,7 +218,7 @@ next_keys   = DeriveQUICPacketKeys(next_secret)
 | 签名 | ECDSA/RSA | ECDSA/RSA | **SM2-SM3** |
 | Hash | SHA-256 | SHA-256 | **SM3** |
 | 应用数据加密 | 标准 | SM4-GCM 应用层 | SM4-GCM 传输层 |
-| 部署状态 | ✅ 生产 | ✅ 生产 | 🔬 实验 |
+| 部署状态 | ✅ 生产 | ✅ 生产 | ✅ 互通已验证 |
 
 ## 8. 安全注意事项
 

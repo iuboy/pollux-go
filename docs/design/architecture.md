@@ -1,8 +1,7 @@
 # pollux-go 架构与设计
 
 本文是 pollux-go 的架构参考：项目定位、概念边界、传输/安全路线、包职责、
-标准依据、以及关键设计约束。它整合了历史路线图与实施总计划中仍有长期价值的
-部分；已完成的里程碑执行记录见文末「里程碑摘要」，详细安全审计见
+标准依据、以及关键设计约束。详细安全审计见
 [`../security/audit.md`](../security/audit.md)。
 
 ## 1. 项目定位
@@ -70,10 +69,6 @@ TLS_SM4_GCM_SM3 + SM3 transcript + HKDF-SM3 + SM2-SM3 签名 + curveSM2 + SM4-GC
   [`route-c-quic-gm.md`](route-c-quic-gm.md)。Go `crypto/tls` 与 `quic-go` 上游尚不
   原生支持 RFC 8998，pollux-go 自带完整 `tls13gm` 握手引擎填补该空缺。
 
-> **演进说明**：路线 C 最初定位为「experimental 模型包，不提供完整 handshake」，
-> 后实现为完整 RFC 8998 GM 栈（`tls13gm` 握手引擎 + `quicgm` transport-level packet
-> protection），并完成与标准对端 BabaSSL/Tongsuo 的全场景互通验证。
-
 ## 4. 包职责
 
 ```
@@ -94,7 +89,7 @@ TLS_SM4_GCM_SM3 + SM3 transcript + HKDF-SM3 + SM2-SM3 签名 + curveSM2 + SM4-GC
   quic       标准 QUIC（基于 quic-go）
   http       TLS / TLCP / TLS1.3 HTTP 辅助（保守默认值）
 
-协议（路线 C — 实验）
+协议（路线 C — 互通已验证）
   tls13gm    RFC 8998 TLS 1.3 GM 握手引擎 + 密码原语
   quicgm     RFC 9001 §5 QUIC packet protection
 
@@ -129,7 +124,7 @@ TLS_SM4_GCM_SM3 + SM3 transcript + HKDF-SM3 + SM2-SM3 签名 + curveSM2 + SM4-GC
 3. **默认配置安全收敛**——HTTP/cert/TLCP 默认 GCM-only，CBC 标记 legacy 须显式启用；
   默认不启用 `InsecureSkipVerify`、不启用 hybrid listener、不启用 CBC。
 4. **TLCP 在独立审计前保持 EXPERIMENTAL**——底层 gotlcp 未审计，不应暴露于不可信网络。
-5. **Route C 生产前需独立互通验证**——Go/quic-go 上游不支持 RFC 8998，需自行验证互通性。
+5. **Route C 已完成互通验证**——`tls13gm` 握手引擎已与 BabaSSL/Tongsuo 完成全场景互通（见 [`../security/interop-matrix.md`](../security/interop-matrix.md)）；QUIC 连接状态机（ACK/重传/流复用/拥塞）仍归 quic-go，未由本仓库实现。
 6. **不误导**——README 与 package doc 不宣称 crypto/tls 不具备的能力，experimental 能力明确标记。
 7. **smx509 验证不做 leaf-as-root fallback**——CertPool 保留 raw DER，不从 `Subjects()` 反推证书。
 
@@ -163,23 +158,7 @@ TLS_SM4_GCM_SM3 + SM3 transcript + HKDF-SM3 + SM2-SM3 签名 + curveSM2 + SM4-GC
 
 标准链接见各 RFC 的 datatracker 页；GB/T 38636-2020 见 std.samr.gov.cn。
 
-## 8. 里程碑摘要
-
-完整里程碑执行记录已完成，这里仅保留对理解架构演进有用的摘要：
-
-| 里程碑 | 内容 | 关键产出 |
-|--------|------|----------|
-| M0–M1 | 基线恢复 + 安全回归 | SM9 语义修复；TLCP/SMX509/SM4 全部 CRITICAL 修复 |
-| M2–M3 | 标准 TLS 1.3 / QUIC（路线 A） | `tls13`、`cert` 门面、`quic` 包 + 黑盒测试 |
-| M4 | 应用层国密（路线 B 基础） | `sm4` GCM 高级封装、`quicgm` 包 |
-| M5–M7 | 证书/TLCP 收敛 + 审计收尾 | smx509 CertPool raw DER、GCM-only 默认、fuzz、内存清零 |
-| M8–M9 | 黑盒测试补全 + 文档收尾 | 279 黑盒测试、quicgm nonce registry |
-| M6 → M10 | RFC 8998 从模型包演进到完整握手引擎 | `tls13gm` ClientHandshaker/ServerHandshaker、fail-closed PKI |
-| M11 | Route C QUIC packet protection | `quicgm` RFC 9001 §5 Initial/Handshake/1-RTT + CRYPTO frame |
-
-详见 [`../security/audit.md`](../security/audit.md) 的修复记录与回归测试映射。
-
-## 9. 后续工作（非阻塞）
+## 8. 后续工作（非阻塞）
 
 - Route C 留待后续迭代：QUIC 连接状态机（ACK/重传/流复用/拥塞，归 quic-go）。
   （TCP TLS record layer + RFC 8998 互通测试已完成，见 [`interop-matrix.md`](../security/interop-matrix.md)。）

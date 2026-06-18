@@ -20,7 +20,7 @@
 //   - smx509: SM2-aware X.509 certificate creation, parsing, and verification
 //   - cert: High-level certificate management facade
 //   - tlcp: TLCP 1.1 protocol (EXPERIMENTAL — pending security audit)
-//   - tls13gm: TLS 1.3 GM cipher suites per RFC 8998 (experimental)
+//   - tls13gm: TLS 1.3 GM cipher suites per RFC 8998 (interop-verified)
 //   - tls: TLS cipher suite management with national suites
 //   - http: HTTP server/client helpers for TLS, TLCP, and hybrid
 //   - quicgm: QUIC with GM cipher suites

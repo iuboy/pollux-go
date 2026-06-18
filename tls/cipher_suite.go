@@ -16,9 +16,12 @@ import (
 type CryptoMode string
 
 const (
+	// CryptoModeInternational selects standard (non-national) cipher suites.
 	CryptoModeInternational CryptoMode = "international"
-	CryptoModeNational      CryptoMode = "national"
-	CryptoModeHybrid        CryptoMode = "hybrid"
+	// CryptoModeNational selects national cryptography (GM) cipher suites.
+	CryptoModeNational CryptoMode = "national"
+	// CryptoModeHybrid selects both national and standard suites, for mixed deployments.
+	CryptoModeHybrid CryptoMode = "hybrid"
 )
 
 // National cipher suite IDs (GB/T 38636-2020 表2; 0x00C6/0x00C7 from RFC 8998 §3).

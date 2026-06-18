@@ -11,9 +11,12 @@ import (
 type Kind int
 
 const (
-	KindUnknown  Kind = iota
-	KindStandard      // Standard X.509 (RSA, ECDSA, Ed25519)
-	KindSM2           // SM2 X.509
+	// KindUnknown indicates the certificate type could not be determined.
+	KindUnknown Kind = iota
+	// KindStandard is a standard X.509 certificate (RSA, ECDSA, Ed25519).
+	KindStandard
+	// KindSM2 is an SM2 (national cryptography) X.509 certificate.
+	KindSM2
 )
 
 // DetectKind detects whether a certificate uses SM2 or standard algorithms.

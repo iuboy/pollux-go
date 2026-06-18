@@ -97,10 +97,16 @@ func GenerateIV() ([]byte, error) {
 type Mode string
 
 const (
-	ModeECB Mode = "ECB" // Deprecated: ECB does not provide semantic security; use GCM for new protocols
+	// ModeECB is Electronic Codebook mode. Deprecated: ECB does not provide
+	// semantic security; use ModeGCM for new protocols.
+	ModeECB Mode = "ECB"
+	// ModeCBC is Cipher Block Chaining mode. The caller must supply a unique IV.
 	ModeCBC Mode = "CBC"
+	// ModeCTR is Counter mode. The caller must supply a unique nonce/counter.
 	ModeCTR Mode = "CTR"
+	// ModeGCM is Galois/Counter Mode (recommended): authenticated encryption.
 	ModeGCM Mode = "GCM"
+	// ModeCFB is Cipher Feedback mode. The caller must supply a unique IV.
 	ModeCFB Mode = "CFB"
 )
 

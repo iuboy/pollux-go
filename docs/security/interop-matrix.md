@@ -11,10 +11,10 @@ QUIC 层不在互通范围：Tongsuo/BabaSSL 不提供独立的「QUIC + RFC 899
 
 ## 矩阵
 
-| 方向 | 模式 | Tongsuo 角色 | pollux-go 角色 | 结果 |
-|------|------|--------------|----------------|------|
-| TCP TLS 1.3 | 1-RTT 全握手 | `s_server`（SM2 证书 + `TLS_SM4_GCM_SM3` + `-groups SM2`） | tls13gm client（TCP record harness） | ✅ 握手成功 |
-| TCP TLS 1.3 | 1-RTT 应用数据双向 | `s_server -rev`（行回显） | tls13gm client（应用数据往返） | ✅ 双向 SM4-GCM + secret 字节一致 |
+| 方向        | 模式               | Tongsuo 角色                                               | pollux-go 角色                       | 结果                             |
+| ----------- | ------------------ | ---------------------------------------------------------- | ------------------------------------ | -------------------------------- |
+| TCP TLS 1.3 | 1-RTT 全握手       | `s_server`（SM2 证书 + `TLS_SM4_GCM_SM3` + `-groups SM2`） | tls13gm client（TCP record harness） | ✅ 握手成功                       |
+| TCP TLS 1.3 | 1-RTT 应用数据双向 | `s_server -rev`（行回显）                                  | tls13gm client（应用数据往返）       | ✅ 双向 SM4-GCM + secret 字节一致 |
 
 验证覆盖：ClientHello（`cipher_suites=[0x00C6]`、`supported_groups=[curveSM2]`、`signature_algorithms=[sm2_sm3]`）、ECDHE（curveSM2 共享密钥一致）、HKDF-SM3 密钥调度、SM4-GCM 握手记录保护、CertificateVerify（SM2-SM3 验签）、Finished（SM3 transcript MAC 双向验证）。
 

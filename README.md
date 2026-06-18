@@ -26,7 +26,7 @@ pollux-go 是**集成工具包，不是密码学实现**。它把 gmsm 的原语
 
 ## 包结构
 
-```
+```text
 sm2 sm3 sm4 sm9 zuc           # 国密算法封装
 smx509 cert                   # SM2 感知 X.509
 gmstd                         # GM/T 标准辅助函数

@@ -16,6 +16,9 @@
 //     Handshake, and Application — mirroring the role of crypto/tls's internal
 //     handshake layer. A QUIC transport feeds these messages through CRYPTO
 //     frames (RFC 9001); a TCP record layer could consume them the same way.
+//     Session tickets (EncryptSessionTicket/DecryptSessionTicket) and PSK
+//     derivation (DeriveResumptionMasterSecret/DeriveResumptionPSK) enable
+//     resumption and 0-RTT.
 //
 // Transport scope. The handshake engine is transport-agnostic and intentionally
 // does not include a TLS record layer, Dial, or Listen over TCP — those belong

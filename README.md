@@ -98,4 +98,4 @@ make cover-html   # 生成覆盖率报告
 
 ## License
 
-见仓库 LICENSE（如有）。
+MIT — 详情见 [LICENSE](LICENSE)。

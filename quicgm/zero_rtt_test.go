@@ -330,4 +330,3 @@ func Test0RTT_TEKRotation(t *testing.T) {
 		t.Fatalf("echo mismatch: %q vs %q", echo, msg)
 	}
 }
-

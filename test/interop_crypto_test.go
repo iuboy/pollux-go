@@ -278,8 +278,14 @@ func TestInteropSM2_KeySerialization(t *testing.T) {
 		t.Error("compressed key round-trip mismatch")
 	}
 
-	// BytesToPrivateKey / PrivateKeyToBytes 互操作
-	privBytes := polluxSM2.PrivateKeyToBytes(priv)
+	// BytesToPrivateKey / PrivateKeyToBytesSecure 互操作。
+	// PrivateKeyToBytes（已移除）的替代是 PrivateKeyToBytesSecure，Destroy 清零敏感内存。
+	skb, err := polluxSM2.PrivateKeyToBytesSecure(priv)
+	if err != nil {
+		t.Fatalf("PrivateKeyToBytesSecure: %v", err)
+	}
+	defer skb.Destroy()
+	privBytes := skb.Data()
 	recovered, err := polluxSM2.BytesToPrivateKey(privBytes)
 	if err != nil {
 		t.Fatalf("BytesToPrivateKey: %v", err)

@@ -803,7 +803,6 @@ func TestRFC8998_Tongsuo_PSKResume(t *testing.T) {
 	// handshake. pollux-go is now RFC 8446 resumption-interoperable.
 }
 
-
 // TestRFC8998_Tongsuo_0RTT verifies 0-RTT interop: pollux client offers
 // early_data on PSK resumption, sends 0-RTT application data under the
 // client_early_traffic_secret, and Tongsuo s_server accepts it (echoes

@@ -52,13 +52,20 @@ func TestHandshake_DrivesKeyLevels(t *testing.T) {
 	dcid := []byte{0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11}
 	cert, serverKey := generateSelfSignedSM2(t)
 
-	server, err := tls13gm.NewServerHandshaker(dcid, cert, serverKey)
+	server, err := tls13gm.NewServerHandshakerWithConfig(tls13gm.ServerConfig{
+		DCID:        dcid,
+		Certificate: cert,
+		PrivateKey:  serverKey,
+	})
 	if err != nil {
-		t.Fatalf("NewServerHandshaker: %v", err)
+		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
 	}
-	client, err := tls13gm.NewClientHandshaker(dcid, cert)
+	client, err := tls13gm.NewClientHandshakerWithConfig(tls13gm.ClientConfig{
+		DCID:               dcid,
+		InsecureSkipVerify: true, // 自签证书测试夹具；仅用于测试，绝不在生产代码启用
+	})
 	if err != nil {
-		t.Fatalf("NewClientHandshaker: %v", err)
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
 	}
 
 	// --- Drive the handshake over an in-memory pipe ---

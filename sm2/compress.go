@@ -66,21 +66,6 @@ func UnmarshalUncompressed(data []byte) (*ecdsa.PublicKey, error) {
 	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
 }
 
-// PublicKeyToBytes converts SM2 public key to uncompressed byte sequence.
-// Deprecated: use MarshalUncompressed instead.
-func PublicKeyToBytes(pub *ecdsa.PublicKey) []byte {
-	if pub == nil {
-		return nil
-	}
-	return elliptic.Marshal(P256(), pub.X, pub.Y) //nolint:staticcheck
-}
-
-// BytesToPublicKey parses SM2 public key from byte sequence.
-// Deprecated: use UnmarshalUncompressed instead.
-func BytesToPublicKey(data []byte) (*ecdsa.PublicKey, error) {
-	return UnmarshalUncompressed(data)
-}
-
 // Equal reports whether two SM2 public keys are equal.
 func Equal(x, y *ecdsa.PublicKey) bool {
 	if x == nil || y == nil {
@@ -110,9 +95,14 @@ func (s *SecureKeyBytes) Destroy() {
 	}
 }
 
-// PrivateKeyToBytesSecure returns the private key scalar as a SecureKeyBytes
-// that must be explicitly destroyed after use. This is the recommended way
-// to access raw private key bytes.
+// PrivateKeyToBytesSecure returns the private key scalar as a fixed-length
+// 32-byte big-endian SecureKeyBytes that must be explicitly destroyed after
+// use. This is the recommended way to access raw private key bytes.
+//
+// The 32-byte fixed-length encoding matches the contract of NewPrivateKey and
+// BytesToPrivateKey, so the output round-trips cleanly through both. (A minimal
+// big.Int encoding — key.D.Bytes() — could be shorter when the scalar has
+// leading zero bytes, which those parsers reject.)
 //
 // Example:
 //
@@ -124,19 +114,10 @@ func PrivateKeyToBytesSecure(key *PrivateKey) (*SecureKeyBytes, error) {
 	if key == nil {
 		return nil, errors.New("sm2: nil private key")
 	}
-	return &SecureKeyBytes{bytes: key.D.Bytes()}, nil
-}
-
-// PrivateKeyToBytes serializes SM2 private key to 32-byte big-endian integer.
-//
-// Deprecated: use PrivateKeyToBytesSecure instead, which provides explicit
-// key material cleanup via SecureKeyBytes.Destroy.
-//
-// Security: the returned bytes contain sensitive key material.
-// Callers MUST zero the returned slice after use via memsecure.ZeroBytes
-// or by overwriting with zeros. Do not leave copies in memory.
-func PrivateKeyToBytes(key *PrivateKey) []byte {
-	return key.D.Bytes()
+	const scalarSize = 32 // SM2 curve order size in bytes
+	out := make([]byte, scalarSize)
+	key.D.FillBytes(out)
+	return &SecureKeyBytes{bytes: out}, nil
 }
 
 // BytesToPrivateKey recovers SM2 private key from 32-byte big-endian integer.

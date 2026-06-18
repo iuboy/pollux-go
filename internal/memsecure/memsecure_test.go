@@ -82,28 +82,6 @@ func TestZeroUint64(t *testing.T) {
 	}
 }
 
-func TestSliceFromBytes(t *testing.T) {
-	original := []byte{0x01, 0x02, 0x03, 0x04}
-	alias := SliceFromBytes(original)
-
-	// Modify through alias
-	alias[0] = 0xFF
-
-	// Original should be modified
-	if original[0] != 0xFF {
-		t.Error("SliceFromBytes did not create an alias")
-	}
-}
-
-func TestSliceFromBytes_Empty(t *testing.T) {
-	original := []byte{}
-	alias := SliceFromBytes(original)
-
-	if alias != nil {
-		t.Error("SliceFromBytes on empty slice should return nil")
-	}
-}
-
 // BenchmarkZeroBytes measures the performance of ZeroBytes.
 func BenchmarkZeroBytes(b *testing.B) {
 	sizes := []int{16, 32, 64, 128, 256, 512, 1024, 4096}

@@ -120,9 +120,15 @@ func TestBlackBox_SM2_PrivateKeyToBytes_Length(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := polluxSM2.PrivateKeyToBytes(priv)
+	// PrivateKeyToBytes（已移除）的替代是 PrivateKeyToBytesSecure，Destroy 清零敏感内存。
+	skb, err := polluxSM2.PrivateKeyToBytesSecure(priv)
+	if err != nil {
+		t.Fatalf("PrivateKeyToBytesSecure: %v", err)
+	}
+	defer skb.Destroy()
+	b := skb.Data()
 	if len(b) == 0 || len(b) > 32 {
-		t.Errorf("PrivateKeyToBytes length: got %d, want 1-32", len(b))
+		t.Errorf("PrivateKeyToBytesSecure length: got %d, want 1-32", len(b))
 	}
 }
 
@@ -132,7 +138,13 @@ func TestBlackBox_SM2_BytesToPrivateKey_Roundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	b := polluxSM2.PrivateKeyToBytes(priv)
+	// PrivateKeyToBytes（已移除）的替代是 PrivateKeyToBytesSecure，Destroy 清零敏感内存。
+	skb, err := polluxSM2.PrivateKeyToBytesSecure(priv)
+	if err != nil {
+		t.Fatalf("PrivateKeyToBytesSecure: %v", err)
+	}
+	defer skb.Destroy()
+	b := skb.Data()
 	recovered, err := polluxSM2.BytesToPrivateKey(b)
 	if err != nil {
 		t.Fatalf("BytesToPrivateKey: %v", err)
@@ -143,9 +155,10 @@ func TestBlackBox_SM2_BytesToPrivateKey_Roundtrip(t *testing.T) {
 }
 
 func TestBlackBox_SM2_PublicKeyToBytes_Nil(t *testing.T) {
-	result := polluxSM2.PublicKeyToBytes(nil)
+	// PublicKeyToBytes（已移除）的替代是 MarshalUncompressed。
+	result := polluxSM2.MarshalUncompressed(nil)
 	if result != nil {
-		t.Errorf("PublicKeyToBytes(nil) = %v, want nil", result)
+		t.Errorf("MarshalUncompressed(nil) = %v, want nil", result)
 	}
 }
 

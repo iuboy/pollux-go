@@ -73,10 +73,8 @@ func DefaultProtocolMask() ProtocolMask {
 // header version field. An active network attacker can craft a ClientHello
 // that mimics TLCP (version 0x0101) or TLS (version 0x03xx) to trigger
 // the wrong protocol handler. ProtocolMask provides coarse filtering only
-// and is NOT a security boundary.
-//
-// This listener is DEPRECATED. Use separate ports for TLS and TLCP to
-// eliminate protocol confusion risk.
+// and is NOT a security boundary. Deployments that can dedicate one port
+// per protocol should use two separate listeners to avoid this.
 type hybridListener struct {
 	net.Listener
 	tlcpCfg          *tlcp.Config
@@ -89,10 +87,12 @@ type hybridListener struct {
 // Default handshake timeout is 30 seconds. Use SetHandshakeTimeout to customize.
 // Default protocol mask allows both TLCP and TLS. Use SetProtocolMask to customize.
 //
-// Deprecated: HybridListener shares state between two independent protocol stacks
-// (TLS and TLCP) on the same port. This increases attack surface and makes it
-// harder to reason about security properties. Use separate ports for TLS and TLCP
-// instead. This function will be removed in a future release.
+// This is a protocol multiplexing facade: it peeks the record header version
+// field to route each connection to the TLCP or TLS handshake. For deployments
+// that can dedicate one port per protocol, two separate listeners remove the
+// protocol-detection step entirely; see the hybridListener security notes above
+// for the trade-offs (protocol detection relies on the unauthenticated record
+// header version field).
 func NewHybridListener(inner net.Listener, tlcpCfg *tlcp.Config, tlsCfg *tls.Config) *hybridListener {
 	return &hybridListener{
 		Listener:         inner,

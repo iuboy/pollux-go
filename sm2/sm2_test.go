@@ -113,7 +113,14 @@ func TestNewPrivateKeyDER(t *testing.T) {
 	}
 
 	// NewPrivateKey 期望原始 32 字节标量（不是 DER）
-	keyBytes := sm2.PrivateKeyToBytes(key)
+	// 使用 PrivateKeyToBytesSecure 而非弃用的 PrivateKeyToBytes，
+	// SecureKeyBytes 在使用后必须 Destroy 以清零敏感内存。
+	skb, err := sm2.PrivateKeyToBytesSecure(key)
+	if err != nil {
+		t.Fatalf("PrivateKeyToBytesSecure: %v", err)
+	}
+	defer skb.Destroy()
+	keyBytes := skb.Data()
 
 	parsed, err := sm2.NewPrivateKey(keyBytes)
 	if err != nil {

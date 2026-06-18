@@ -110,9 +110,10 @@ func TestPublicKeyToBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data := PublicKeyToBytes(&priv.PublicKey)
+	// MarshalUncompressed 是推荐的公钥序列化 API（替代已移除的 PublicKeyToBytes）。
+	data := MarshalUncompressed(&priv.PublicKey)
 	if len(data) != 65 {
-		t.Errorf("PublicKeyToBytes length: got %d, want 65", len(data))
+		t.Errorf("MarshalUncompressed length: got %d, want 65", len(data))
 	}
 }
 
@@ -122,10 +123,11 @@ func TestBytesToPublicKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data := PublicKeyToBytes(&priv.PublicKey)
-	pub, err := BytesToPublicKey(data)
+	data := MarshalUncompressed(&priv.PublicKey)
+	// UnmarshalUncompressed 是推荐的公钥反序列化 API（替代已移除的 BytesToPublicKey）。
+	pub, err := UnmarshalUncompressed(data)
 	if err != nil {
-		t.Fatalf("BytesToPublicKey: %v", err)
+		t.Fatalf("UnmarshalUncompressed: %v", err)
 	}
 
 	if pub.X.Cmp(priv.PublicKey.X) != 0 || pub.Y.Cmp(priv.PublicKey.Y) != 0 {
@@ -139,7 +141,15 @@ func TestBytesToPrivateKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	privBytes := PrivateKeyToBytes(priv)
+	// PrivateKeyToBytesSecure 是推荐的私钥序列化 API（替代已移除的 PrivateKeyToBytes），
+	// SecureKeyBytes 在使用后必须 Destroy 以清零敏感内存。
+	skb, err := PrivateKeyToBytesSecure(priv)
+	if err != nil {
+		t.Fatalf("PrivateKeyToBytesSecure: %v", err)
+	}
+	defer skb.Destroy()
+	privBytes := skb.Data()
+
 	restored, err := BytesToPrivateKey(privBytes)
 	if err != nil {
 		t.Fatalf("BytesToPrivateKey: %v", err)

@@ -1,7 +1,7 @@
 # RFC 8998 互通矩阵 — pollux-go × Tongsuo (BabaSSL)
 
 Route C（`tls13gm` + `quicgm`）的合规性验证记录。互通对象为
-[Tongsuo 8.5](https://github.com/Tongsuo-Project/Tongsuo)（原 BabaSSL），业界 RFC 8998 参考实现。
+[Tongsuo 8.5](https://github.com/Tongsuo-Project/Tongsuo)（原 BabaSSL），RFC 8998 参考实现之一。
 
 ## 范围
 

@@ -9,6 +9,7 @@
 ##   make vet              # go vet
 ##   make gosec            # security scan (excludes reviewed-as-safe rules)
 ##   make build            # build all packages
+##   make doc              # preview package docs locally (what pkg.go.dev renders)
 ##
 ## Integration tests are gated behind the `integration` build tag because they
 ## need external resources (Tongsuo binary, real sockets, RFC 8998 interop).
@@ -29,7 +30,7 @@ COVER_HTML ?= coverage.html
 # Listed on the command line because gosec dev ignores the config's "exclude" key.
 GOSEC_EXCLUDE ?= G104,G115,G304,G401,G402,G405,G501,G502,G505
 
-.PHONY: test test-unit test-integration cover cover-html vet gosec build clean fmt
+.PHONY: test test-unit test-integration cover cover-html vet gosec build clean fmt doc
 
 ## build: compile all packages
 build:
@@ -93,3 +94,9 @@ fmt:
 ## clean: remove coverage artifacts
 clean:
 	rm -f $(COVER_PROFILE) $(COVER_HTML)
+
+## doc: preview package documentation locally with pkgsite (the same renderer
+## as pkg.go.dev). Install once with:
+##   go install golang.org/x/pkgsite/cmd/pkgsite@latest
+doc:
+	pkgsite -open .

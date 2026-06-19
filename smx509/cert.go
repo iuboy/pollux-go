@@ -427,11 +427,28 @@ func decryptBlock(es pkix.AlgorithmIdentifier, key, ciphertext []byte) ([]byte, 
 			return nil, fmt.Errorf("smx509: parse IV: %w", err)
 		}
 		if len(ciphertext)%blockCipher.BlockSize() != 0 {
-			return nil, errors.New("ciphertext is not a multiple of the block size")
+			// CBC has no authentication, so a wrong key may still yield a
+			// block-aligned plaintext that only fails at unpadding. Return the
+			// same opaque error as the unpad/ASN.1 paths below so the failure
+			// mode does not reveal whether the mismatch is length- vs
+			// padding-related (padding-oracle hardening).
+			return nil, errDecryptFailed
 		}
 		plaintext := make([]byte, len(ciphertext))
 		cipher.NewCBCDecrypter(blockCipher, iv).CryptBlocks(plaintext, ciphertext)
-		return pkcs7Unpad(plaintext)
+		unpadded, err := pkcs7Unpad(plaintext)
+		if err != nil {
+			return nil, errDecryptFailed
+		}
+		// CBC has no authenticated encryption: a wrong password can still pass
+		// PKCS7 unpadding by chance. Validate the result is a well-formed DER
+		// SEQUENCE (every supported private-key encoding starts with one), and
+		// return the same opaque error on failure. This mirrors
+		// decryptLegacyPEM and closes the CBC padding-oracle surface.
+		if !asn1IsSequence(unpadded) {
+			return nil, errDecryptFailed
+		}
+		return unpadded, nil
 
 	case es.Algorithm.Equal(oidAES128GCM) || es.Algorithm.Equal(oidAES192GCM) || es.Algorithm.Equal(oidAES256GCM),
 		es.Algorithm.Equal(oidSM4GCM):
@@ -454,6 +471,14 @@ func decryptBlock(es pkix.AlgorithmIdentifier, key, ciphertext []byte) ([]byte, 
 }
 
 var errInvalidPadding = errors.New("smx509: invalid PKCS#7 padding")
+
+// errDecryptFailed is the single opaque error returned by every
+// password-dependent CBC decryption failure (bad padding, bad ASN.1, bad
+// length). Returning one constant message — instead of distinct errors —
+// denies an attacker any oracle distinguishing wrong-password from
+// malformed-ciphertext. Both the legacy PEM path and the PKCS#8 PBES2 CBC
+// path funnel through it.
+var errDecryptFailed = errors.New("smx509: decryption failed")
 
 // asn1IsSequence 检查 DER 数据是否以 ASN.1 SEQUENCE 标签开头。
 // 用于在 CBC 解密后验证密码正确性（CBC 无认证，错误密码可能通过 PKCS7 unpad）。
@@ -525,13 +550,13 @@ func decryptLegacyPEM(block *pem.Block, password []byte) ([]byte, error) {
 	cipher.NewCBCDecrypter(blockCipher, iv).CryptBlocks(plaintext, block.Bytes)
 	unpadded, err := pkcs7Unpad(plaintext)
 	if err != nil {
-		return nil, errors.New("smx509: decryption failed")
+		return nil, errDecryptFailed
 	}
 	// CBC 没有 authenticated encryption，错误密码可能通过 PKCS7 unpad。
 	// 通过 ASN.1 结构校验检测：私钥 DER 必须是合法的 SEQUENCE。
 	// 返回与 pkcs7Unpad 相同的错误消息以防止 padding oracle 攻击。
 	if !asn1IsSequence(unpadded) {
-		return nil, errors.New("smx509: decryption failed")
+		return nil, errDecryptFailed
 	}
 	return unpadded, nil
 }

@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
+        run: go build ./...
+      - name: go vet
+        run: go vet ./...
+      - name: Test (race, integration)
+        # Integration tests requiring the Tongsuo binary t.Skip on CI; the rest
+        # (real sockets, cross-package flows) still run. -race on every test.
+        run: go test -race -tags=integration ./...
+
+  lint:
+    name: Lint & Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gosec
+        # Excludes mirror Makefile GOSEC_EXCLUDE — rules reviewed as safe for a
+        # GM stack (see Makefile header for the per-rule rationale).
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -exclude G104,G115,G304,G401,G402,G405,G501,G502,G505 -quiet ./...
+      - name: staticcheck
+        # CI runs only the SA (correctness) checks. ST (style) checks are
+        # skipped: protocol identifiers like TLS_SM4_GCM_SM3 / SuiteECDHE_SM2_*
+        # intentionally mirror their RFC 8998 / GB/T 38636 standard names.
+        # SA1019 is excluded because SM2 is a non-NIST curve unsupported by
+        # crypto/ecdh, making the flagged elliptic/ecdsa APIs unavoidable. The
+        # vendored quic-go/ fork is excluded (upstream code, PATCHES.md).
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go list ./... | grep -v '/quic-go' | xargs staticcheck -checks 'SA*,-SA1019'

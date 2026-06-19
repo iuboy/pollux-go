@@ -138,7 +138,7 @@ func PKCS7Unpad(data []byte, blockSize int) ([]byte, error) {
 		return nil, errors.New("sm4: invalid PKCS7 padding")
 	}
 	// Constant-time validation of all padding bytes.
-	var valid int = 1
+	var valid = 1
 	for i := len(data) - padding; i < len(data); i++ {
 		valid &= subtle.ConstantTimeByteEq(data[i], pad)
 	}

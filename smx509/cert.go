@@ -499,7 +499,7 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 		return nil, errInvalidPadding
 	}
 	// Constant-time validation: always iterate all padding bytes regardless of value.
-	var valid int = 1
+	var valid = 1
 	for _, b := range data[len(data)-padLen:] {
 		valid &= subtle.ConstantTimeByteEq(b, byte(padLen))
 	}

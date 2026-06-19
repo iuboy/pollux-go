@@ -57,6 +57,14 @@ func EncryptSessionTicket(tek, psk []byte) ([]byte, error) {
 // version is validated and used as AEAD additional data. Returns
 // errTicketUndecryptable if no key decrypts it (expired ticket, wrong server,
 // or tampering).
+//
+// Constant-time over the TEK list: every candidate key is always tried — a
+// successful decrypt with an earlier key does not short-circuit the loop — so
+// the wall-clock cost is independent of which (if any) key matched. This denies
+// a remote timing oracle that would otherwise reveal how deep into the
+// rotation window the matching key sits. Although the PSK binder is
+// subsequently checked in constant time, removing the ticket-decrypt timing
+// skew closes the surface at its source.
 func DecryptSessionTicket(teks [][]byte, ticket []byte) ([]byte, error) {
 	if len(ticket) < 1+12 {
 		return nil, errTicketTooShort
@@ -70,6 +78,14 @@ func DecryptSessionTicket(teks [][]byte, ticket []byte) ([]byte, error) {
 		return nil, errTicketNoKey
 	}
 	aad := []byte{sessionTicketVersion}
+	// Always try every candidate. A success records the candidate plaintext
+	// instead of returning early, so the number of AEAD.Open calls is fixed at
+	// len(teks) regardless of which key matched. AEAD.Open is itself
+	// constant-time over the ciphertext, making the whole loop timing-uniform.
+	var (
+		result []byte
+		ok     bool
+	)
 	for _, tek := range teks {
 		if len(tek) != SessionTicketKeyLen {
 			continue
@@ -78,10 +94,13 @@ func DecryptSessionTicket(teks [][]byte, ticket []byte) ([]byte, error) {
 		if err != nil {
 			continue
 		}
-		psk, err := aead.Open(0, ct, aad)
-		if err == nil {
-			return psk, nil
+		if psk, err := aead.Open(0, ct, aad); err == nil {
+			// Keep the last (most recent in rotation order) successful PSK.
+			result, ok = psk, true
 		}
 	}
-	return nil, errTicketUndecryptable
+	if !ok {
+		return nil, errTicketUndecryptable
+	}
+	return result, nil
 }

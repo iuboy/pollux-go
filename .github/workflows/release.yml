@@ -1,0 +1,30 @@
+name: Release
+
+# Triggered by version tags (v0.1.0, v1.2.3, ...). Creates a GitHub Release with
+# auto-generated notes derived from merged PRs / commits since the previous tag.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # full history for --generate-notes
+      - name: Create release
+        env:
+          # env indirection avoids ${{ }} injection into the run shell.
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes

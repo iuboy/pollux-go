@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"errors"
+	"io"
 	"math/big"
 	"time"
 
@@ -103,7 +104,7 @@ func EnvelopeEncryptSM4(pub *ecdsa.PublicKey, plaintext []byte) (encryptedKey, n
 	}
 
 	nonce = make([]byte, aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, nil, nil, err
 	}
 

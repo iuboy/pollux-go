@@ -44,31 +44,65 @@ func (p *KeyExchangePerformer) GenerateEphemeralKeyWithRandom(r io.Reader) (*ecd
 	return pub, nil
 }
 
-// ComputeSharedSecretAsInitiator initiator computes shared secret.
-// peerEphemeralPub is the peer's ephemeral public key, peerSig is the peer's signature.
-func (p *KeyExchangePerformer) ComputeSharedSecretAsInitiator(peerEphemeralPub *ecdsa.PublicKey, peerSig []byte) ([]byte, error) {
+// RespondKeyExchange is the responder's first step (GM/T 0003.3 step B2):
+// after receiving the initiator's ephemeral public key, it computes the
+// responder's signature (sB) to send back to the initiator. It does NOT derive
+// the shared secret yet — the responder must wait for the initiator's signature
+// and call ConfirmInitiator to verify it and derive the shared key, completing
+// mutual authentication.
+func (p *KeyExchangePerformer) RespondKeyExchange(r io.Reader, initiatorEphemeralPub *ecdsa.PublicKey) ([]byte, error) {
 	if !p.initDone {
 		return nil, errors.New("sm2: key exchange not initialized; call GenerateEphemeralKey first")
 	}
-	sharedKey, _, err := p.ke.ConfirmResponder(peerEphemeralPub, peerSig)
+	_, sig, err := p.ke.RepondKeyExchange(r, initiatorEphemeralPub) //nolint:misspell // upstream gmsm typo: Repond→Respond
 	if err != nil {
 		return nil, err
 	}
-	return sharedKey, nil
+	return sig, nil
 }
 
-// ComputeSharedSecretAsResponder responder computes shared secret.
-// peerEphemeralPub is the peer's ephemeral public key.
-// Returns shared key and local signature (to be sent to the peer for verification).
-func (p *KeyExchangePerformer) ComputeSharedSecretAsResponder(r io.Reader, peerEphemeralPub *ecdsa.PublicKey) (sharedKey []byte, sig []byte, err error) {
+// ConfirmInitiator is the responder's final step (GM/T 0003.3 step B3): it
+// verifies the initiator's signature (sA) received from the initiator and, on
+// success, derives the shared secret. Passing a nil/empty initiatorSig skips
+// verification — DO NOT do this in production; it forfeits mutual
+// authentication and allows a MITM to impersonate the initiator.
+func (p *KeyExchangePerformer) ConfirmInitiator(initiatorSig []byte) ([]byte, error) {
+	if !p.initDone {
+		return nil, errors.New("sm2: key exchange not initialized; call GenerateEphemeralKey first")
+	}
+	return p.ke.ConfirmInitiator(initiatorSig)
+}
+
+// ComputeSharedSecretAsInitiator is the initiator's step (GM/T 0003.3 step A2):
+// it verifies the responder's signature (sB) and, on success, derives the shared
+// secret. It also returns the initiator's own signature (sA), which the
+// initiator MUST send to the responder so the responder can authenticate it via
+// ConfirmInitiator.
+func (p *KeyExchangePerformer) ComputeSharedSecretAsInitiator(peerEphemeralPub *ecdsa.PublicKey, peerSig []byte) (sharedKey, initiatorSig []byte, err error) {
 	if !p.initDone {
 		return nil, nil, errors.New("sm2: key exchange not initialized; call GenerateEphemeralKey first")
 	}
-	_, sig, err = p.ke.RepondKeyExchange(r, peerEphemeralPub) //nolint:misspell // upstream gmsm typo: Repond→Respond
+	sharedKey, initiatorSig, err = p.ke.ConfirmResponder(peerEphemeralPub, peerSig)
 	if err != nil {
 		return nil, nil, err
 	}
-	sharedKey, err = p.ke.ConfirmInitiator(nil)
+	return sharedKey, initiatorSig, nil
+}
+
+// ComputeSharedSecretAsResponder is the legacy one-shot responder API.
+//
+// Deprecated: it skips verification of the initiator's signature (GM/T 0003.3
+// step B3), forfeiting mutual authentication and allowing a man-in-the-middle to
+// impersonate the initiator. Use RespondKeyExchange to produce the responder
+// signature, then ConfirmInitiator(initiatorSig) once the initiator's signature
+// has been received and verified. This wrapper retains the old (insecure)
+// behavior for compile compatibility only.
+func (p *KeyExchangePerformer) ComputeSharedSecretAsResponder(r io.Reader, peerEphemeralPub *ecdsa.PublicKey) (sharedKey []byte, sig []byte, err error) {
+	sig, err = p.RespondKeyExchange(r, peerEphemeralPub)
+	if err != nil {
+		return nil, nil, err
+	}
+	sharedKey, err = p.ConfirmInitiator(nil) // legacy: no initiator verification
 	if err != nil {
 		return nil, nil, err
 	}
@@ -82,8 +116,7 @@ func (p *KeyExchangePerformer) ComputeSharedSecretAsResponder(r io.Reader, peerE
 // Security note: the underlying gmsm KeyExchange does not expose an explicit
 // zeroing method, so Destroy releases the reference for GC. For higher assurance,
 // callers should independently zero the shared secret bytes returned by
-// ComputeSharedSecretAsInitiator or ComputeSharedSecretAsResponder using
-// memsecure.ZeroBytes.
+// ComputeSharedSecretAsInitiator or ConfirmInitiator using memsecure.ZeroBytes.
 func (p *KeyExchangePerformer) Destroy() {
 	p.ke = nil
 	p.initDone = false

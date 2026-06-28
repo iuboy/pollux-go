@@ -3,6 +3,7 @@ package quicgm
 import (
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -27,15 +28,23 @@ type ticketKeyRotator struct {
 	now            func() time.Time
 }
 
-// newTicketKeyRotator seeds the rotator. If seed is non-empty it is used as the
-// initial current key (after a length check); otherwise a random key is
-// generated. rotationPeriod is how often the current key is rotated.
+// newTicketKeyRotator seeds the rotator. If seed is non-empty it MUST be at
+// least SessionTicketKeyLen bytes; the first SessionTicketKeyLen bytes are used
+// as the initial current key. An empty seed generates a fresh random key
+// (single-process default). A non-empty but short seed is rejected rather than
+// silently replaced: in a multi-replica deployment every replica must derive
+// the same TEK from the same seed, so quietly substituting a random key on a
+// short seed would make tickets issued by one replica undecryptable by another.
 func newTicketKeyRotator(seed []byte, rotationPeriod time.Duration) (*ticketKeyRotator, error) {
 	if rotationPeriod <= 0 {
 		return nil, errors.New("quicgm: ticket-key rotation period must be positive")
 	}
 	cur := make([]byte, tls13gm.SessionTicketKeyLen)
-	if len(seed) >= tls13gm.SessionTicketKeyLen {
+	if len(seed) > 0 {
+		if len(seed) < tls13gm.SessionTicketKeyLen {
+			return nil, fmt.Errorf("quicgm: session-ticket key seed must be at least %d bytes, got %d",
+				tls13gm.SessionTicketKeyLen, len(seed))
+		}
 		copy(cur, seed[:tls13gm.SessionTicketKeyLen])
 	} else if _, err := rand.Read(cur); err != nil {
 		return nil, err

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"errors"
+	"io"
 	"math/big"
 	"time"
 
@@ -103,7 +104,7 @@ func EnvelopeEncryptSM4(pub *ecdsa.PublicKey, plaintext []byte) (encryptedKey, n
 	}
 
 	nonce = make([]byte, aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, nil, nil, err
 	}
 
@@ -151,6 +152,11 @@ func createTempCertForEnvelope() (*smx509.Certificate, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// The temporary private key is only needed to self-sign the throwaway
+	// recipient certificate; it is never used to decrypt anything. Zero its
+	// scalar immediately after signing so it does not linger in memory per
+	// the minimal-exposure principle in docs/security/memory-management.md.
+	defer tmpPriv.D.SetInt64(0)
 
 	sn, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {

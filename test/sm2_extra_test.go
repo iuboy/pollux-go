@@ -201,7 +201,7 @@ func TestBlackBox_SM2_KeyExchange(t *testing.T) {
 		t.Fatalf("Bob ComputeSharedSecretAsResponder: %v", err)
 	}
 
-	aliceShared, err := alice.ComputeSharedSecretAsInitiator(bobEph, bobSig)
+	aliceShared, _, err := alice.ComputeSharedSecretAsInitiator(bobEph, bobSig)
 	if err != nil {
 		t.Fatalf("Alice ComputeSharedSecretAsInitiator: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestBlackBox_SM2_KeyExchange_DifferentKeyLengths(t *testing.T) {
 			eph2, _ := p2.GenerateEphemeralKey()
 
 			shared2, sig2, _ := p2.ComputeSharedSecretAsResponder(rand.Reader, eph1)
-			shared1, _ := p1.ComputeSharedSecretAsInitiator(eph2, sig2)
+			shared1, _, _ := p1.ComputeSharedSecretAsInitiator(eph2, sig2)
 
 			if len(shared1) != klen {
 				t.Errorf("key length: got %d, want %d", len(shared1), klen)

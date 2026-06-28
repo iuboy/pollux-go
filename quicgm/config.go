@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/iuboy/pollux-go/sm2"
+	"github.com/iuboy/pollux-go/sm3"
 	"github.com/iuboy/pollux-go/smx509"
 	"github.com/iuboy/pollux-go/tls13gm"
 )
@@ -94,8 +95,12 @@ func (c *ServerConfig) tls13ServerConfig(ticketKeys func() [][]byte) *tls13gm.Se
 	cfg.AllowEarlyData = allowEarly
 	if allowEarly {
 		cache := c.AntiReplay
-		cfg.EarlyDataAcceptor = func(psk []byte) bool {
-			return cache.Check(psk, 0) // age 0: ticket-age tracking is a follow-up
+		cfg.EarlyDataAcceptor = func(psk []byte, realAge time.Duration) bool {
+			// Digest the PSK so the raw key never becomes the cache map key, and
+			// pass the reconstructed real ticket age so the cache can reject
+			// expired/future tickets (RFC 8446 §8).
+			digest := sm3.Sum(psk)
+			return cache.Check(digest[:], realAge)
 		}
 	}
 	return cfg

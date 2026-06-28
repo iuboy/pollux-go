@@ -2,6 +2,7 @@ package tls13gm
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 )
@@ -12,7 +13,13 @@ const SessionTicketKeyLen = 16
 
 // sessionTicketVersion is the format version carried as the first byte of every
 // encrypted ticket, and used as AEAD additional data.
-const sessionTicketVersion byte = 0x01
+//
+// v0x02 encodes the ticket_age_add alongside the PSK so the server can
+// reconstruct the real ticket age from the client's obfuscated_ticket_age for
+// 0-RTT anti-replay (RFC 8446 §4.2.11.1, §8). Earlier v0x01 tickets (PSK only)
+// are not accepted: a stale v0x01 ticket fails to decrypt and the client falls
+// back to a full handshake.
+const sessionTicketVersion byte = 0x02
 
 var (
 	errTicketTooShort      = errors.New("tls13gm: session ticket too short")
@@ -21,15 +28,15 @@ var (
 	errTicketUndecryptable = errors.New("tls13gm: session ticket failed to decrypt under every key")
 )
 
-// EncryptSessionTicket encrypts a resumption PSK into an opaque stateless
-// session-ticket identity under the given TEK. The format is:
+// EncryptSessionTicket encrypts a resumption PSK and its ticket_age_add into an
+// opaque stateless session-ticket identity under the given TEK. The format is:
 //
-//	ticket = version(1) || nonce(12) || SM4-GCM(tek, iv=nonce, aad=[version], psk)
+//	ticket = version(1) || nonce(12) || SM4-GCM(tek, iv=nonce, aad=[version], psk || be32(ticketAgeAdd))
 //
-// The nonce is fresh per ticket so AEAD nonces never repeat. The PSK itself is
-// derived by the caller (DeriveResumptionPSK) and travels encrypted; the server
-// keeps no per-ticket state (the PSK is recoverable from the ticket + TEK).
-func EncryptSessionTicket(tek, psk []byte) ([]byte, error) {
+// The nonce is fresh per ticket so AEAD nonces never repeat. The server keeps
+// no per-ticket state: both the PSK (recoverable via DeriveResumptionPSK) and
+// the ticket_age_add needed for anti-replay travel encrypted in the ticket.
+func EncryptSessionTicket(tek, psk []byte, ticketAgeAdd uint32) ([]byte, error) {
 	if len(tek) != SessionTicketKeyLen {
 		return nil, fmt.Errorf("tls13gm: session-ticket key must be %d bytes, got %d", SessionTicketKeyLen, len(tek))
 	}
@@ -41,7 +48,10 @@ func EncryptSessionTicket(tek, psk []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	ct, err := aead.Seal(0, psk, []byte{sessionTicketVersion})
+	plaintext := make([]byte, len(psk)+4)
+	copy(plaintext, psk)
+	binary.BigEndian.PutUint32(plaintext[len(psk):], ticketAgeAdd)
+	ct, err := aead.Seal(0, plaintext, []byte{sessionTicketVersion})
 	if err != nil {
 		return nil, err
 	}
@@ -52,24 +62,39 @@ func EncryptSessionTicket(tek, psk []byte) ([]byte, error) {
 	return ticket, nil
 }
 
-// DecryptSessionTicket recovers the PSK from an opaque ticket by trying each
-// TEK in turn (current first, then historical keys during rotation). The ticket
-// version is validated and used as AEAD additional data. Returns
-// errTicketUndecryptable if no key decrypts it (expired ticket, wrong server,
-// or tampering).
-func DecryptSessionTicket(teks [][]byte, ticket []byte) ([]byte, error) {
+// DecryptSessionTicket recovers the PSK and ticket_age_add from an opaque ticket
+// by trying each TEK in turn (current first, then historical keys during
+// rotation). The ticket version is validated and used as AEAD additional data.
+// Returns errTicketUndecryptable if no key decrypts it (expired ticket, wrong
+// server, or tampering).
+//
+// Constant-time over the TEK list: every candidate key is always tried — a
+// successful decrypt with an earlier key does not short-circuit the loop — so
+// the wall-clock cost is independent of which (if any) key matched. This denies
+// a remote timing oracle that would otherwise reveal how deep into the
+// rotation window the matching key sits.
+func DecryptSessionTicket(teks [][]byte, ticket []byte) ([]byte, uint32, error) {
 	if len(ticket) < 1+12 {
-		return nil, errTicketTooShort
+		return nil, 0, errTicketTooShort
 	}
 	if ticket[0] != sessionTicketVersion {
-		return nil, fmt.Errorf("%w: %d", errTicketVersion, ticket[0])
+		return nil, 0, fmt.Errorf("%w: %d", errTicketVersion, ticket[0])
 	}
 	nonce := ticket[1:13]
 	ct := ticket[13:]
 	if len(teks) == 0 {
-		return nil, errTicketNoKey
+		return nil, 0, errTicketNoKey
 	}
 	aad := []byte{sessionTicketVersion}
+	// Always try every candidate. A success records the candidate plaintext
+	// instead of returning early, so the number of AEAD.Open calls is fixed at
+	// len(teks) regardless of which key matched. AEAD.Open is itself
+	// constant-time over the ciphertext, making the whole loop timing-uniform.
+	var (
+		result []byte
+		ageAdd uint32
+		ok     bool
+	)
 	for _, tek := range teks {
 		if len(tek) != SessionTicketKeyLen {
 			continue
@@ -78,10 +103,18 @@ func DecryptSessionTicket(teks [][]byte, ticket []byte) ([]byte, error) {
 		if err != nil {
 			continue
 		}
-		psk, err := aead.Open(0, ct, aad)
-		if err == nil {
-			return psk, nil
+		if pt, err := aead.Open(0, ct, aad); err == nil {
+			if len(pt) < 4 {
+				continue // malformed plaintext; keep trying other keys
+			}
+			// Keep the last (most recent in rotation order) successful result.
+			result = pt[:len(pt)-4]
+			ageAdd = binary.BigEndian.Uint32(pt[len(pt)-4:])
+			ok = true
 		}
 	}
-	return nil, errTicketUndecryptable
+	if !ok {
+		return nil, 0, errTicketUndecryptable
+	}
+	return result, ageAdd, nil
 }

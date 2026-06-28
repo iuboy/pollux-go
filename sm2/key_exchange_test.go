@@ -52,27 +52,67 @@ func TestKeyExchangeFullFlow(t *testing.T) {
 		t.Fatal("Bob ephemeral public key should not be nil")
 	}
 
-	// Bob（响应方）收到 Alice 的临时公钥，计算共享密钥和签名
-	bobSharedKey, bobSig, err := bob.ComputeSharedSecretAsResponder(rand.Reader, aliceEphemeralPub)
+	// Bob（响应方）收到 Alice 的临时公钥，生成响应签名 sB（GM/T 0003.3 step B2）。
+	bobSig, err := bob.RespondKeyExchange(rand.Reader, aliceEphemeralPub)
 	if err != nil {
-		t.Fatalf("Bob ComputeSharedSecretAsResponder: %v", err)
+		t.Fatalf("Bob RespondKeyExchange: %v", err)
 	}
-	if len(bobSharedKey) != keyLen {
-		t.Errorf("Bob shared key length: got %d, want %d", len(bobSharedKey), keyLen)
+	if len(bobSig) == 0 {
+		t.Fatal("Bob responder signature should not be empty")
 	}
 
-	// Alice（发起方）收到 Bob 的临时公钥和签名，计算共享密钥
-	aliceSharedKey, err := alice.ComputeSharedSecretAsInitiator(bobEphemeralPub, bobSig)
+	// Alice（发起方）收到 Bob 的临时公钥和签名，验证 sB 并计算共享密钥与自己的签名 sA。
+	aliceSharedKey, aliceSig, err := alice.ComputeSharedSecretAsInitiator(bobEphemeralPub, bobSig)
 	if err != nil {
 		t.Fatalf("Alice ComputeSharedSecretAsInitiator: %v", err)
 	}
 	if len(aliceSharedKey) != keyLen {
 		t.Errorf("Alice shared key length: got %d, want %d", len(aliceSharedKey), keyLen)
 	}
+	if len(aliceSig) == 0 {
+		t.Fatal("Alice initiator signature should not be empty")
+	}
+
+	// Bob 验证 Alice 的签名 sA 后派生共享密钥，完成双向认证（step B3）。
+	bobSharedKey, err := bob.ConfirmInitiator(aliceSig)
+	if err != nil {
+		t.Fatalf("Bob ConfirmInitiator: %v", err)
+	}
+	if len(bobSharedKey) != keyLen {
+		t.Errorf("Bob shared key length: got %d, want %d", len(bobSharedKey), keyLen)
+	}
 
 	// 双方共享密钥应一致
 	if !bytes.Equal(aliceSharedKey, bobSharedKey) {
 		t.Errorf("shared key mismatch:\nAlice=%x\nBob  =%x", aliceSharedKey, bobSharedKey)
+	}
+
+	// Bob 拒绝伪造的 initiator 签名（mutual authentication fail-closed）。
+	tampered := make([]byte, len(aliceSig))
+	copy(tampered, aliceSig)
+	tampered[0] ^= 0xFF
+	// Reset bob to re-run confirmation is not possible (state consumed); instead
+	// verify a fresh exchange rejects a bad signature.
+	alice2, err := sm2.NewKeyExchangePerformer(alicePriv, &bobPriv.PublicKey, aliceUID, bobUID, keyLen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob2, err := sm2.NewKeyExchangePerformer(bobPriv, &alicePriv.PublicKey, bobUID, aliceUID, keyLen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aEph2, _ := alice2.GenerateEphemeralKey()
+	bEph2, _ := bob2.GenerateEphemeralKey()
+	bSig2, err := bob2.RespondKeyExchange(rand.Reader, aEph2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = alice2.ComputeSharedSecretAsInitiator(bEph2, bSig2)
+	if err != nil {
+		t.Fatalf("fresh initiator step: %v", err)
+	}
+	if _, err := bob2.ConfirmInitiator(tampered); err == nil {
+		t.Error("ConfirmInitiator accepted a forged initiator signature")
 	}
 }
 
@@ -94,11 +134,15 @@ func TestKeyExchange_DifferentKeyLengths(t *testing.T) {
 			aEph, _ := alice.GenerateEphemeralKey()
 			bEph, _ := bob.GenerateEphemeralKey()
 
-			bobKey, bobSig, err := bob.ComputeSharedSecretAsResponder(rand.Reader, aEph)
+			bobSig, err := bob.RespondKeyExchange(rand.Reader, aEph)
 			if err != nil {
 				t.Fatal(err)
 			}
-			aliceKey, err := alice.ComputeSharedSecretAsInitiator(bEph, bobSig)
+			aliceKey, aliceSig, err := alice.ComputeSharedSecretAsInitiator(bEph, bobSig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bobKey, err := bob.ConfirmInitiator(aliceSig)
 			if err != nil {
 				t.Fatal(err)
 			}

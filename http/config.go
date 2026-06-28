@@ -18,6 +18,11 @@ var (
 	errMissingCertificate = errors.New("pollux/http: certificate is required")
 )
 
+// defaultTLSCurvePreferences restricts the (key-exchange) curves negotiated by
+// the standard-TLS path only (buildTLSConfig / buildTLSClientConfig →
+// tls.Config.CurvePreferences). The GM paths (tlcp, tls13gm) do their own
+// curve negotiation and are NOT governed by this list — they use SM2 per
+// RFC 8998 regardless of CurvePreferences.
 var defaultTLSCurvePreferences = []tls.CurveID{
 	tls.X25519,
 	tls.CurveP256,
@@ -233,7 +238,20 @@ func (o *ClientOptions) buildTLCPClientConfig() (*tlcp.Config, error) {
 }
 
 // buildTLSClientConfig builds a tls.Config for client use.
+//
+// Fail-closed: a client MUST configure server authentication — either a root
+// pool, a client certificate chain, or an explicit InsecureSkipVerify opt-in.
+// Without it, the returned config would carry InsecureSkipVerify=false but
+// RootCAs=nil, leaving verification to fall back to the host's system cert
+// store (non-deterministic across environments, silently skipped in some
+// dial paths). This mirrors cert.BuildClientTLSConfig's gate and makes
+// "unauthenticated by accident" a build-time error instead of a runtime
+// behavior.
 func (o *ClientOptions) buildTLSClientConfig() (*tls.Config, error) {
+	if len(o.Certificates) == 0 && o.RootCAs == nil && !o.TLSInsecureSkipVerify {
+		return nil, errors.New("pollux/http: at least one certificate, root pool, or TLSInsecureSkipVerify is required")
+	}
+
 	cfg := &tls.Config{
 		Certificates:       o.Certificates,
 		ServerName:         o.TLSServerName,

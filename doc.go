@@ -18,15 +18,13 @@
 //   - gmstd: GM/T standard helper functions
 //   - smx509: SM2-aware X.509 certificate creation, parsing, and verification
 //   - cert: High-level certificate management facade
+//   - tls: TLS cipher suite registry (national suite IDs only)
+//   - tls13: Standard TLS 1.3 configuration builders (Route A)
 //   - tlcp: TLCP 1.1 protocol (EXPERIMENTAL — pending security audit)
-//   - tls13gm: TLS 1.3 GM cipher suites per RFC 8998 (experimental)
-//   - tls: TLS cipher suite management with national suites
+//   - tls13gm: RFC 8998 TLS 1.3 GM cipher suites (interop-verified, Route C)
+//   - quicgm: RFC 9001 QUIC packet protection with SM4-GCM (Route C)
 //   - http: HTTP server/client helpers for TLS, TLCP, and hybrid
-//   - quicgm: QUIC with GM cipher suites
 //
-// # Status
-//
-// TLCP and protocol integration layers are EXPERIMENTAL.
-// The primitive wrappers (sm2/sm3/sm4/sm9/zuc) delegate to gmsm
-// and inherit its audit status.
+// The primitive wrappers (sm2/sm3/sm4/sm9/zuc) delegate to gmsm and inherit
+// its audit status. TLCP is EXPERIMENTAL pending independent security audit.
 package pollux

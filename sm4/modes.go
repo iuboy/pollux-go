@@ -8,7 +8,10 @@ import (
 	"io"
 )
 
-var errInvalidIVLen = errors.New("sm4: invalid IV length")
+var (
+	errInvalidIVLen = errors.New("sm4: invalid IV length")
+	errNonceMissing = errors.New("sm4: nonce required (none provided and ciphertext too short to contain a prepended one)")
+)
 
 // NewGCM creates an SM4-GCM authenticated encryptor.
 // The returned cipher.AEAD can be used directly for Seal/Open.
@@ -97,10 +100,16 @@ func GenerateIV() ([]byte, error) {
 type Mode string
 
 const (
-	ModeECB Mode = "ECB" // Deprecated: ECB does not provide semantic security; use GCM for new protocols
+	// ModeECB is Electronic Codebook mode. Deprecated: ECB does not provide
+	// semantic security; use ModeGCM for new protocols.
+	ModeECB Mode = "ECB"
+	// ModeCBC is Cipher Block Chaining mode. The caller must supply a unique IV.
 	ModeCBC Mode = "CBC"
+	// ModeCTR is Counter mode. The caller must supply a unique nonce/counter.
 	ModeCTR Mode = "CTR"
+	// ModeGCM is Galois/Counter Mode (recommended): authenticated encryption.
 	ModeGCM Mode = "GCM"
+	// ModeCFB is Cipher Feedback mode. The caller must supply a unique IV.
 	ModeCFB Mode = "CFB"
 )
 
@@ -132,7 +141,7 @@ func PKCS7Unpad(data []byte, blockSize int) ([]byte, error) {
 		return nil, errors.New("sm4: invalid PKCS7 padding")
 	}
 	// Constant-time validation of all padding bytes.
-	var valid int = 1
+	var valid = 1
 	for i := len(data) - padding; i < len(data); i++ {
 		valid &= subtle.ConstantTimeByteEq(data[i], pad)
 	}
@@ -294,7 +303,14 @@ func decryptGCM(key, ciphertext, nonce []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(nonce) == 0 && len(ciphertext) >= aead.NonceSize()+aead.Overhead() {
+	if len(nonce) == 0 {
+		// No explicit nonce: it must be prepended to the ciphertext. Reject
+		// short inputs explicitly instead of silently degrading to an
+		// all-zero nonce, which would mask caller misuse (e.g. a truncated
+		// ciphertext or a forgotten nonce) as a generic decryption failure.
+		if len(ciphertext) < aead.NonceSize()+aead.Overhead() {
+			return nil, errNonceMissing
+		}
 		nonce = ciphertext[:aead.NonceSize()]
 		ciphertext = ciphertext[aead.NonceSize():]
 	}

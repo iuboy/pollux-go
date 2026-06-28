@@ -537,6 +537,7 @@ func decryptLegacyPEM(block *pem.Block, password []byte) ([]byte, error) {
 		return nil, fmt.Errorf("IV too short: need >= 8 bytes, got %d", len(iv))
 	}
 	key := evpBytesToKey(password, iv[:8], keyLen)
+	defer memsecure.ZeroBytes(key)
 
 	blockCipher, err := legacyNewCipher(cipherName, key)
 	if err != nil {

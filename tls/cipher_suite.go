@@ -37,21 +37,30 @@ const (
 )
 
 // GetCipherSuites returns cipher suites for the given mode.
+//
+// CryptoModeNational/CryptoModeHybrid return only GCM suites with forward
+// secrecy (ECDHE) by default — the safest selection. For legacy CBC / static
+// ECC suites, use LegacyNationalCipherSuites(). This package is a registry
+// only (it does not perform a handshake); the IDs are not understood by the
+// standard library crypto/tls.
 func GetCipherSuites(mode CryptoMode) ([]uint16, error) {
 	switch mode {
 	case CryptoModeNational:
-		return []uint16{
-			ECDHE_SM2_WITH_SM4_GCM_SM3,
-			ECDHE_SM2_WITH_SM4_CBC_SM3,
-			ECC_SM2_WITH_SM4_GCM_SM3,
-			ECC_SM2_WITH_SM4_CBC_SM3,
-		}, nil
+		return getSecureNational(), nil
 	case CryptoModeHybrid:
-		return append(getInternational(), getNational()...), nil
+		return append(getInternational(), getSecureNational()...), nil
 	case CryptoModeInternational:
 		return getInternational(), nil
 	default:
 		return nil, fmt.Errorf("unsupported crypto mode: %s", mode)
+	}
+}
+
+// getSecureNational returns the recommended national suites: GCM with forward
+// secrecy (ECDHE). CBC and static ECC suites are intentionally excluded.
+func getSecureNational() []uint16 {
+	return []uint16{
+		ECDHE_SM2_WITH_SM4_GCM_SM3,
 	}
 }
 
@@ -104,9 +113,17 @@ func CipherSuiteName(id uint16) string {
 	}
 }
 
-// NationalCipherSuites returns the national cipher suite list without error.
-// Panics are impossible since CryptoModeNational is always valid.
+// NationalCipherSuites returns the recommended national cipher suite list
+// (GCM + ECDHE, forward secrecy) without error. Panics are impossible since
+// CryptoModeNational is always valid.
 func NationalCipherSuites() []uint16 {
 	suites, _ := GetCipherSuites(CryptoModeNational)
 	return suites
+}
+
+// LegacyNationalCipherSuites returns the full national cipher suite list,
+// including CBC and static ECC suites. CBC carries padding-oracle risk and the
+// static ECC suites lack forward secrecy; use only for legacy interop.
+func LegacyNationalCipherSuites() []uint16 {
+	return getNational()
 }

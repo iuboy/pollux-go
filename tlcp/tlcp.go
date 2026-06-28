@@ -341,28 +341,29 @@ func createCertPoolAndCertsFromFile(certFile string) (*x509.CertPool, []*x509.Ce
 	if err != nil {
 		return nil, nil, fmt.Errorf("tlcp: read certificate file: %w", err)
 	}
+	return createCertPoolAndCertsFromPEM(pemData)
+}
 
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pemData) {
+// createCertPoolAndCertsFromPEM creates certificate pool and parses raw certificates from PEM data.
+// Pool is built via AddCert (not AppendCertsFromPEM) because the stdlib pool helper
+// rejects SM2 certificates; the pool field is retained for API compatibility while
+// actual SM2 verification uses the raw certificates via buildSMX509CertPool.
+func createCertPoolAndCertsFromPEM(pemData []byte) (*x509.CertPool, []*x509.Certificate, error) {
+	certs := parsePEMCertificates(pemData)
+	if len(certs) == 0 {
 		return nil, nil, errors.New("tlcp: parse certificate file")
 	}
-
-	certs := parsePEMCertificates(pemData)
-	return pool, certs, nil
-}
-
-// createCertPoolAndCertsFromPEM creates certificate pool and parses raw certificates from PEM data
-func createCertPoolAndCertsFromPEM(pemData []byte) (*x509.CertPool, []*x509.Certificate, error) {
 	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pemData) {
-		return nil, nil, errors.New("tlcp: parse PEM certificate")
+	for _, c := range certs {
+		pool.AddCert(c)
 	}
-
-	certs := parsePEMCertificates(pemData)
 	return pool, certs, nil
 }
 
-// parsePEMCertificates parses []*x509.Certificate from PEM data
+// parsePEMCertificates parses []*x509.Certificate from PEM data.
+// SM2-aware: gmsm smx509 parses SM2 curves that the stdlib crypto/x509 rejects
+// ("unsupported elliptic curve"). DER is preserved via ToX509(), so downstream
+// buildSMX509CertPool can re-parse from Raw. Falls back to stdlib for non-SM2.
 func parsePEMCertificates(pemData []byte) []*x509.Certificate {
 	var certs []*x509.Certificate
 	rest := pemData
@@ -375,13 +376,13 @@ func parsePEMCertificates(pemData []byte) []*x509.Certificate {
 		if pemBlock.Type != "CERTIFICATE" {
 			continue
 		}
-		// Try SM2-aware parsing first, then fall back to standard x509.
-		// This matches the behavior of cert.ParseCertificate.
-		cert, err := x509.ParseCertificate(pemBlock.Bytes)
-		if err != nil {
+		if smCert, err := gmsmSmx509.ParseCertificate(pemBlock.Bytes); err == nil {
+			certs = append(certs, smCert.ToX509())
 			continue
 		}
-		certs = append(certs, cert)
+		if cert, err := x509.ParseCertificate(pemBlock.Bytes); err == nil {
+			certs = append(certs, cert)
+		}
 	}
 	return certs
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/iuboy/pollux-go/sm2"
 	"golang.org/x/crypto/ocsp"
 )
 
@@ -17,8 +18,14 @@ const (
 )
 
 // CreateOCSPResponse creates an OCSP response signed by the responder.
-// If the responder key is SM2, the response is signed with SM2+SM3.
+// If signer is an SM2 private key, the response is signed with SM2+SM3
+// (GM/T 0009-2012) via createSM2OCSPResponse; otherwise it delegates to
+// golang.org/x/crypto/ocsp.CreateResponse, which cannot handle SM2 keys
+// (its signingParamsForPublicKey rejects sm2.P256()).
 func CreateOCSPResponse(template *ocsp.Response, responderCert *x509.Certificate, signer crypto.Signer) ([]byte, error) {
+	if sm2Key, ok := signer.(*sm2.PrivateKey); ok {
+		return createSM2OCSPResponse(responderCert, responderCert, *template, sm2Key)
+	}
 	return ocsp.CreateResponse(responderCert, responderCert, *template, signer)
 }
 
@@ -32,18 +39,42 @@ func ParseOCSPRequest(data []byte) (*ocsp.Request, error) {
 // Deprecated: this function does not verify the OCSP response signature,
 // allowing an attacker to forge a "Good" status. Use ParseOCSPResponseWithIssuer
 // instead, which validates the signature against the issuer certificate.
+// For legitimate parse-only use cases (logging, debugging, already-verified
+// responses), use ParseOCSPResponseUnverified, whose name makes the security
+// trade-off explicit at the call site.
 func ParseOCSPResponse(data []byte) (*ocsp.Response, error) {
+	return ParseOCSPResponseUnverified(data)
+}
+
+// ParseOCSPResponseUnverified parses a DER-encoded OCSP response WITHOUT
+// signature verification. The returned Response MUST NOT be trusted for
+// security decisions — without verification, an attacker can forge an
+// arbitrary status (Good/Revoked/Unknown).
+//
+// This is intended only for:
+//   - Logging/inspection of a response that has already been verified by
+//     ParseOCSPResponseWithIssuer in the same request.
+//   - Debugging/test tooling that intentionally inspects untrusted input.
+//
+// For any security-relevant code path, use ParseOCSPResponseWithIssuer.
+func ParseOCSPResponseUnverified(data []byte) (*ocsp.Response, error) {
 	return ocsp.ParseResponse(data, nil)
 }
 
 // ParseOCSPResponseWithIssuer parses and verifies a DER-encoded OCSP response.
 // The issuer certificate is used to verify the OCSP response signature.
-// For SM2-signed responses, pass the SM2 issuer certificate.
+//
+// For SM2-signed responses, the SM2-aware verification path is used (the
+// stdlib ocsp.ParseResponse rejects sm2.P256() with "unsupported elliptic
+// curve"); for standard algorithms, it delegates to ocsp.ParseResponse.
 //
 // Returns an error if issuer is nil, as signature verification would be skipped.
 func ParseOCSPResponseWithIssuer(data []byte, issuer *x509.Certificate) (*ocsp.Response, error) {
 	if issuer == nil {
 		return nil, errors.New("smx509: issuer certificate is required for OCSP response verification")
+	}
+	if isSM2OCSPResponse(data) {
+		return parseSM2OCSPResponse(data, issuer)
 	}
 	return ocsp.ParseResponse(data, issuer)
 }

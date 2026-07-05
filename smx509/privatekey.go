@@ -1,0 +1,88 @@
+package smx509
+
+import (
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"fmt"
+
+	"github.com/iuboy/pollux-go/sm2"
+)
+
+// ParsePrivateKeyPEM parses a PEM-encoded private key, auto-detecting SM2
+// (PKCS#8 with SM2 OID, or SEC1 "EC PRIVATE KEY" on the SM2 P256 curve) and
+// standard algorithms (RSA/ECDSA/Ed25519 across PKCS#8, PKCS#1, EC SEC1).
+//
+// Returns *sm2.PrivateKey for SM2, or the standard crypto/x509 types
+// (*rsa.PrivateKey, *ecdsa.PrivateKey, ed25519.PrivateKey) for others.
+// Encrypted PEMs are rejected with a clear error; decrypt first with
+// DecryptPEMPrivateKey.
+//
+// This is the recommended single entry point for private-key parsing in
+// mixed SM2 / standard environments. Callers should not inline their own
+// pem.Decode + x509.Parse* fallback chains.
+func ParsePrivateKeyPEM(pemData []byte) (any, error) {
+	block, _ := pem.Decode(pemData)
+	if block == nil {
+		return nil, errors.New("smx509: failed to decode private key PEM")
+	}
+
+	// SM2 first: pollux-go sm2 accepts only SM2 keys; non-SM2 returns errNotSM2Key.
+	if sm2Key, err := sm2.ParsePrivateKeyFromPEM(pemData); err == nil {
+		return sm2Key, nil
+	}
+
+	// Standard algorithms: PKCS#8 → PKCS#1 (RSA) → EC SEC1.
+	if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		return key, nil
+	}
+	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return key, nil
+	}
+	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
+		return key, nil
+	}
+	return nil, errors.New("smx509: cannot parse private key PEM (not SM2/RSA/ECDSA/Ed25519)")
+}
+
+// MarshalPrivateKey serializes a private key to DER. SM2 uses PKCS#8 (with
+// SM2 OID, via sm2.MarshalPKCS8PrivateKey); standard ECDSA uses SEC1
+// (x509.MarshalECPrivateKey); RSA and Ed25519 use PKCS#8.
+//
+// The encoding choice is paired with PEMTypeForPrivateKey and must stay
+// consistent with it: callers building PEM should use both together.
+func MarshalPrivateKey(key any) ([]byte, error) {
+	switch k := key.(type) {
+	case *sm2.PrivateKey:
+		return sm2.MarshalPKCS8PrivateKey(k)
+	case *ecdsa.PrivateKey:
+		return x509.MarshalECPrivateKey(k)
+	case *rsa.PrivateKey:
+		return x509.MarshalPKCS8PrivateKey(k)
+	case ed25519.PrivateKey:
+		return x509.MarshalPKCS8PrivateKey(k)
+	default:
+		return nil, fmt.Errorf("smx509: unsupported private key type: %T", key)
+	}
+}
+
+// PEMTypeForPrivateKey returns the PEM block type for a private key. SM2, RSA
+// and Ed25519 return "PRIVATE KEY" (PKCS#8); standard ECDSA returns
+// "EC PRIVATE KEY" (SEC1). Paired with MarshalPrivateKey.
+func PEMTypeForPrivateKey(key any) string {
+	switch key.(type) {
+	case *sm2.PrivateKey:
+		return "PRIVATE KEY"
+	case *ecdsa.PrivateKey:
+		return "EC PRIVATE KEY"
+	case *rsa.PrivateKey:
+		return "PRIVATE KEY"
+	case ed25519.PrivateKey:
+		return "PRIVATE KEY"
+	default:
+		return "PRIVATE KEY"
+	}
+}

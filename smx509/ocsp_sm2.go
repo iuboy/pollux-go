@@ -59,11 +59,11 @@ type sm2ResponseData struct {
 
 type sm2SingleResponse struct {
 	CertID           sm2CertID
-	Good             asn1.Flag      `asn1:"tag:0,optional"`
-	Revoked          sm2RevokedInfo `asn1:"tag:1,optional"`
-	Unknown          asn1.Flag      `asn1:"tag:2,optional"`
-	ThisUpdate       time.Time      `asn1:"generalized"`
-	NextUpdate       time.Time      `asn1:"generalized,explicit,tag:0,optional"`
+	Good             asn1.Flag        `asn1:"tag:0,optional"`
+	Revoked          sm2RevokedInfo   `asn1:"tag:1,optional"`
+	Unknown          asn1.Flag        `asn1:"tag:2,optional"`
+	ThisUpdate       time.Time        `asn1:"generalized"`
+	NextUpdate       time.Time        `asn1:"generalized,explicit,tag:0,optional"`
 	SingleExtensions []pkix.Extension `asn1:"explicit,tag:1,optional"`
 }
 

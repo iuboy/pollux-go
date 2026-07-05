@@ -12,13 +12,13 @@ import (
 type CRLReason int
 
 const (
-	ReasonUnspecified          CRLReason = 0  // unspecified
-	ReasonKeyCompromise        CRLReason = 1  // keyCompromise
-	ReasonCACompromise         CRLReason = 2  // cACompromise
-	ReasonAffiliationChanged   CRLReason = 3  // affiliationChanged
-	ReasonSuperseded           CRLReason = 4  // superseded
-	ReasonCessationOfOperation CRLReason = 5  // cessationOfOperation
-	ReasonCertificateHold      CRLReason = 6  // certificateHold
+	ReasonUnspecified          CRLReason = 0 // unspecified
+	ReasonKeyCompromise        CRLReason = 1 // keyCompromise
+	ReasonCACompromise         CRLReason = 2 // cACompromise
+	ReasonAffiliationChanged   CRLReason = 3 // affiliationChanged
+	ReasonSuperseded           CRLReason = 4 // superseded
+	ReasonCessationOfOperation CRLReason = 5 // cessationOfOperation
+	ReasonCertificateHold      CRLReason = 6 // certificateHold
 	// Value 7 is unused in RFC 5280 §5.3.1 and must not be defined.
 	ReasonRemoveFromCRL      CRLReason = 8  // removeFromCRL
 	ReasonPrivilegeWithdrawn CRLReason = 9  // privilegeWithdrawn

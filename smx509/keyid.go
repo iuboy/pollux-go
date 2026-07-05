@@ -1,6 +1,7 @@
 package smx509
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -166,7 +167,7 @@ func GetAuthorityKeyIdentifier(cert *x509.Certificate) []byte {
 
 // ValidateKeyIdentifiers checks that a certificate's SKI/AKI conform to
 // RFC 5280 expectations. Returns (ok, issues) where issues lists human-readable
-// problem descriptions. Self-signed certificates (Subject == Issuer by CN) are
+// problem descriptions. Self-signed certificates (Subject == Issuer by DER) are
 // not required to have an AKI.
 func ValidateKeyIdentifiers(cert *x509.Certificate) (bool, []string) {
 	if cert == nil {
@@ -181,7 +182,11 @@ func ValidateKeyIdentifiers(cert *x509.Certificate) (bool, []string) {
 		issues = append(issues, "SubjectKeyIdentifier shorter than 16 bytes")
 	}
 
-	isSelfSigned := cert.Subject.CommonName == cert.Issuer.CommonName
+	// Self-signed detection: compare the canonical DER-encoded Subject and
+	// Issuer. Comparing only the CommonName field is unsound — two different
+	// CAs may share a CN, and a Subject may be distinguished by non-CN RDNs
+	// (O, OU, etc.). RawSubject/RawIssuer are the canonical BER forms.
+	isSelfSigned := bytes.Equal(cert.RawSubject, cert.RawIssuer)
 	if !isSelfSigned {
 		aki := GetAuthorityKeyIdentifier(cert)
 		if len(aki) == 0 {

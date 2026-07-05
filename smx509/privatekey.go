@@ -8,10 +8,15 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"strings"
 
 	gmsmSMX509 "github.com/emmansun/gmsm/smx509"
 	"github.com/iuboy/pollux-go/sm2"
 )
+
+// errEncryptedPrivateKey is returned when the input PEM is encrypted. Callers
+// must decrypt first with DecryptPEMPrivateKey, then re-parse the cleartext.
+var errEncryptedPrivateKey = errors.New("smx509: PEM private key is encrypted; decrypt first with DecryptPEMPrivateKey")
 
 // ParsePrivateKeyPEM parses a PEM-encoded private key, auto-detecting SM2
 // (PKCS#8 with SM2 OID, or SEC1 "EC PRIVATE KEY" on the SM2 P256 curve) and
@@ -29,6 +34,14 @@ func ParsePrivateKeyPEM(pemData []byte) (any, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
 		return nil, errors.New("smx509: failed to decode private key PEM")
+	}
+
+	// Detect encrypted PEM up front so the caller gets a clear, uniform error
+	// regardless of which downstream parser would have rejected it. PKCS#8
+	// encrypted envelopes ("ENCRYPTED PRIVATE KEY") and legacy PEM headers
+	// ("Proc-Type: 4,ENCRYPTED") both require DecryptPEMPrivateKey first.
+	if isEncryptedPEMBlock(block) {
+		return nil, errEncryptedPrivateKey
 	}
 
 	// SM2 first: pollux-go sm2 accepts only SM2 keys; non-SM2 returns errNotSM2Key.
@@ -96,4 +109,22 @@ func PEMTypeForPrivateKey(key any) string {
 	default:
 		return "PRIVATE KEY"
 	}
+}
+
+// isEncryptedPEMBlock reports whether the PEM block carries an encrypted
+// private key. It detects both PKCS#8 encrypted envelopes (RFC 7468
+// "ENCRYPTED PRIVATE KEY" type) and legacy PKCS#1/SEC1 PEM headers
+// ("Proc-Type: 4,ENCRYPTED" + DEK-Info). Mirrors the detection in
+// sm2.ParsePrivateKeyFromPEM so all paths surface a uniform error.
+func isEncryptedPEMBlock(block *pem.Block) bool {
+	if block == nil {
+		return false
+	}
+	if block.Type == "ENCRYPTED PRIVATE KEY" {
+		return true
+	}
+	if strings.Contains(block.Headers["Proc-Type"], "ENCRYPTED") {
+		return true
+	}
+	return false
 }

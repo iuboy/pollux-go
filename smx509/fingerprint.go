@@ -35,4 +35,3 @@ func FingerprintHash(cert *x509.Certificate, h crypto.Hash) (string, error) {
 	hash.Write(cert.Raw)
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
-

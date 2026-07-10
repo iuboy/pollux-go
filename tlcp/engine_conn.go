@@ -350,6 +350,13 @@ type tlcpConn struct {
 	peerCertificates [][]byte // DER list: [sign, enc, ...chain]
 	serverName       string
 	clientProtocol   string
+
+	// Session resumption (Phase 5): a session offered by the client (loaded from
+	// cache before the handshake) and, on a successful full handshake, the
+	// negotiated session to store. didResume records whether this handshake
+	// resumed an existing session.
+	session   *tlcpSessionState
+	didResume bool
 }
 
 // tlcpEngineConfig is the minimal config the native engine needs. It is
@@ -362,6 +369,7 @@ type tlcpEngineConfig struct {
 	insecureSkipVerify bool
 	rootCAs            [][]byte          // DER certs for verification (Phase 4)
 	serverCerts        *tlcpServerCerts  // server dual certificates (server mode only)
+	sessionCache       tlcpSessionCache  // optional session-resumption store (Phase 5)
 }
 
 // newTLCPConn wraps a transport connection.

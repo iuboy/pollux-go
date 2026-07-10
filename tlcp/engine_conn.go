@@ -20,6 +20,45 @@ type cryptoRandReader struct{}
 
 func (cryptoRandReader) Read(p []byte) (int, error) { return rand.Read(p) }
 
+// establishKeys derives the traffic keys from the master secret and stages them
+// on the in/out halfConns. Key-role assignment depends on the role:
+//   - client: in decrypts server→client (server keys), out encrypts client→server (client keys)
+//   - server: in decrypts client→server (client keys),  out encrypts server→client (server keys)
+func (c *tlcpConn) establishKeys(suite *tlcpCipherSuite, masterSecret, clientRandom, serverRandom []byte) error {
+	km := tlcpKeysFromMaster(masterSecret, clientRandom, serverRandom, suite.macLen, suite.keyLen, suite.ivLen)
+
+	// readKeys/writeKeys are the key material for the in (read) and out (write)
+	// directions respectively, from THIS endpoint's perspective.
+	readMAC, readKey, readIV := km.serverMAC, km.serverKey, km.serverIV
+	writeMAC, writeKey, writeIV := km.clientMAC, km.clientKey, km.clientIV
+	if !c.isClient {
+		readMAC, readKey, readIV = km.clientMAC, km.clientKey, km.clientIV
+		writeMAC, writeKey, writeIV = km.serverMAC, km.serverKey, km.serverIV
+	}
+
+	if suite.isAEAD() {
+		readAEAD, err := newTLCPAEADSM4GCM(readKey, readIV)
+		if err != nil {
+			return err
+		}
+		writeAEAD, err := newTLCPAEADSM4GCM(writeKey, writeIV)
+		if err != nil {
+			return err
+		}
+		c.in.prepareCipherSpec(c.vers, nil, readAEAD, nil, nil)
+		c.out.prepareCipherSpec(c.vers, nil, writeAEAD, nil, nil)
+	} else {
+		c.in.prepareCipherSpec(c.vers, readKey, nil, hmacSM3Size{}, readMAC)
+		c.out.prepareCipherSpec(c.vers, writeKey, nil, hmacSM3Size{}, writeMAC)
+	}
+	return nil
+}
+
+// hmacSM3Size satisfies the tlcpMAC interface (Size() int) for CBC suites.
+type hmacSM3Size struct{}
+
+func (hmacSM3Size) Size() int { return 32 }
+
 // This file implements the TLCP connection and record layer (GB/T 38636-2020
 // §6.3). The design follows the three-layer split: Conn (connection + record
 // framing + handshake orchestration), halfConn (one-directional encryption
@@ -321,7 +360,8 @@ type tlcpEngineConfig struct {
 	cipherSuites       []uint16
 	serverName         string
 	insecureSkipVerify bool
-	rootCAs            [][]byte // DER certs for verification (Phase 4)
+	rootCAs            [][]byte          // DER certs for verification (Phase 4)
+	serverCerts        *tlcpServerCerts  // server dual certificates (server mode only)
 }
 
 // newTLCPConn wraps a transport connection.
@@ -339,10 +379,7 @@ func newTLCPConn(c net.Conn, config *tlcpEngineConfig, isClient bool) *tlcpConn 
 }
 
 // clientHandshake is implemented in engine_handshake_client.go (Phase 3).
-// serverHandshake is implemented in Phase 4 (engine_handshake_server.go).
-func (c *tlcpConn) serverHandshake() error {
-	return errors.New("tlcp: serverHandshake not implemented until Phase 4")
-}
+// serverHandshake is implemented in engine_handshake_server.go (Phase 4).
 
 // Handshake drives the handshake (client or server) and stores any error.
 func (c *tlcpConn) Handshake() error {

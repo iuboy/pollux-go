@@ -6,7 +6,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
 	"crypto/x509/pkix"
 	"math/big"
 	"net"
@@ -47,7 +46,7 @@ func generateInteropCerts(t *testing.T) (signCert, encCert gotlcp.Certificate) {
 
 	serialNumber, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 
-	template := &x509.Certificate{
+	template := &smx509.Certificate{
 		SerialNumber: serialNumber,
 		Subject:      pkix.Name{CommonName: "interop-test"},
 		NotBefore:    time.Now().Add(-time.Hour),
@@ -56,7 +55,7 @@ func generateInteropCerts(t *testing.T) (signCert, encCert gotlcp.Certificate) {
 
 	// 签名证书
 	signTemplate := *template
-	signTemplate.KeyUsage = x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign
+	signTemplate.KeyUsage = smx509.KeyUsageDigitalSignature | smx509.KeyUsageCertSign
 	signDER, err := smx509.CreateCertificate(rand.Reader, &signTemplate, &signTemplate, &signPriv.PublicKey, sm2SignPriv)
 	if err != nil {
 		t.Fatalf("create sign cert: %v", err)
@@ -64,7 +63,7 @@ func generateInteropCerts(t *testing.T) (signCert, encCert gotlcp.Certificate) {
 
 	// 加密证书
 	encTemplate := *template
-	encTemplate.KeyUsage = x509.KeyUsageKeyEncipherment | x509.KeyUsageDataEncipherment
+	encTemplate.KeyUsage = smx509.KeyUsageKeyEncipherment | smx509.KeyUsageDataEncipherment
 	encDER, err := smx509.CreateCertificate(rand.Reader, &encTemplate, &encTemplate, &encPriv.PublicKey, sm2EncPriv)
 	if err != nil {
 		t.Fatalf("create enc cert: %v", err)

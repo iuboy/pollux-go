@@ -42,7 +42,6 @@ sealed, _ := sm4.SealRandomNonce(key, plaintext, aad)
 | `sm4`                 | GCM 高级封装          | 密钥 / nonce（`sm4.ZeroKey` / `sm4.ZeroNonce`）  |
 | `sm2/envelope.go`     | SM2 信封              | SM4 内容加密密钥 `sm4Key`                        |
 | `sm2/compress.go`     | 公钥压缩              | 压缩中间态 `s.bytes`（归还池前）                 |
-| `sm2/key_exchange.go` | 密钥交换              | 共享密钥切片（**由调用方清零**，函数文档已标注） |
 | `smx509/cert.go`      | PKCS#8 / 证书密钥派生 | `derivedKey`                                     |
 
 Route C 握手与 QUIC 包保护：

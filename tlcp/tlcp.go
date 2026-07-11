@@ -153,7 +153,10 @@ func configToNative(c *Config, isClient bool) (*tlcpEngineConfig, error) {
 		insecureSkipVerify: c.InsecureSkipVerify,
 	}
 	if c.SignCertificate != nil && c.EncCertificate != nil {
-		certs := buildServerCerts(c.SignCertificate, c.EncCertificate)
+		certs, err := buildServerCerts(c.SignCertificate, c.EncCertificate)
+		if err != nil {
+			return nil, err
+		}
 		if isClient {
 			nc.clientCerts = certs
 		} else {
@@ -179,24 +182,31 @@ func configToNative(c *Config, isClient bool) (*tlcpEngineConfig, error) {
 }
 
 // buildServerCerts extracts engine cert material from a pair of tls.Certificate.
-func buildServerCerts(sign, enc *tls.Certificate) *tlcpServerCerts {
+// Returns an error if a private key does not implement the required interface
+// (crypto.Signer for the signing cert, crypto.Decrypter for the encryption cert),
+// with the actual key type in the message for debuggability.
+func buildServerCerts(sign, enc *tls.Certificate) (*tlcpServerCerts, error) {
 	sc := &tlcpServerCerts{}
 	if len(sign.Certificate) > 0 {
 		sc.signCertDER = sign.Certificate[0]
 	}
-	if s, ok := sign.PrivateKey.(crypto.Signer); ok {
-		sc.signSigner = s
+	s, ok := sign.PrivateKey.(crypto.Signer)
+	if !ok {
+		return nil, fmt.Errorf("tlcp: signing cert private key %T does not implement crypto.Signer", sign.PrivateKey)
 	}
+	sc.signSigner = s
 	if len(enc.Certificate) > 0 {
 		sc.encCertDER = enc.Certificate[0]
 	}
-	if d, ok := enc.PrivateKey.(crypto.Decrypter); ok {
-		sc.encDecrypter = d
+	d, ok := enc.PrivateKey.(crypto.Decrypter)
+	if !ok {
+		return nil, fmt.Errorf("tlcp: encryption cert private key %T does not implement crypto.Decrypter", enc.PrivateKey)
 	}
+	sc.encDecrypter = d
 	if len(sign.Certificate) > 1 {
 		sc.chainDER = append(sc.chainDER, sign.Certificate[1:]...)
 	}
-	return sc
+	return sc, nil
 }
 
 // LoadCertificates loads dual certificates from files

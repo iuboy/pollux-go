@@ -2,7 +2,6 @@ package tlcp
 
 import (
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"os"
 	"path/filepath"
@@ -354,62 +353,30 @@ MFkwEwYHKoZIzj0CAQYIKoEcz1UBgi0DQgAEdummiesubstringnotrealbutlengthok
 	}
 }
 
-// TestConfigToGotlcp_Nil 验证 nil 配置返回错误。
-func TestConfigToGotlcp_Nil(t *testing.T) {
-	if _, err := configToGotlcp(nil); err == nil {
-		t.Error("configToGotlcp(nil) err = nil, want error")
+// TestConfigToNative_Nil 验证 nil 配置返回错误。
+func TestConfigToNative_Nil(t *testing.T) {
+	if _, err := configToNative(nil, false); err == nil {
+		t.Error("configToNative(nil) err = nil, want error")
 	}
 }
 
-// TestConfigToGotlcp_WithRootCerts 验证根证书与客户端 CA 池构建路径。
-func TestConfigToGotlcp_WithRootCerts(t *testing.T) {
+// TestConfigToNative_WithRootCerts 验证根证书被收集到 rootCAs DER 列表。
+func TestConfigToNative_WithRootCerts(t *testing.T) {
 	dir := testCertDir(t)
 	signPEM, _ := os.ReadFile(filepath.Join(dir, "rsa_cert.pem"))
 	encPEM, _ := os.ReadFile(filepath.Join(dir, "rsa_cert.pem"))
 
 	c := NewConfig()
 	if err := c.LoadRootCAsFromPEM(signPEM, encPEM); err != nil {
-		t.Fatalf("LoadRootCAsFromPEM err = %v", err)
-	}
-	// 设置客户端 CA(用同一证书)
-	if err := c.LoadRootCAsFromPEM(signPEM, signPEM); err != nil {
-		t.Fatalf("LoadRootCAsFromPEM(client CA) err = %v", err)
+		t.Fatalf("LoadRootCAsFromPEM err: %v", err)
 	}
 	c.ClientCACertificates = c.SignRootCertificates
 
-	gc, err := configToGotlcp(c)
+	nc, err := configToNative(c, false)
 	if err != nil {
-		t.Fatalf("configToGotlcp err = %v", err)
+		t.Fatalf("configToNative err: %v", err)
 	}
-	if gc.RootCAs == nil {
-		t.Error("gc.RootCAs = nil, want populated pool")
-	}
-	if gc.ClientCAs == nil {
-		t.Error("gc.ClientCAs = nil, want populated pool")
-	}
-}
-
-// TestBuildSMX509CertPool 验证证书池构建成功与失败(恶意 DER)。
-func TestBuildSMX509CertPool(t *testing.T) {
-	dir := testCertDir(t)
-	signPEM, _ := os.ReadFile(filepath.Join(dir, "rsa_cert.pem"))
-	certs := parsePEMCertificates(signPEM)
-	if len(certs) == 0 {
-		t.Fatal("no certs parsed")
-	}
-
-	pool, err := buildSMX509CertPool(certs)
-	if err != nil {
-		t.Fatalf("buildSMX509CertPool err = %v", err)
-	}
-	if pool == nil {
-		t.Fatal("pool = nil")
-	}
-
-	// 注入一个 Raw 被篡改的证书触发 gmsm 解析失败
-	badCert := certs[0]
-	badCert.Raw = []byte("not a valid der")
-	if _, err := buildSMX509CertPool([]*x509.Certificate{badCert}); err == nil {
-		t.Error("buildSMX509CertPool(bad DER) err = nil, want error")
+	if len(nc.rootCAs) == 0 {
+		t.Error("nc.rootCAs empty, want populated DER list")
 	}
 }

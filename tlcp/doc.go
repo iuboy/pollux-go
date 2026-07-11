@@ -8,9 +8,11 @@
 // TLCP (Transport Layer Cryptography Protocol) is the Chinese national standard
 // for transport-layer cryptography, standard number: GB/T 38636-2020.
 //
-// This package is a wrapper around gotlcp (gitee.com/Trisia/gotlcp), providing a
-// Go-idiomatic API consistent with the pollux-go ecosystem while isolating consumers
-// from direct dependencies on the underlying implementation library.
+// This package provides a native, self-contained TLCP implementation (no
+// external TLCP library dependency). The protocol engine — handshake state
+// machines, record layer, SM2/SM3/SM4 cipher suites, and session resumption —
+// is implemented in the engine_*.go files, exposed through a Go-idiomatic API
+// consistent with the pollux-go ecosystem.
 //
 // Differences between TLCP and RFC 8998:
 //   - TLCP (GB/T 38636-2020) is a Chinese national standard that defines a TLS protocol

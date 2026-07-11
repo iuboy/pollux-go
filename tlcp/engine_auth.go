@@ -26,11 +26,11 @@ import (
 type tlcpSigType uint8
 
 const (
-	tlcpSigNone     tlcpSigType = 0
-	tlcpSigRSA256   tlcpSigType = 1 // rsa_sha256
-	tlcpSigRSASM3   tlcpSigType = 2 // rsa_sm3
-	tlcpSigECCSM3   tlcpSigType = 3 // ecc_sm3 (SM2+SM3)
-	tlcpSigIBSSM3   tlcpSigType = 4 // ibs_sm3
+	tlcpSigNone   tlcpSigType = 0
+	tlcpSigRSA256 tlcpSigType = 1 // rsa_sha256
+	tlcpSigRSASM3 tlcpSigType = 2 // rsa_sm3
+	tlcpSigECCSM3 tlcpSigType = 3 // ecc_sm3 (SM2+SM3)
+	tlcpSigIBSSM3 tlcpSigType = 4 // ibs_sm3
 )
 
 // tlcpSigTypeForSuite returns the handshake signature type for a negotiated

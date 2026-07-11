@@ -34,8 +34,8 @@ const gmHeaderSampleLen = 16
 
 // Compile-time interface conformance checks.
 var (
-	_ LongHeaderSealer = (*gmLongSealer)(nil)
-	_ LongHeaderOpener = (*gmLongOpener)(nil)
+	_ LongHeaderSealer  = (*gmLongSealer)(nil)
+	_ LongHeaderOpener  = (*gmLongOpener)(nil)
 	_ ShortHeaderSealer = (*gmShortSealer)(nil)
 	_ ShortHeaderOpener = (*gmShortOpener)(nil)
 )

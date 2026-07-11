@@ -28,10 +28,10 @@ import (
 
 // tlcpServerCerts carries the server's dual certificate material.
 type tlcpServerCerts struct {
-	signCertDER []byte        // signing certificate leaf DER
-	encCertDER  []byte        // encryption certificate leaf DER
-	chainDER    [][]byte      // optional CA chain DERs (appended after the two leaves)
-	signSigner  crypto.Signer // signing cert private key (for SKE signature)
+	signCertDER  []byte           // signing certificate leaf DER
+	encCertDER   []byte           // encryption certificate leaf DER
+	chainDER     [][]byte         // optional CA chain DERs (appended after the two leaves)
+	signSigner   crypto.Signer    // signing cert private key (for SKE signature)
 	encDecrypter crypto.Decrypter // encryption cert private key (for PMS decryption)
 }
 
@@ -377,12 +377,12 @@ func (c *tlcpConn) createNewServerSession(serverHello *tlcpServerHelloMsg, maste
 	peerCertsCopy := make([][]byte, len(c.peerCertificates))
 	copy(peerCertsCopy, c.peerCertificates)
 	sess := &tlcpSessionState{
-		sessionID:       serverHello.sessionID,
-		version:         c.vers,
-		cipherSuite:     c.cipherSuite,
-		masterSecret:    msCopy,
+		sessionID:        serverHello.sessionID,
+		version:          c.vers,
+		cipherSuite:      c.cipherSuite,
+		masterSecret:     msCopy,
 		peerCertificates: peerCertsCopy,
-		createdAt:       time.Now(),
+		createdAt:        time.Now(),
 	}
 	c.config.sessionCache.Put(tlcpSessionKeyHex(sess.sessionID), sess)
 }

@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/emmansun/gmsm/sm2"
@@ -145,5 +146,215 @@ func tlcpECCSignedParams(clientRandom, serverRandom, encCertDER []byte) []byte {
 	lenBytes[2] = byte(cl)
 	buf.Write(lenBytes[:])
 	buf.Write(encCertDER)
+	return buf.Bytes()
+}
+
+// =====================================================================
+// ECDHE key exchange (SM2 MQV, GB/T 36322-2018)
+//
+// Unlike ECC (SM2 public-key encryption of the PMS), ECDHE uses the SM2 MQV
+// key-agreement protocol: both sides contribute a long-term key (from the
+// encryption certificate) AND an ephemeral key. MQV combines all four to
+// derive a shared secret point, which is fed through SM3-KDF to produce the
+// 48-byte PMS.
+//
+// Because MQV needs both peers' long-term encryption keys, ECDHE mandates
+// mutual authentication: the client MUST also send a dual certificate pair
+// (sign + enc), and the server requests it via CertificateRequest.
+//
+// The server is the MQV sponsor (initiator), the client is the responder:
+//   - Server (sponsor): GenerateAgreementData (ephemeral key) → later GenerateKey
+//     (after receiving the client's ephemeral key).
+//   - Client (responder): GenerateAgreementDataAndKey (ephemeral key + PMS in
+//     one step, using the server's ephemeral key from ServerKeyExchange).
+//
+// Wire format (ServerKeyExchange.key / ClientKeyExchange.ciphertext):
+//   curve_type(1, =3) || named_curve(2, =CurveSM2=41) || pubkey_len(1) || point(65)
+//   followed (server side only) by uint16-length-prefixed SM2 signature over
+//   (client_random || server_random || ServerECDHParams).
+//
+// Reference: gotlcp/tlcp/key_agreement.go sm2ECDHEKeyAgreement + key_schedule.go
+// sm2ke (logic consulted, independently written).
+// =====================================================================
+
+const (
+	tlcpECDHECurveTypeNamed = 3       // curve_type: named_curve
+	tlcpSM2PointLength      = 65      // uncompressed SM2 point: 0x04 || X(32) || Y(32)
+)
+
+// tlcpECDHEServerKeyExchange holds the server's ECDHE state across the two
+// handshake steps (generate SKE → process CKE).
+type tlcpECDHEServerKeyExchange struct {
+	sponsorPriv  *ecdhPrivateKey // server long-term enc key (ecdh form)
+	sponsorEph   *ecdhPrivateKey // server ephemeral key
+}
+
+// tlcpECDHEClientState holds the client's parsed server ephemeral key.
+type tlcpECDHEClientState struct {
+	serverEphPub *ecdhPublicKey // server ephemeral public key (from SKE)
+}
+
+// marshalECDHEParams encodes an SM2 ephemeral public key into the TLCP
+// ECDHEParams wire format: curve_type(3) || named_curve(41) || len || point.
+func tlcpMarshalECDHEParams(pubKey *ecdhPublicKey) ([]byte, error) {
+	point := pubKey.bytes()
+	if len(point) != tlcpSM2PointLength {
+		return nil, fmt.Errorf("tlcp: unexpected SM2 point length %d", len(point))
+	}
+	out := make([]byte, 0, 4+len(point))
+	out = append(out, tlcpECDHECurveTypeNamed)
+	out = append(out, byte(uint16(tlcpCurveSM2)>>8), byte(uint16(tlcpCurveSM2)))
+	out = append(out, byte(len(point)))
+	out = append(out, point...)
+	return out, nil
+}
+
+// parseECDHEParams decodes the ECDHEParams wire format and returns the point
+// bytes (consumes curve_type + named_curve + len + point). Returns the params
+// bytes (for signature verification) and the public key.
+func tlcpParseECDHEParams(data []byte) (paramsBytes []byte, pubKey *ecdhPublicKey, err error) {
+	if len(data) < 4 {
+		return nil, nil, errors.New("tlcp: ECDHE params too short")
+	}
+	pubLen := int(data[3])
+	if len(data) < 4+pubLen {
+		return nil, nil, errors.New("tlcp: ECDHE params truncated")
+	}
+	paramsBytes = data[:4+pubLen]
+	pubKey, err = newEcdhPublicKey(paramsBytes[4:])
+	if err != nil {
+		return nil, nil, fmt.Errorf("tlcp: parse ECDHE ephemeral key: %w", err)
+	}
+	return paramsBytes, pubKey, nil
+}
+
+// --- Server side (MQV sponsor / initiator) ---
+
+// tlcpECDHEServerGenerateSKE generates the server's ephemeral key and produces
+// the ServerKeyExchange payload (ECDHEParams || uint16-sig-len || SM2 signature
+// over client_random||server_random||ECDHEParams).
+func tlcpECDHEServerGenerateSKE(sigType tlcpSigType, signer crypto.Signer, encPriv crypto.Decrypter, clientRandom, serverRandom []byte) (*tlcpECDHEServerKeyExchange, []byte, error) {
+	sponsorPriv, err := ecdhPrivFromDecrypter(encPriv)
+	if err != nil {
+		return nil, nil, err
+	}
+	sponsorEph, err := generateECDHEKey(randReader)
+	if err != nil {
+		return nil, nil, err
+	}
+	params, err := tlcpMarshalECDHEParams(sponsorEph.publicKey())
+	if err != nil {
+		return nil, nil, err
+	}
+	// Signature over client_random || server_random || ECDHEParams.
+	tbs := tlcpECDHESignedParams(clientRandom, serverRandom, params)
+	sig, err := tlcpSignHandshake(randReader, sigType, signer, tbs)
+	if err != nil {
+		return nil, nil, err
+	}
+	payload := make([]byte, 0, len(params)+2+len(sig))
+	payload = append(payload, params...)
+	payload = append(payload, byte(len(sig)>>8), byte(len(sig)))
+	payload = append(payload, sig...)
+	return &tlcpECDHEServerKeyExchange{sponsorPriv: sponsorPriv, sponsorEph: sponsorEph}, payload, nil
+}
+
+// tlcpECDHEServerProcessCKE derives the PMS from the client's ephemeral key
+// (and the client's long-term enc public key from the encryption certificate).
+// Uses SM2 MQV (sponsor role) + SM3-KDF.
+func tlcpECDHEServerProcessCKE(state *tlcpECDHEServerKeyExchange, clientEncPub *ecdsa.PublicKey, ckePayload []byte) ([]byte, error) {
+	_, clientEphPub, err := tlcpParseECDHEParams(ckePayload)
+	if err != nil {
+		return nil, err
+	}
+	clientLongPub, err := ecdhPubFromECDSA(clientEncPub)
+	if err != nil {
+		return nil, err
+	}
+	// MQV: uv = [t]·(sRemote + [avf(eRemote)]·eRemote), where t is the sponsor's
+	// implicit signature from its long-term + ephemeral keys.
+	uv, err := state.sponsorPriv.sm2mqv(state.sponsorEph, clientLongPub, clientEphPub)
+	if err != nil {
+		return nil, fmt.Errorf("tlcp: ECDHE MQV: %w", err)
+	}
+	// KDF: SM2SharedKey(isResponder=false, keyLen=48, sPub=sponsorPub, sRemote=clientLongPub).
+	pms, err := uv.sm2SharedKey(false, tlcpPreMasterSecretLength, state.sponsorPriv.publicKey(), clientLongPub)
+	if err != nil {
+		return nil, err
+	}
+	return pms, nil
+}
+
+// --- Client side (MQV responder) ---
+
+// tlcpECDHEClientProcessSKE verifies the server's ServerKeyExchange signature
+// and extracts the server's ephemeral public key. Returns the client state
+// holding the server ephemeral key.
+func tlcpECDHEClientProcessSKE(sigType tlcpSigType, signCertPub *ecdsa.PublicKey, clientRandom, serverRandom, skeKey []byte) (*tlcpECDHEClientState, error) {
+	if len(skeKey) < 4 {
+		return nil, errors.New("tlcp: ECDHE ServerKeyExchange too short")
+	}
+	pubLen := int(skeKey[3])
+	if len(skeKey) < 4+pubLen+2 {
+		return nil, errors.New("tlcp: ECDHE ServerKeyExchange truncated")
+	}
+	paramsBytes := skeKey[:4+pubLen]
+	serverEphPub, err := newEcdhPublicKey(paramsBytes[4:])
+	if err != nil {
+		return nil, fmt.Errorf("tlcp: parse server ephemeral key: %w", err)
+	}
+	// Verify signature.
+	sigLen := int(skeKey[4+pubLen])<<8 | int(skeKey[4+pubLen+1])
+	if 4+pubLen+2+sigLen != len(skeKey) {
+		return nil, errors.New("tlcp: ECDHE SKE signature length mismatch")
+	}
+	sig := skeKey[4+pubLen+2:]
+	tbs := tlcpECDHESignedParams(clientRandom, serverRandom, paramsBytes)
+	if err := tlcpVerifyHandshakeSignature(sigType, signCertPub, tbs, sig); err != nil {
+		return nil, fmt.Errorf("tlcp: ECDHE SKE signature: %w", err)
+	}
+	return &tlcpECDHEClientState{serverEphPub: serverEphPub}, nil
+}
+
+// tlcpECDHEClientGenerateCKE generates the client's ephemeral key and derives
+// the PMS (MQV responder role). Returns the PMS and the ClientKeyExchange
+// payload (ECDHEParams of the client's ephemeral key).
+func tlcpECDHEClientGenerateCKE(state *tlcpECDHEClientState, clientEncPriv crypto.Decrypter, serverEncPub *ecdsa.PublicKey) (preMasterSecret, ckePayload []byte, err error) {
+	responderPriv, err := ecdhPrivFromDecrypter(clientEncPriv)
+	if err != nil {
+		return nil, nil, err
+	}
+	responderEph, err := generateECDHEKey(randReader)
+	if err != nil {
+		return nil, nil, err
+	}
+	serverLongPub, err := ecdhPubFromECDSA(serverEncPub)
+	if err != nil {
+		return nil, nil, err
+	}
+	// MQV (responder side): uv = [t]·(sRemote + [avf(eRemote)]·eRemote)
+	uv, err := responderPriv.sm2mqv(responderEph, serverLongPub, state.serverEphPub)
+	if err != nil {
+		return nil, nil, fmt.Errorf("tlcp: ECDHE MQV: %w", err)
+	}
+	// KDF (responder): isResponder=true.
+	pms, err := uv.sm2SharedKey(true, tlcpPreMasterSecretLength, responderPriv.publicKey(), serverLongPub)
+	if err != nil {
+		return nil, nil, err
+	}
+	payload, err := tlcpMarshalECDHEParams(responderEph.publicKey())
+	if err != nil {
+		return nil, nil, err
+	}
+	return pms, payload, nil
+}
+
+// tlcpECDHESignedParams assembles the bytes signed in an ECDHE
+// ServerKeyExchange: client_random || server_random || ECDHEParams.
+func tlcpECDHESignedParams(clientRandom, serverRandom, ecdheParams []byte) []byte {
+	var buf bytes.Buffer
+	buf.Write(clientRandom)
+	buf.Write(serverRandom)
+	buf.Write(ecdheParams)
 	return buf.Bytes()
 }

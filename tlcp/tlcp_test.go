@@ -489,9 +489,10 @@ func TestClientAuth_RequireVerifyWithoutClientCAsFails(t *testing.T) {
 	}
 }
 
-// generateRogueCertPair 生成一对由指定 CA 签发的 SM2 证书（签名 + 加密）。
-// 与 generateTestCertPair 不同，证书非自签名，而是由独立的 rogue CA 签发。
-func generateRogueCertPair(t *testing.T, caCert *smx509.Certificate, caKey *sm2.PrivateKey) (signCert, encCert *tls.Certificate) {
+// generateClientCertPair 生成一对由指定 CA 签发的 SM2 客户端证书（签名 + 加密），
+// 含 ExtKeyUsageClientAuth。与 generateTestCertPair 不同，证书非自签名，
+// 用于测试 mTLS 客户端证书链校验（受信 CA 签发→接受，不受信→拒绝）。
+func generateClientCertPair(t *testing.T, caCert *smx509.Certificate, caKey *sm2.PrivateKey) (signCert, encCert *tls.Certificate) {
 	t.Helper()
 
 	curve := sm2.P256()
@@ -521,6 +522,7 @@ func generateRogueCertPair(t *testing.T, caCert *smx509.Certificate, caKey *sm2.
 		Subject:      pkix.Name{CommonName: "rogue-client"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(24 * time.Hour),
+		ExtKeyUsage:  []smx509.ExtKeyUsage{smx509.ExtKeyUsageClientAuth},
 	}
 
 	signT := *base
@@ -586,7 +588,7 @@ func TestClientAuth_RogueCertRejected(t *testing.T) {
 
 	// 2. 独立的 rogue CA + 由其签发的客户端证书对
 	rogueCA, rogueKey := generateSM2CA(t, "rogue-ca")
-	rogueSign, rogueEnc := generateRogueCertPair(t, rogueCA, rogueKey)
+	rogueSign, rogueEnc := generateClientCertPair(t, rogueCA, rogueKey)
 
 	// 3. 服务端只信任自己的签名 CA，不信任 rogue CA
 	serverConfig := &Config{
@@ -632,26 +634,30 @@ func TestClientAuth_RogueCertRejected(t *testing.T) {
 }
 
 // TestClientAuth_TrustedCertAccepted 验证 RequireAndVerifyClientCert 模式下，
-// 受信 CA 签发的客户端证书被接受（正向对照，确保链校验没有误拒）。
+// 受信 CA 签发的客户端叶子证书（含 ClientAuth EKU，客户端只发叶子不发 CA）被接受。
+// 正向对照，确保链校验 + KeyUsages=ClientAuth 没有误拒真实场景。
 func TestClientAuth_TrustedCertAccepted(t *testing.T) {
-	// 服务端证书对 = 受信 CA
+	// 1. 服务端证书对（自签名）
 	serverSign, serverEnc := generateTestCertPair(t)
-	smServerSignCA, _ := smx509.ParseCertificate(serverSign.Certificate[0])
 
-	// 客户端用同一证书对（自签名，在 ClientCACertificates 中）
+	// 2. 独立的受信 CA + 由其签发的客户端叶子证书对（含 ClientAuth EKU）
+	trustedCA, trustedKey := generateSM2CA(t, "trusted-client-ca")
+	trustedSign, trustedEnc := generateClientCertPair(t, trustedCA, trustedKey)
+
+	// 3. 服务端信任该 CA
 	serverConfig := &Config{
 		Version:              Version11,
 		SignCertificate:      serverSign,
 		EncCertificate:       serverEnc,
 		CipherSuites:         []uint16{SuiteECDHE_SM2_SM4_GCM_SM3},
 		ClientAuth:           RequireAndVerifyClientCert,
-		ClientCACertificates: []*x509.Certificate{stdCertFromSM(t, smServerSignCA)},
+		ClientCACertificates: []*x509.Certificate{stdCertFromSM(t, trustedCA)},
 		InsecureSkipVerify:   true,
 	}
 	clientConfig := &Config{
 		Version:            Version11,
-		SignCertificate:    serverSign,
-		EncCertificate:     serverEnc,
+		SignCertificate:    trustedSign,
+		EncCertificate:     trustedEnc,
 		CipherSuites:       []uint16{SuiteECDHE_SM2_SM4_GCM_SM3},
 		InsecureSkipVerify: true,
 	}

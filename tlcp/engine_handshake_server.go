@@ -207,9 +207,12 @@ func (c *tlcpConn) serverHandshakeReal() error {
 				return errors.New("tlcp: client did not provide a certificate")
 			}
 			// VerifyClientCertIfGiven / RequireAndVerifyClientCert：给了就验。
+			// KeyUsages=ClientAuth：客户端证书应含 ExtKeyUsageClientAuth
+			// （否则 stdlib/gmsm 默认按 ServerAuth 校验会误拒）。
 			if clientSignCert != nil {
 				if err := polluxsmx509.Verify(clientSignCert, polluxsmx509.VerifyOptions{
-					Roots: config.clientRoots,
+					Roots:     config.clientRoots,
+					KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 				}); err != nil {
 					return fmt.Errorf("tlcp: client certificate verification failed: %w", err)
 				}

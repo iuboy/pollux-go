@@ -370,6 +370,8 @@ type tlcpEngineConfig struct {
 	rootCAs            [][]byte          // DER certs for verification (Phase 4)
 	serverCerts        *tlcpServerCerts  // server dual certificates (server mode only)
 	sessionCache       tlcpSessionCache  // optional session-resumption store (Phase 5)
+	clientCerts        *tlcpServerCerts  // client dual certificates (mutual auth / ECDHE)
+	requestClientCert  bool              // server: send CertificateRequest
 }
 
 // newTLCPConn wraps a transport connection.

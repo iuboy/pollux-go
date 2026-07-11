@@ -69,10 +69,8 @@ func (c *tlcpConn) serverHandshakeReal() error {
 	if suite == nil {
 		return errors.New("tlcp: no common cipher suite with client")
 	}
-	if suite.flags&tlcpFlagECDHE != 0 {
-		return errors.New("tlcp: ECDHE suites not supported in Phase 4")
-	}
 	c.cipherSuite = suite.id
+	isECDHE := suite.flags&tlcpFlagECDHE != 0
 
 	// 2b. Resume check: if the client offered a sessionId that hits our cache,
 	// perform an abbreviated handshake (no Certificate/SKE/SHD), reusing the
@@ -121,12 +119,19 @@ func (c *tlcpConn) serverHandshakeReal() error {
 		return err
 	}
 
-	// 6. Send ServerKeyExchange: signature over (client_random||server_random||encCert).
+	// 6. Send ServerKeyExchange (ECC: signature over cr||sr||encCert; ECDHE:
+	// ephemeral key + signature over cr||sr||ECDHEParams).
 	sigType, err := tlcpSigTypeForSuite(suite.id)
 	if err != nil {
 		return err
 	}
-	skePayload, err := tlcpECCGenerateServerKeyExchange(sigType, certs.signSigner, clientHello.random, serverHello.random, certs.encCertDER)
+	var ecdheState *tlcpECDHEServerKeyExchange
+	var skePayload []byte
+	if isECDHE {
+		ecdheState, skePayload, err = tlcpECDHEServerGenerateSKE(sigType, certs.signSigner, certs.encDecrypter, clientHello.random, serverHello.random)
+	} else {
+		skePayload, err = tlcpECCGenerateServerKeyExchange(sigType, certs.signSigner, clientHello.random, serverHello.random, certs.encCertDER)
+	}
 	if err != nil {
 		return err
 	}
@@ -135,8 +140,19 @@ func (c *tlcpConn) serverHandshakeReal() error {
 		return err
 	}
 
-	// 7. Send ServerHelloDone. Phase 4 does not send CertificateRequest (no
-	// client auth).
+	// 6b. Send CertificateRequest if the server requests client auth (ECDHE
+	// mandates mutual auth; ECC optionally).
+	wantClientCert := config.requestClientCert || isECDHE
+	if wantClientCert {
+		cr := &tlcpCertificateRequestMsg{
+			certificateTypes: []byte{tlcpCertTypeECDSA},
+		}
+		if err := c.writeHandshakeRecord(cr, transcript); err != nil {
+			return err
+		}
+	}
+
+	// 7. Send ServerHelloDone.
 	if err := c.writeHandshakeRecord(&tlcpServerHelloDoneMsg{}, transcript); err != nil {
 		return err
 	}
@@ -144,7 +160,47 @@ func (c *tlcpConn) serverHandshakeReal() error {
 		return err
 	}
 
-	// 8. Read ClientKeyExchange and decrypt the PMS.
+	// 7b. Read optional client Certificate (if we sent CertificateRequest).
+	var clientSignPub *ecdsa.PublicKey
+	var clientEncPub *ecdsa.PublicKey
+	if wantClientCert {
+		ccData, err := c.readHandshake(transcript)
+		if err != nil {
+			return err
+		}
+		var cc tlcpCertificateMsg
+		if !cc.unmarshal(ccData) {
+			return errors.New("tlcp: failed to parse client Certificate")
+		}
+		if len(cc.certificates) > 0 {
+			clientSignCert, err := polluxsmx509.ParseCertificate(cc.certificates[0])
+			if err != nil {
+				return fmt.Errorf("tlcp: parse client sign cert: %w", err)
+			}
+			pub, ok := clientSignCert.PublicKey.(*ecdsa.PublicKey)
+			if !ok {
+				return errors.New("tlcp: client sign cert not ECDSA")
+			}
+			clientSignPub = pub
+		}
+		if len(cc.certificates) >= 2 {
+			clientEncCert, err := polluxsmx509.ParseCertificate(cc.certificates[1])
+			if err != nil {
+				return fmt.Errorf("tlcp: parse client enc cert: %w", err)
+			}
+			pub, ok := clientEncCert.PublicKey.(*ecdsa.PublicKey)
+			if !ok {
+				return errors.New("tlcp: client enc cert not ECDSA")
+			}
+			clientEncPub = pub
+		}
+		if isECDHE && clientEncPub == nil {
+			return errors.New("tlcp: ECDHE requires a client encryption certificate")
+		}
+	}
+
+	// 8. Read ClientKeyExchange and derive the PMS (ECC: decrypt SM2-encrypted
+	// PMS; ECDHE: MQV from client ephemeral + long-term keys).
 	ckeData, err := c.readHandshake(transcript)
 	if err != nil {
 		return err
@@ -153,10 +209,33 @@ func (c *tlcpConn) serverHandshakeReal() error {
 	if !cke.unmarshal(ckeData) {
 		return errors.New("tlcp: failed to parse ClientKeyExchange")
 	}
-	pms, err := tlcpECCProcessClientKeyExchange(certs.encDecrypter, cke.ciphertext)
-	if err != nil {
-		return fmt.Errorf("tlcp: decrypt ClientKeyExchange: %w", err)
+	var pms []byte
+	if isECDHE {
+		pms, err = tlcpECDHEServerProcessCKE(ecdheState, clientEncPub, cke.ciphertext)
+	} else {
+		pms, err = tlcpECCProcessClientKeyExchange(certs.encDecrypter, cke.ciphertext)
 	}
+	if err != nil {
+		return fmt.Errorf("tlcp: ClientKeyExchange: %w", err)
+	}
+
+	// 8b. Read and verify CertificateVerify (if the client sent a certificate).
+	if wantClientCert && clientSignPub != nil {
+		cvData, err := c.readHandshake(nil)
+		if err != nil {
+			return err
+		}
+		var cv tlcpCertificateVerifyMsg
+		if !cv.unmarshal(cvData) {
+			return errors.New("tlcp: failed to parse CertificateVerify")
+		}
+		signed := transcript.sum()
+		if err := tlcpVerifyHandshakeSignature(sigType, clientSignPub, signed, cv.signature); err != nil {
+			return fmt.Errorf("tlcp: invalid CertificateVerify signature: %w", err)
+		}
+		transcript.Write(cvData)
+	}
+
 	masterSecret := tlcpMasterFromPreMaster(pms, clientHello.random, serverHello.random)
 	zeroBytes(pms)
 

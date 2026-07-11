@@ -108,9 +108,6 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	if suite == nil {
 		return fmt.Errorf("tlcp: server selected unknown cipher suite %04x", serverHello.cipherSuite)
 	}
-	if suite.flags&tlcpFlagECDHE != 0 {
-		return errors.New("tlcp: ECDHE suites not supported in Phase 3")
-	}
 	if serverHello.compressionMethod != 0 {
 		return errors.New("tlcp: server selected non-null compression")
 	}
@@ -149,7 +146,7 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	encCertDER := certMsg.certificates[1]
 	c.peerCertificates = certMsg.certificates
 
-	// 5. Parse the encryption certificate to extract its SM2 public key (CKE).
+	// 5. Parse the encryption certificate to extract its SM2 public key.
 	encCert, err := polluxsmx509.ParseCertificate(encCertDER)
 	if err != nil {
 		return fmt.Errorf("tlcp: parse encryption certificate: %w", err)
@@ -157,16 +154,6 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	encPub, ok := encCert.PublicKey.(*ecdsa.PublicKey)
 	if !ok {
 		return errors.New("tlcp: encryption cert public key is not ECDSA (SM2)")
-	}
-
-	// 6. Read ServerKeyExchange and verify its signature over (cr||sr||encCert).
-	skeData, err := c.readHandshake(transcript)
-	if err != nil {
-		return err
-	}
-	var ske tlcpServerKeyExchangeMsg
-	if !ske.unmarshal(skeData) || len(ske.key) < 2 {
-		return errors.New("tlcp: failed to parse ServerKeyExchange")
 	}
 	signCert, err := polluxsmx509.ParseCertificate(signCertDER)
 	if err != nil {
@@ -180,36 +167,100 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	if err != nil {
 		return err
 	}
-	if err := tlcpECCProcessServerKeyExchange(sigType, signPub, hello.random, serverHello.random, encCertDER, ske.key); err != nil {
-		return fmt.Errorf("tlcp: ServerKeyExchange verification: %w", err)
-	}
+	isECDHE := suite.flags&tlcpFlagECDHE != 0
 
-	// (Optional) certificate verification against root CAs — Phase 3 skips this
-	// when InsecureSkipVerify is set; full verification lands with root-CA wiring.
-	if !config.insecureSkipVerify {
-		// Phase 3 stub: real verification needs a root pool wired from Config.
-		// For the interop test we rely on the SKE signature check above.
-	}
-
-	// 7. Read ServerHelloDone.
-	shdData, err := c.readHandshake(transcript)
+	// 6. Read ServerKeyExchange and verify its signature.
+	skeData, err := c.readHandshake(transcript)
 	if err != nil {
 		return err
 	}
+	var ske tlcpServerKeyExchangeMsg
+	if !ske.unmarshal(skeData) || len(ske.key) < 2 {
+		return errors.New("tlcp: failed to parse ServerKeyExchange")
+	}
+	var ecdheState *tlcpECDHEClientState
+	if isECDHE {
+		ecdheState, err = tlcpECDHEClientProcessSKE(sigType, signPub, hello.random, serverHello.random, ske.key)
+		if err != nil {
+			return fmt.Errorf("tlcp: ECDHE ServerKeyExchange: %w", err)
+		}
+	} else {
+		if err := tlcpECCProcessServerKeyExchange(sigType, signPub, hello.random, serverHello.random, encCertDER, ske.key); err != nil {
+			return fmt.Errorf("tlcp: ServerKeyExchange verification: %w", err)
+		}
+	}
+
+	// (Optional) certificate verification against root CAs — stubbed; full
+	// verification lands with root-CA wiring.
+
+	// 7. Read optional CertificateRequest, then ServerHelloDone.
+	nextData, err := c.readHandshake(transcript)
+	if err != nil {
+		return err
+	}
+	certRequested := false
+	var crData []byte
+	if nextData[0] == tlcpTypeCertificateRequest {
+		certRequested = true
+		crData = nextData
+		var cr tlcpCertificateRequestMsg
+		if !cr.unmarshal(crData) {
+			return errors.New("tlcp: failed to parse CertificateRequest")
+		}
+		nextData, err = c.readHandshake(transcript)
+		if err != nil {
+			return err
+		}
+	}
 	var shd tlcpServerHelloDoneMsg
-	if !shd.unmarshal(shdData) {
+	if !shd.unmarshal(nextData) {
 		return errors.New("tlcp: failed to parse ServerHelloDone")
 	}
-	// Phase 3 does not handle CertificateRequest (no client auth).
 
-	// 8. Generate and send ClientKeyExchange (SM2-encrypted PMS).
-	pms, ckePayload, err := tlcpECCGenerateClientKeyExchange(c.vers, config.rand, encPub)
+	// 7b. If the server requested a certificate and we have one, send the
+	// client Certificate [sign, enc] then CertificateVerify (ECDHE requires
+	// both a signing cert and an encryption cert for MQV).
+	var pms []byte
+	if certRequested && config.clientCerts != nil {
+		clientCertMsg := &tlcpCertificateMsg{
+			certificates: [][]byte{config.clientCerts.signCertDER, config.clientCerts.encCertDER},
+		}
+		if err := c.writeHandshakeRecord(clientCertMsg, transcript); err != nil {
+			return err
+		}
+	}
+
+	// 8. Generate and send ClientKeyExchange (ECC: SM2-encrypted PMS; ECDHE:
+	// ephemeral key + MQV-derived PMS).
+	var ckePayload []byte
+	if isECDHE {
+		if config.clientCerts == nil || config.clientCerts.encDecrypter == nil {
+			return errors.New("tlcp: ECDHE requires a client encryption certificate")
+		}
+		pms, ckePayload, err = tlcpECDHEClientGenerateCKE(ecdheState, config.clientCerts.encDecrypter, encPub)
+	} else {
+		pms, ckePayload, err = tlcpECCGenerateClientKeyExchange(c.vers, config.rand, encPub)
+	}
 	if err != nil {
 		return err
 	}
 	cke := &tlcpClientKeyExchangeMsg{ciphertext: ckePayload}
 	if err := c.writeHandshakeRecord(cke, transcript); err != nil {
 		return err
+	}
+
+	// 8b. Send CertificateVerify (if we sent a client signing cert): SM2 sign
+	// over the transcript hash up to this point.
+	if certRequested && config.clientCerts != nil && config.clientCerts.signSigner != nil {
+		signed := transcript.sum()
+		sig, err := tlcpSignHandshake(config.rand, sigType, config.clientCerts.signSigner, signed)
+		if err != nil {
+			return err
+		}
+		cv := &tlcpCertificateVerifyMsg{signature: sig}
+		if err := c.writeHandshakeRecord(cv, transcript); err != nil {
+			return err
+		}
 	}
 
 	// 9. Derive master secret and establish traffic keys.

@@ -9,9 +9,9 @@ import (
 // the correct material lengths.
 func TestTLCP_LookupCipherSuite(t *testing.T) {
 	cases := []struct {
-		id                          uint16
-		wantKey, wantMAC, wantIV    int
-		wantAEAD                    bool
+		id                       uint16
+		wantKey, wantMAC, wantIV int
+		wantAEAD                 bool
 	}{
 		{SuiteECC_SM2_SM4_GCM_SM3, 16, 0, 4, true},
 		{SuiteECC_SM2_SM4_CBC_SM3, 16, 32, 16, false},

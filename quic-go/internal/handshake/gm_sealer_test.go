@@ -74,9 +74,9 @@ func TestGMSealer_HeaderProtectionMatchesManualMask(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name    string
-		isLong  bool
-		first   byte
+		name   string
+		isLong bool
+		first  byte
 	}{
 		{"long", true, 0xC3},
 		{"short", false, 0x40},

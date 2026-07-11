@@ -28,10 +28,10 @@ import (
 
 // tlcpServerCerts carries the server's dual certificate material.
 type tlcpServerCerts struct {
-	signCertDER []byte        // signing certificate leaf DER
-	encCertDER  []byte        // encryption certificate leaf DER
-	chainDER    [][]byte      // optional CA chain DERs (appended after the two leaves)
-	signSigner  crypto.Signer // signing cert private key (for SKE signature)
+	signCertDER  []byte           // signing certificate leaf DER
+	encCertDER   []byte           // encryption certificate leaf DER
+	chainDER     [][]byte         // optional CA chain DERs (appended after the two leaves)
+	signSigner   crypto.Signer    // signing cert private key (for SKE signature)
 	encDecrypter crypto.Decrypter // encryption cert private key (for PMS decryption)
 }
 
@@ -207,9 +207,12 @@ func (c *tlcpConn) serverHandshakeReal() error {
 				return errors.New("tlcp: client did not provide a certificate")
 			}
 			// VerifyClientCertIfGiven / RequireAndVerifyClientCert：给了就验。
+			// KeyUsages=ClientAuth：客户端证书应含 ExtKeyUsageClientAuth
+			// （否则 stdlib/gmsm 默认按 ServerAuth 校验会误拒）。
 			if clientSignCert != nil {
 				if err := polluxsmx509.Verify(clientSignCert, polluxsmx509.VerifyOptions{
-					Roots: config.clientRoots,
+					Roots:     config.clientRoots,
+					KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 				}); err != nil {
 					return fmt.Errorf("tlcp: client certificate verification failed: %w", err)
 				}
@@ -374,12 +377,12 @@ func (c *tlcpConn) createNewServerSession(serverHello *tlcpServerHelloMsg, maste
 	peerCertsCopy := make([][]byte, len(c.peerCertificates))
 	copy(peerCertsCopy, c.peerCertificates)
 	sess := &tlcpSessionState{
-		sessionID:       serverHello.sessionID,
-		version:         c.vers,
-		cipherSuite:     c.cipherSuite,
-		masterSecret:    msCopy,
+		sessionID:        serverHello.sessionID,
+		version:          c.vers,
+		cipherSuite:      c.cipherSuite,
+		masterSecret:     msCopy,
 		peerCertificates: peerCertsCopy,
-		createdAt:       time.Now(),
+		createdAt:        time.Now(),
 	}
 	c.config.sessionCache.Put(tlcpSessionKeyHex(sess.sessionID), sess)
 }

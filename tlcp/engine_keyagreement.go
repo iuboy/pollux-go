@@ -176,15 +176,15 @@ func tlcpECCSignedParams(clientRandom, serverRandom, encCertDER []byte) []byte {
 // =====================================================================
 
 const (
-	tlcpECDHECurveTypeNamed = 3       // curve_type: named_curve
-	tlcpSM2PointLength      = 65      // uncompressed SM2 point: 0x04 || X(32) || Y(32)
+	tlcpECDHECurveTypeNamed = 3  // curve_type: named_curve
+	tlcpSM2PointLength      = 65 // uncompressed SM2 point: 0x04 || X(32) || Y(32)
 )
 
 // tlcpECDHEServerKeyExchange holds the server's ECDHE state across the two
 // handshake steps (generate SKE → process CKE).
 type tlcpECDHEServerKeyExchange struct {
-	sponsorPriv  *ecdhPrivateKey // server long-term enc key (ecdh form)
-	sponsorEph   *ecdhPrivateKey // server ephemeral key
+	sponsorPriv *ecdhPrivateKey // server long-term enc key (ecdh form)
+	sponsorEph  *ecdhPrivateKey // server ephemeral key
 }
 
 // tlcpECDHEClientState holds the client's parsed server ephemeral key.

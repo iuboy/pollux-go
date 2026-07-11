@@ -488,3 +488,177 @@ func TestClientAuth_RequireVerifyWithoutClientCAsFails(t *testing.T) {
 		t.Fatal("client handshake should fail after server rejects missing client certs")
 	}
 }
+
+// generateRogueCertPair 生成一对由指定 CA 签发的 SM2 证书（签名 + 加密）。
+// 与 generateTestCertPair 不同，证书非自签名，而是由独立的 rogue CA 签发。
+func generateRogueCertPair(t *testing.T, caCert *smx509.Certificate, caKey *sm2.PrivateKey) (signCert, encCert *tls.Certificate) {
+	t.Helper()
+
+	curve := sm2.P256()
+
+	signPriv, err := ecdsa.GenerateKey(curve, rand.Reader)
+	if err != nil {
+		t.Fatalf("generate rogue sign key: %v", err)
+	}
+	sm2SignPriv := new(sm2.PrivateKey)
+	if _, err := sm2SignPriv.FromECPrivateKey(signPriv); err != nil {
+		t.Fatalf("convert rogue sign key: %v", err)
+	}
+
+	encPriv, err := ecdsa.GenerateKey(curve, rand.Reader)
+	if err != nil {
+		t.Fatalf("generate rogue enc key: %v", err)
+	}
+	sm2EncPriv := new(sm2.PrivateKey)
+	if _, err := sm2EncPriv.FromECPrivateKey(encPriv); err != nil {
+		t.Fatalf("convert rogue enc key: %v", err)
+	}
+
+	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+
+	base := &smx509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "rogue-client"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+
+	signT := *base
+	signT.KeyUsage = smx509.KeyUsageDigitalSignature | smx509.KeyUsageCertSign
+	signDER, err := smx509.CreateCertificate(rand.Reader, &signT, caCert, &signPriv.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create rogue sign cert: %v", err)
+	}
+
+	encT := *base
+	encT.KeyUsage = smx509.KeyUsageKeyEncipherment | smx509.KeyUsageDataEncipherment
+	encDER, err := smx509.CreateCertificate(rand.Reader, &encT, caCert, &encPriv.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create rogue enc cert: %v", err)
+	}
+
+	signCert = &tls.Certificate{Certificate: [][]byte{signDER}, PrivateKey: sm2SignPriv}
+	encCert = &tls.Certificate{Certificate: [][]byte{encDER}, PrivateKey: sm2EncPriv}
+	return
+}
+
+// generateSM2CA 生成一个自签名 SM2 CA 证书 + 私钥（用于测试）。
+func generateSM2CA(t *testing.T, cn string) (*smx509.Certificate, *sm2.PrivateKey) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(sm2.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate CA key: %v", err)
+	}
+	smPriv := new(sm2.PrivateKey)
+	if _, err := smPriv.FromECPrivateKey(priv); err != nil {
+		t.Fatalf("convert CA key: %v", err)
+	}
+	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	tmpl := &smx509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: cn},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              smx509.KeyUsageCertSign | smx509.KeyUsageCRLSign,
+	}
+	der, err := smx509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, smPriv)
+	if err != nil {
+		t.Fatalf("create CA cert: %v", err)
+	}
+	cert, err := smx509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse CA cert: %v", err)
+	}
+	return cert, smPriv
+}
+
+// TestClientAuth_RogueCertRejected 验证 RequireAndVerifyClientCert 模式下，
+// 不受信 CA 签发的客户端证书被拒绝（链校验回归保护）。
+//
+// 回归背景：v0.2.1 原生引擎的 ClientCACertificates 未接入验签路径，
+// 任何持有私钥的客户端证书都能握手成功。此测试守护修复。
+func TestClientAuth_RogueCertRejected(t *testing.T) {
+	// 1. 服务端证书对（自签名，作为受信 CA）
+	serverSign, serverEnc := generateTestCertPair(t)
+	smServerSignCA, _ := smx509.ParseCertificate(serverSign.Certificate[0])
+
+	// 2. 独立的 rogue CA + 由其签发的客户端证书对
+	rogueCA, rogueKey := generateSM2CA(t, "rogue-ca")
+	rogueSign, rogueEnc := generateRogueCertPair(t, rogueCA, rogueKey)
+
+	// 3. 服务端只信任自己的签名 CA，不信任 rogue CA
+	serverConfig := &Config{
+		Version:              Version11,
+		SignCertificate:      serverSign,
+		EncCertificate:       serverEnc,
+		CipherSuites:         []uint16{SuiteECDHE_SM2_SM4_GCM_SM3},
+		ClientAuth:           RequireAndVerifyClientCert,
+		ClientCACertificates: []*x509.Certificate{stdCertFromSM(t, smServerSignCA)},
+		InsecureSkipVerify:   true,
+	}
+
+	// 4. 客户端用 rogue 证书对（InsecureSkipVerify 跳过服务端校验，聚焦客户端校验）
+	clientConfig := &Config{
+		Version:            Version11,
+		SignCertificate:    rogueSign,
+		EncCertificate:     rogueEnc,
+		CipherSuites:       []uint16{SuiteECDHE_SM2_SM4_GCM_SM3},
+		InsecureSkipVerify: true,
+	}
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	_ = clientConn.SetDeadline(deadline)
+	_ = serverConn.SetDeadline(deadline)
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		serverErrCh <- Server(serverConn, serverConfig).Handshake()
+	}()
+
+	clientErr := Client(clientConn, clientConfig).Handshake()
+	serverErr := <-serverErrCh
+	if serverErr == nil {
+		t.Fatal("服务端应拒绝不受信 CA 签发的客户端证书，但握手成功（链校验缺失）")
+	}
+	if clientErr == nil {
+		t.Fatal("客户端应在服务端拒绝后收到握手失败")
+	}
+	t.Logf("正确拒绝 rogue 证书: serverErr=%v", serverErr)
+}
+
+// TestClientAuth_TrustedCertAccepted 验证 RequireAndVerifyClientCert 模式下，
+// 受信 CA 签发的客户端证书被接受（正向对照，确保链校验没有误拒）。
+func TestClientAuth_TrustedCertAccepted(t *testing.T) {
+	// 服务端证书对 = 受信 CA
+	serverSign, serverEnc := generateTestCertPair(t)
+	smServerSignCA, _ := smx509.ParseCertificate(serverSign.Certificate[0])
+
+	// 客户端用同一证书对（自签名，在 ClientCACertificates 中）
+	serverConfig := &Config{
+		Version:              Version11,
+		SignCertificate:      serverSign,
+		EncCertificate:       serverEnc,
+		CipherSuites:         []uint16{SuiteECDHE_SM2_SM4_GCM_SM3},
+		ClientAuth:           RequireAndVerifyClientCert,
+		ClientCACertificates: []*x509.Certificate{stdCertFromSM(t, smServerSignCA)},
+		InsecureSkipVerify:   true,
+	}
+	clientConfig := &Config{
+		Version:            Version11,
+		SignCertificate:    serverSign,
+		EncCertificate:     serverEnc,
+		CipherSuites:       []uint16{SuiteECDHE_SM2_SM4_GCM_SM3},
+		InsecureSkipVerify: true,
+	}
+
+	client, server := handshakeOverPipe(t, serverConfig, clientConfig)
+	defer client.Close()
+	defer server.Close()
+
+	transferData(t, client, server, []byte("trusted client auth ok"))
+}

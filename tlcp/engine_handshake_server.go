@@ -3,6 +3,7 @@ package tlcp
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -161,6 +162,7 @@ func (c *tlcpConn) serverHandshakeReal() error {
 	// 7b. Read optional client Certificate (if we sent CertificateRequest).
 	var clientSignPub *ecdsa.PublicKey
 	var clientEncPub *ecdsa.PublicKey
+	var clientSignCert *x509.Certificate
 	if wantClientCert {
 		ccData, err := c.readHandshake(transcript)
 		if err != nil {
@@ -171,7 +173,7 @@ func (c *tlcpConn) serverHandshakeReal() error {
 			return errors.New("tlcp: failed to parse client Certificate")
 		}
 		if len(cc.certificates) > 0 {
-			clientSignCert, err := polluxsmx509.ParseCertificate(cc.certificates[0])
+			clientSignCert, err = polluxsmx509.ParseCertificate(cc.certificates[0])
 			if err != nil {
 				return fmt.Errorf("tlcp: parse client sign cert: %w", err)
 			}
@@ -194,6 +196,24 @@ func (c *tlcpConn) serverHandshakeReal() error {
 		}
 		if isECDHE && clientEncPub == nil {
 			return errors.New("tlcp: ECDHE requires a client encryption certificate")
+		}
+		// 客户端签名证书链校验：防 rogue（不受信 CA 签发的）客户端证书。
+		// CertificateVerify 只证明私钥持有，不证明 CA 信任链；此处补链校验。
+		// config.clientRoots 仅在 ClientAuth >= VerifyClientCertIfGiven 且配置了
+		// ClientCACertificates 时非 nil。
+		if config.clientRoots != nil {
+			// RequireAndVerifyClientCert：客户端必须给证书且通过校验。
+			if config.clientAuth >= RequireAndVerifyClientCert && clientSignCert == nil {
+				return errors.New("tlcp: client did not provide a certificate")
+			}
+			// VerifyClientCertIfGiven / RequireAndVerifyClientCert：给了就验。
+			if clientSignCert != nil {
+				if err := polluxsmx509.Verify(clientSignCert, polluxsmx509.VerifyOptions{
+					Roots: config.clientRoots,
+				}); err != nil {
+					return fmt.Errorf("tlcp: client certificate verification failed: %w", err)
+				}
+			}
 		}
 	}
 

@@ -57,7 +57,7 @@ func TestVersionFromString(t *testing.T) {
 // TestIsAvailable 验证可用性标志。
 func TestIsAvailable(t *testing.T) {
 	if !IsAvailable() {
-		t.Error("IsAvailable() = false, want true (gotlcp wrapper always available)")
+		t.Error("IsAvailable() = false, want true (native engine always available)")
 	}
 }
 

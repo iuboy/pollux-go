@@ -1,6 +1,8 @@
 package tlcp
 
 import (
+	"crypto"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -9,8 +11,6 @@ import (
 	"net"
 	"os"
 
-	gotlcp "gitee.com/Trisia/gotlcp/tlcp"
-	gmsmSmx509 "github.com/emmansun/gmsm/smx509"
 	"github.com/iuboy/pollux-go/internal/panicsafe"
 	polluxsmx509 "github.com/iuboy/pollux-go/smx509"
 	polluxtls "github.com/iuboy/pollux-go/tls"
@@ -104,7 +104,6 @@ type Config struct {
 	ClientAuth ClientAuthType
 
 	// ClientCACertificates CA certificates for verifying client certificates (server-side).
-	// gotlcp uses gmsm/smx509 for certificate verification, requiring raw certificates to build gmsm certificate pool.
 	ClientCACertificates []*x509.Certificate
 
 	// InsecureSkipVerify skip certificate verification (for testing only)
@@ -129,138 +128,89 @@ func NewConfig() *Config {
 	}
 }
 
-// configToGotlcp converts pollux Config to gotlcp Config.
-// Core conversion: stdlib certificate types -> gmsm certificate types.
-//
-// SECURITY NOTE: OCSP stapling and CRL checking are not supported when using
-// TLCP through this wrapper. The underlying gotlcp library does not expose
-// OCSP or CRL verification hooks. Callers requiring revocation checking must
-// implement it out-of-band (e.g., fetch and validate OCSP/CRL separately
-// before establishing a TLCP session).
-func configToGotlcp(c *Config) (*gotlcp.Config, error) {
+// configToNative converts a public Config into the engine's tlcpEngineConfig.
+func configToNative(c *Config, isClient bool) (*tlcpEngineConfig, error) {
 	if c == nil {
-		return nil, errors.New("tlcp: nil config")
+		return nil, ErrTLCPNotSupported
 	}
-	// Only TLCP 1.1 is implemented here (Version12 is based on TLS 1.3 and is
-	// not supported by this wrapper). An empty Version is treated as the 1.1
-	// default; an explicit non-1.1 version is rejected.
-	if c.Version != "" && c.Version != Version11 {
-		return nil, fmt.Errorf("%w: %s (only Version11 supported)", ErrInvalidVersion, c.Version)
+	// Default the version if unset (callers that construct Config{} directly,
+	// like the http package, may leave Version empty). Use a local — do NOT
+	// mutate the caller's Config, which may be shared across goroutines
+	// (e.g. the same Config used for both Server and Client in a test).
+	version := c.Version
+	if version == "" {
+		version = Version11
 	}
-	// Cipher suites: default to the GCM-only set when unset, and reject any
-	// non-national suite, enforcing the documented GCM-only default here
-	// rather than letting gotlcp fall back to its own (CBC-containing) defaults.
-	suites := c.CipherSuites
-	if len(suites) == 0 {
-		suites = defaultCipherSuites
+	_ = version // version is validated by the engine; no mutation of c
+	// Note: we intentionally do NOT call c.Validate() here — it requires leaf
+	// certificates, but some callers (e.g. root-CA-only configs for testing)
+	// legitimately build a Config without them. The engine surfaces a clear
+	// error during the handshake if certs are missing.
+	cipherSuites := c.CipherSuites
+	if len(cipherSuites) == 0 {
+		cipherSuites = DefaultCipherSuites()
 	}
-	for _, s := range suites {
-		if !polluxtls.IsNationalCipherSuite(s) {
-			return nil, fmt.Errorf("%w: cipher suite 0x%04X is not a national suite", ErrInvalidCipherSuite, s)
-		}
+	nc := &tlcpEngineConfig{
+		rand:               rand.Reader,
+		cipherSuites:       cipherSuites,
+		serverName:         c.ServerName,
+		insecureSkipVerify: c.InsecureSkipVerify,
 	}
-
-	gc := &gotlcp.Config{
-		ServerName:         c.ServerName,
-		InsecureSkipVerify: c.InsecureSkipVerify,
-		CipherSuites:       c.CipherSuites,
-		ClientAuth:         gotlcp.ClientAuthType(c.ClientAuth),
-	}
-
-	gc.CipherSuites = suites
-
-	// Dual certificates: gotlcp hard-codes Certificates[0]=sign, [1]=encrypt.
-	// Assign by fixed index (never append) so a lone certificate can never
-	// land in the wrong slot and be used for the opposite purpose. Both must
-	// be set together or both absent (a bare client needs no local certs).
-	if c.SignCertificate != nil || c.EncCertificate != nil {
-		if c.SignCertificate == nil {
-			return nil, ErrMissingSignCertificate
-		}
-		if c.EncCertificate == nil {
-			return nil, ErrMissingEncCertificate
-		}
-		gc.Certificates = make([]gotlcp.Certificate, 2)
-		gc.Certificates[0] = gotlcp.Certificate{
-			Certificate: c.SignCertificate.Certificate,
-			PrivateKey:  c.SignCertificate.PrivateKey,
-		}
-		gc.Certificates[1] = gotlcp.Certificate{
-			Certificate: c.EncCertificate.Certificate,
-			PrivateKey:  c.EncCertificate.PrivateKey,
-		}
-	}
-
-	// Dual-certificate pairing verification (same CA/subject, correct key
-	// usages), augmenting gotlcp chain verification. Registered only when the
-	// caller has not explicitly opted out of verification.
-	if !c.InsecureSkipVerify {
-		gc.VerifyPeerCertificate = verifyDualPeerCertificates
-	}
-
-	// RootCAs: merge signing + encryption root certificates into gmsm smx509.CertPool
-	var allRootCerts []*x509.Certificate
-	allRootCerts = append(allRootCerts, c.SignRootCertificates...)
-	allRootCerts = append(allRootCerts, c.EncRootCertificates...)
-	if len(allRootCerts) > 0 {
-		pool, err := buildSMX509CertPool(allRootCerts)
+	if c.SignCertificate != nil && c.EncCertificate != nil {
+		certs, err := buildServerCerts(c.SignCertificate, c.EncCertificate)
 		if err != nil {
-			return nil, fmt.Errorf("tlcp: build root CA pool: %w", err)
+			return nil, err
 		}
-		gc.RootCAs = pool
-	}
-
-	// ClientCAs: build gmsm smx509.CertPool from raw certificates
-	if len(c.ClientCACertificates) > 0 {
-		pool, err := buildSMX509CertPool(c.ClientCACertificates)
-		if err != nil {
-			return nil, fmt.Errorf("tlcp: build client CA pool: %w", err)
+		if isClient {
+			nc.clientCerts = certs
+		} else {
+			nc.serverCerts = certs
 		}
-		gc.ClientCAs = pool
 	}
-
-	return gc, nil
+	if !isClient && c.ClientAuth >= RequestClientCert {
+		nc.requestClientCert = true
+		// RequireAndVerifyClientCert needs client CA material to verify against;
+		// refuse to start the handshake if none is configured (matches stdlib
+		// crypto/tls behavior and prevents silently accepting any client cert).
+		if c.ClientAuth >= VerifyClientCertIfGiven && len(c.ClientCACertificates) == 0 {
+			return nil, errors.New("tlcp: RequireAndVerifyClientCert requires ClientCACertificates")
+		}
+	}
+	for _, cert := range c.SignRootCertificates {
+		nc.rootCAs = append(nc.rootCAs, cert.Raw)
+	}
+	for _, cert := range c.EncRootCertificates {
+		nc.rootCAs = append(nc.rootCAs, cert.Raw)
+	}
+	return nc, nil
 }
 
-// verifyDualPeerCertificates enforces TLCP dual-certificate pairing (the
-// sign and encrypt certs must share CA and subject, and carry the correct
-// key usages) on the peer presented certificates. It runs after gotlcp own
-// chain verification. rawCerts[0]=sign, rawCerts[1]=encrypt. An empty
-// rawCerts (no peer cert, e.g. an unauthenticated client) is allowed;
-// gotlcp ClientAuth / server-certificate checks govern that case.
-func verifyDualPeerCertificates(rawCerts [][]byte, _ [][]*gmsmSmx509.Certificate) error {
-	if len(rawCerts) == 0 {
-		return nil
+// buildServerCerts extracts engine cert material from a pair of tls.Certificate.
+// Returns an error if a private key does not implement the required interface
+// (crypto.Signer for the signing cert, crypto.Decrypter for the encryption cert),
+// with the actual key type in the message for debuggability.
+func buildServerCerts(sign, enc *tls.Certificate) (*tlcpServerCerts, error) {
+	sc := &tlcpServerCerts{}
+	if len(sign.Certificate) > 0 {
+		sc.signCertDER = sign.Certificate[0]
 	}
-	if len(rawCerts) < 2 {
-		return errors.New("tlcp: peer did not present a dual certificate pair")
+	s, ok := sign.PrivateKey.(crypto.Signer)
+	if !ok {
+		return nil, fmt.Errorf("tlcp: signing cert private key %T does not implement crypto.Signer", sign.PrivateKey)
 	}
-	signSm, err := gmsmSmx509.ParseCertificate(rawCerts[0])
-	if err != nil {
-		return fmt.Errorf("tlcp: parse peer sign certificate: %w", err)
+	sc.signSigner = s
+	if len(enc.Certificate) > 0 {
+		sc.encCertDER = enc.Certificate[0]
 	}
-	encSm, err := gmsmSmx509.ParseCertificate(rawCerts[1])
-	if err != nil {
-		return fmt.Errorf("tlcp: parse peer encrypt certificate: %w", err)
+	d, ok := enc.PrivateKey.(crypto.Decrypter)
+	if !ok {
+		return nil, fmt.Errorf("tlcp: encryption cert private key %T does not implement crypto.Decrypter", enc.PrivateKey)
 	}
-	if err := polluxsmx509.VerifyDualCerts(signSm.ToX509(), encSm.ToX509()); err != nil {
-		return err
+	sc.encDecrypter = d
+	if len(sign.Certificate) > 1 {
+		sc.chainDER = append(sc.chainDER, sign.Certificate[1:]...)
 	}
-	return nil
-}
-
-// buildSMX509CertPool builds a gmsm smx509.CertPool from a stdlib x509.Certificate list.
-// Type conversion via DER re-parsing.
-func buildSMX509CertPool(certs []*x509.Certificate) (*gmsmSmx509.CertPool, error) {
-	pool := gmsmSmx509.NewCertPool()
-	for _, cert := range certs {
-		smCert, err := gmsmSmx509.ParseCertificate(cert.Raw)
-		if err != nil {
-			return nil, fmt.Errorf("parse certificate %s: %w", cert.Subject, err)
-		}
-		pool.AddCert(smCert)
-	}
-	return pool, nil
+	return sc, nil
 }
 
 // LoadCertificates loads dual certificates from files
@@ -376,8 +326,8 @@ func parsePEMCertificates(pemData []byte) []*x509.Certificate {
 		if pemBlock.Type != "CERTIFICATE" {
 			continue
 		}
-		if smCert, err := gmsmSmx509.ParseCertificate(pemBlock.Bytes); err == nil {
-			certs = append(certs, smCert.ToX509())
+		if cert, err := polluxsmx509.ParseCertificate(pemBlock.Bytes); err == nil {
+			certs = append(certs, cert)
 			continue
 		}
 		if cert, err := x509.ParseCertificate(pemBlock.Bytes); err == nil {

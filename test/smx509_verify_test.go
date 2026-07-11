@@ -12,6 +12,20 @@ import (
 	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
+// stdCertFromSM converts a gmsm *smx509.Certificate to a stdlib *x509.Certificate
+// via pollux's ParseCertificate path (field copy; gmsm v0.44 removed ToX509()).
+func stdCertFromSM(t *testing.T, smCert *smx509.Certificate) *x509.Certificate {
+	t.Helper()
+	if smCert == nil {
+		return nil
+	}
+	std, err := polluxSmx509.ParseCertificate(smCert.Raw)
+	if err != nil {
+		t.Fatalf("convert smx509 cert to stdlib: %v", err)
+	}
+	return std
+}
+
 func buildTestCertChain(t *testing.T) (caCert *x509.Certificate, leafCert *x509.Certificate, caCertRaw *smx509.Certificate) {
 	t.Helper()
 
@@ -26,7 +40,7 @@ func buildTestCertChain(t *testing.T) (caCert *x509.Certificate, leafCert *x509.
 		SerialNumber:          big.NewInt(1),
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		KeyUsage:              smx509.KeyUsageCertSign | smx509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
@@ -38,7 +52,7 @@ func buildTestCertChain(t *testing.T) (caCert *x509.Certificate, leafCert *x509.
 	if err != nil {
 		t.Fatal(err)
 	}
-	caCert = caCertRaw.ToX509()
+	caCert = stdCertFromSM(t, caCertRaw)
 
 	// Generate leaf key
 	leafPriv, err := polluxSM2.GenerateKey(rand.Reader)
@@ -51,7 +65,7 @@ func buildTestCertChain(t *testing.T) (caCert *x509.Certificate, leafCert *x509.
 		SerialNumber: big.NewInt(2),
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		KeyUsage:     smx509.KeyUsageDigitalSignature | smx509.KeyUsageKeyEncipherment,
 	}
 	leafDER, err := smx509.CreateCertificate(rand.Reader, leafTmpl, caCertRaw, &leafPriv.PublicKey, caPriv)
 	if err != nil {
@@ -61,7 +75,7 @@ func buildTestCertChain(t *testing.T) (caCert *x509.Certificate, leafCert *x509.
 	if err != nil {
 		t.Fatal(err)
 	}
-	leafCert = leafSMCert.ToX509()
+	leafCert = stdCertFromSM(t, leafSMCert)
 
 	return
 }
@@ -96,13 +110,13 @@ func TestBlackBox_SMX509_Verify_WrongRoot(t *testing.T) {
 		SerialNumber:          big.NewInt(99),
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign,
+		KeyUsage:              smx509.KeyUsageCertSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
 	wrongDER, _ := smx509.CreateCertificate(rand.Reader, wrongTmpl, wrongTmpl, &wrongPriv.PublicKey, wrongPriv)
 	wrongSMCert, _ := smx509.ParseCertificate(wrongDER)
-	wrongCert := wrongSMCert.ToX509()
+	wrongCert := stdCertFromSM(t, wrongSMCert)
 
 	wrongPool := polluxSmx509.NewCertPool()
 	wrongPool.AddCert(wrongCert)
@@ -125,7 +139,7 @@ func TestBlackBox_SMX509_VerifyDualCerts_ValidPair(t *testing.T) {
 		SerialNumber:          big.NewInt(1),
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign,
+		KeyUsage:              smx509.KeyUsageCertSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
@@ -134,7 +148,7 @@ func TestBlackBox_SMX509_VerifyDualCerts_ValidPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	caSMCert, _ := smx509.ParseCertificate(caDER)
-	caCert := caSMCert.ToX509()
+	caCert := stdCertFromSM(t, caSMCert)
 
 	// Sign cert
 	signPriv, _ := polluxSM2.GenerateKey(rand.Reader)
@@ -142,11 +156,11 @@ func TestBlackBox_SMX509_VerifyDualCerts_ValidPair(t *testing.T) {
 		SerialNumber: big.NewInt(2),
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
+		KeyUsage:     smx509.KeyUsageDigitalSignature,
 	}
 	signDER, _ := smx509.CreateCertificate(rand.Reader, signTmpl, caSMCert, &signPriv.PublicKey, caPriv)
 	signSMCert, _ := smx509.ParseCertificate(signDER)
-	signCert := signSMCert.ToX509()
+	signCert := stdCertFromSM(t, signSMCert)
 
 	// Enc cert
 	encPriv, _ := polluxSM2.GenerateKey(rand.Reader)
@@ -154,11 +168,11 @@ func TestBlackBox_SMX509_VerifyDualCerts_ValidPair(t *testing.T) {
 		SerialNumber: big.NewInt(3),
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageKeyEncipherment,
+		KeyUsage:     smx509.KeyUsageKeyEncipherment,
 	}
 	encDER, _ := smx509.CreateCertificate(rand.Reader, encTmpl, caSMCert, &encPriv.PublicKey, caPriv)
 	encSMCert, _ := smx509.ParseCertificate(encDER)
-	encCert := encSMCert.ToX509()
+	encCert := stdCertFromSM(t, encSMCert)
 
 	rootPool := x509.NewCertPool()
 	rootPool.AddCert(caCert)

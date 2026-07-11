@@ -384,9 +384,10 @@ func newTLCPConn(c net.Conn, config *tlcpEngineConfig, isClient bool) *tlcpConn 
 		isClient: isClient,
 		config:   config,
 	}
-	if config != nil && config.rand != nil {
-		randReader = config.rand
-	}
+	// Note: randReader defaults to crypto/rand (cryptoRandReader). We do NOT
+	// override the package-level global from config.rand here — that would be a
+	// data race when multiple connections are created concurrently. Tests that
+	// need a custom rand pass rand.Reader, which matches the default.
 	return tc
 }
 

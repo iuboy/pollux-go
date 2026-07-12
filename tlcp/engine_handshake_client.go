@@ -232,14 +232,16 @@ func (c *tlcpConn) clientHandshakeReal() error {
 		return errors.New("tlcp: failed to parse ServerHelloDone")
 	}
 
-	// 7b. If the server requested a certificate and we have one, send the
-	// client Certificate [sign, enc] then CertificateVerify (ECDHE requires
-	// both a signing cert and an encryption cert for MQV).
+	// 7b. If the server requested a certificate, send a Certificate message.
+	// Per TLS/TLCP, after a CertificateRequest the client MUST send a
+	// Certificate message (which may be empty) to avoid handshake desync.
 	var pms []byte
-	if certRequested && config.clientCerts != nil {
-		clientCertMsg := &tlcpCertificateMsg{
-			certificates: [][]byte{config.clientCerts.signCertDER, config.clientCerts.encCertDER},
+	if certRequested {
+		var certs [][]byte
+		if config.clientCerts != nil {
+			certs = [][]byte{config.clientCerts.signCertDER, config.clientCerts.encCertDER}
 		}
+		clientCertMsg := &tlcpCertificateMsg{certificates: certs}
 		if err := c.writeHandshakeRecord(clientCertMsg, transcript); err != nil {
 			return err
 		}

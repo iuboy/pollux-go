@@ -45,6 +45,7 @@ func verifySM2(cert *x509.Certificate, opts VerifyOptions) error {
 		DNSName:       opts.DNSName,
 		Roots:         opts.Roots.ToSMX509Pool(),
 		Intermediates: intermediatesPool(opts),
+		KeyUsages:     opts.KeyUsages,
 	}
 	if err := polluxSmx509.Verify(cert, smx509Opts); err != nil {
 		return err

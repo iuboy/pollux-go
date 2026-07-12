@@ -172,6 +172,8 @@ func (c *tlcpConn) serverHandshakeReal() error {
 		if !cc.unmarshal(ccData) {
 			return errors.New("tlcp: failed to parse client Certificate")
 		}
+		// Store for ConnectionState.PeerCertificates + session cache.
+		c.peerCertificates = cc.certificates
 		if len(cc.certificates) > 0 {
 			clientSignCert, err = polluxsmx509.ParseCertificate(cc.certificates[0])
 			if err != nil {
@@ -196,6 +198,11 @@ func (c *tlcpConn) serverHandshakeReal() error {
 		}
 		if isECDHE && clientEncPub == nil {
 			return errors.New("tlcp: ECDHE requires a client encryption certificate")
+		}
+		// RequireAnyClientCert / RequireAndVerifyClientCert: a cert MUST be
+		// presented regardless of whether clientRoots is configured.
+		if config.clientAuth >= RequireAnyClientCert && clientSignCert == nil {
+			return errors.New("tlcp: client did not provide a certificate")
 		}
 		// 客户端签名证书链校验：防 rogue（不受信 CA 签发的）客户端证书。
 		// CertificateVerify 只证明私钥持有，不证明 CA 信任链；此处补链校验。

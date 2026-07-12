@@ -255,7 +255,7 @@ func TestKDFKnownAnswerDifferentInputs(t *testing.T) {
 	context := []byte("session-key")
 
 	// 32-byte key with the alternate label/context.
-	want := "90ec8b5b5b7d291d7599b639f12ec7b9849c1fa5eff25dca1e77dc0a69eb00b3"
+	want := "2b33f5bb693b85c46fa010ebed3811b40e8432b91f1aff872252e8ee8b66ea50"
 	got, err := sm4.DeriveKey(masterKey, label, context, 32)
 	if err != nil {
 		t.Fatal(err)

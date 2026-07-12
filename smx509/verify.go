@@ -41,6 +41,14 @@ func Verify(cert *x509.Certificate, opts VerifyOptions) error {
 			return errSelfSignedLeaf
 		}
 	}
+	// Also guard SM2 self-signed leaves that CheckSignatureFrom cannot validate
+	// (the standard library does not understand SM2 signatures, so it returns
+	// a non-nil error and the guard above is silently bypassed).
+	if IsSM2PublicKey(cert.PublicKey) &&
+		bytes.Equal(cert.RawSubject, cert.RawIssuer) &&
+		(opts.Roots == nil || !opts.Roots.contains(cert)) {
+		return errSelfSignedLeaf
+	}
 
 	// Build standard x509.VerifyOptions from CertPool.
 	verifyOpts := x509.VerifyOptions{

@@ -37,11 +37,11 @@ func (p *Pool) AddCert(cert *x509.Certificate) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.certs = append(p.certs, cert)
-	if len(cert.Raw) > 0 {
-		rawCopy := make([]byte, len(cert.Raw))
-		copy(rawCopy, cert.Raw)
-		p.raw = append(p.raw, rawCopy)
-	}
+	// Always append a matching raw entry to keep certs[i] / raw[i] in lock-step,
+	// even when cert.Raw is empty (prevents positional desynchronization).
+	rawCopy := make([]byte, len(cert.Raw))
+	copy(rawCopy, cert.Raw)
+	p.raw = append(p.raw, rawCopy)
 }
 
 // AddCerts adds multiple certificates to the pool in a single lock acquisition.
@@ -53,11 +53,9 @@ func (p *Pool) AddCerts(certs ...*x509.Certificate) {
 			continue
 		}
 		p.certs = append(p.certs, cert)
-		if len(cert.Raw) > 0 {
-			rawCopy := make([]byte, len(cert.Raw))
-			copy(rawCopy, cert.Raw)
-			p.raw = append(p.raw, rawCopy)
-		}
+		rawCopy := make([]byte, len(cert.Raw))
+		copy(rawCopy, cert.Raw)
+		p.raw = append(p.raw, rawCopy)
 	}
 }
 

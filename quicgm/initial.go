@@ -119,6 +119,12 @@ func OpenInitialPacket(dcid, packet []byte) (version uint32, scid, token []byte,
 	if err != nil {
 		return 0, nil, nil, 0, nil, err
 	}
+	// The Seal/Open pair and key derivation are specific to QUIC v1
+	// (RFC 9000/9001). Reject other versions early to avoid silent
+	// misparse or cross-protocol confusion.
+	if version != QUICVersion1 {
+		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: unsupported QUIC version 0x%08x", version)
+	}
 	// DCID length + value (advance past the sender's dcid; the caller supplied dcid).
 	pos, err = skipCID(packet, pos, "dcid")
 	if err != nil {

@@ -58,7 +58,7 @@ type GMCryptoSetup struct {
 	initialOpener   LongHeaderOpener
 	handshakeSealer LongHeaderSealer
 	handshakeOpener LongHeaderOpener
-	oneRTTAEAD *gmUpdatableAEAD
+	oneRTTAEAD      *gmUpdatableAEAD
 
 	initialDropped   bool
 	handshakeDropped bool

@@ -35,8 +35,8 @@ const tlcpNoncePrefixLength = 4
 type tlcpCipherFlags uint8
 
 const (
-	tlcpFlagECDHE tlcpCipherFlags = 1 << iota // suite uses ECDHE key exchange
-	tlcpFlagECSign                            // suite involves an ECDSA/SM2 signature cert
+	tlcpFlagECDHE  tlcpCipherFlags = 1 << iota // suite uses ECDHE key exchange
+	tlcpFlagECSign                             // suite involves an ECDSA/SM2 signature cert
 )
 
 // tlcpCipherSuite describes a negotiated TLCP cipher suite: its key-exchange
@@ -174,7 +174,9 @@ func newTLCPAEADSM4GCM(key, implicitNonce []byte) (*tlcpPrefixNonceAEAD, error) 
 
 // ExplicitNonceSize returns the number of explicit nonce bytes carried in each
 // record (8). Callers transmit these and feed them back to Open.
-func (f *tlcpPrefixNonceAEAD) ExplicitNonceSize() int { return tlcpAEADNonceLength - tlcpNoncePrefixLength }
+func (f *tlcpPrefixNonceAEAD) ExplicitNonceSize() int {
+	return tlcpAEADNonceLength - tlcpNoncePrefixLength
+}
 
 // Overhead is the AEAD tag length appended to each sealed record.
 func (f *tlcpPrefixNonceAEAD) Overhead() int { return f.aead.Overhead() }
@@ -183,6 +185,9 @@ func (f *tlcpPrefixNonceAEAD) Overhead() int { return f.aead.Overhead() }
 // nonce. additionalData is the TLCP record header. The full nonce is built in a
 // local variable — no shared state is mutated.
 func (f *tlcpPrefixNonceAEAD) Seal(out, explicitNonce, plaintext, additionalData []byte) []byte {
+	if len(explicitNonce) != f.ExplicitNonceSize() {
+		panic(fmt.Sprintf("tlcp: explicit nonce length %d, want %d", len(explicitNonce), f.ExplicitNonceSize()))
+	}
 	var nonce [tlcpAEADNonceLength]byte
 	copy(nonce[:], f.implicitPrefix[:])
 	copy(nonce[tlcpNoncePrefixLength:], explicitNonce)
@@ -191,6 +196,9 @@ func (f *tlcpPrefixNonceAEAD) Seal(out, explicitNonce, plaintext, additionalData
 
 // Open decrypts. explicitNonce is the 8 bytes read from the record.
 func (f *tlcpPrefixNonceAEAD) Open(out, explicitNonce, ciphertext, additionalData []byte) ([]byte, error) {
+	if len(explicitNonce) != f.ExplicitNonceSize() {
+		return nil, fmt.Errorf("tlcp: explicit nonce length %d, want %d", len(explicitNonce), f.ExplicitNonceSize())
+	}
 	var nonce [tlcpAEADNonceLength]byte
 	copy(nonce[:], f.implicitPrefix[:])
 	copy(nonce[tlcpNoncePrefixLength:], explicitNonce)

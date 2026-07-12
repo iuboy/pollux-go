@@ -26,11 +26,11 @@ import (
 type tlcpSigType uint8
 
 const (
-	tlcpSigNone     tlcpSigType = 0
-	tlcpSigRSA256   tlcpSigType = 1 // rsa_sha256
-	tlcpSigRSASM3   tlcpSigType = 2 // rsa_sm3
-	tlcpSigECCSM3   tlcpSigType = 3 // ecc_sm3 (SM2+SM3)
-	tlcpSigIBSSM3   tlcpSigType = 4 // ibs_sm3
+	tlcpSigNone   tlcpSigType = 0
+	tlcpSigRSA256 tlcpSigType = 1 // rsa_sha256
+	tlcpSigRSASM3 tlcpSigType = 2 // rsa_sm3
+	tlcpSigECCSM3 tlcpSigType = 3 // ecc_sm3 (SM2+SM3)
+	tlcpSigIBSSM3 tlcpSigType = 4 // ibs_sm3
 )
 
 // tlcpSigTypeForSuite returns the handshake signature type for a negotiated
@@ -89,6 +89,8 @@ func tlcpSignHandshake(rand io.Reader, sigType tlcpSigType, priv crypto.PrivateK
 		opts = crypto.SHA256
 	case tlcpSigRSASM3, tlcpSigIBSSM3:
 		return nil, fmt.Errorf("tlcp: handshake signature type %d not implemented", sigType)
+	default:
+		return nil, fmt.Errorf("tlcp: unknown handshake signature type %d", sigType)
 	}
 	return signer.Sign(rand, tbs, opts)
 }

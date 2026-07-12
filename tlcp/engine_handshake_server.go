@@ -3,6 +3,7 @@ package tlcp
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -27,10 +28,10 @@ import (
 
 // tlcpServerCerts carries the server's dual certificate material.
 type tlcpServerCerts struct {
-	signCertDER []byte        // signing certificate leaf DER
-	encCertDER  []byte        // encryption certificate leaf DER
-	chainDER    [][]byte      // optional CA chain DERs (appended after the two leaves)
-	signSigner  crypto.Signer // signing cert private key (for SKE signature)
+	signCertDER  []byte           // signing certificate leaf DER
+	encCertDER   []byte           // encryption certificate leaf DER
+	chainDER     [][]byte         // optional CA chain DERs (appended after the two leaves)
+	signSigner   crypto.Signer    // signing cert private key (for SKE signature)
 	encDecrypter crypto.Decrypter // encryption cert private key (for PMS decryption)
 }
 
@@ -161,6 +162,7 @@ func (c *tlcpConn) serverHandshakeReal() error {
 	// 7b. Read optional client Certificate (if we sent CertificateRequest).
 	var clientSignPub *ecdsa.PublicKey
 	var clientEncPub *ecdsa.PublicKey
+	var clientSignCert *x509.Certificate
 	if wantClientCert {
 		ccData, err := c.readHandshake(transcript)
 		if err != nil {
@@ -170,8 +172,10 @@ func (c *tlcpConn) serverHandshakeReal() error {
 		if !cc.unmarshal(ccData) {
 			return errors.New("tlcp: failed to parse client Certificate")
 		}
+		// Store for ConnectionState.PeerCertificates + session cache.
+		c.peerCertificates = cc.certificates
 		if len(cc.certificates) > 0 {
-			clientSignCert, err := polluxsmx509.ParseCertificate(cc.certificates[0])
+			clientSignCert, err = polluxsmx509.ParseCertificate(cc.certificates[0])
 			if err != nil {
 				return fmt.Errorf("tlcp: parse client sign cert: %w", err)
 			}
@@ -194,6 +198,32 @@ func (c *tlcpConn) serverHandshakeReal() error {
 		}
 		if isECDHE && clientEncPub == nil {
 			return errors.New("tlcp: ECDHE requires a client encryption certificate")
+		}
+		// RequireAnyClientCert / RequireAndVerifyClientCert: a cert MUST be
+		// presented regardless of whether clientRoots is configured.
+		if config.clientAuth >= RequireAnyClientCert && clientSignCert == nil {
+			return errors.New("tlcp: client did not provide a certificate")
+		}
+		// 客户端签名证书链校验：防 rogue（不受信 CA 签发的）客户端证书。
+		// CertificateVerify 只证明私钥持有，不证明 CA 信任链；此处补链校验。
+		// config.clientRoots 仅在 ClientAuth >= VerifyClientCertIfGiven 且配置了
+		// ClientCACertificates 时非 nil。
+		if config.clientRoots != nil {
+			// RequireAndVerifyClientCert：客户端必须给证书且通过校验。
+			if config.clientAuth >= RequireAndVerifyClientCert && clientSignCert == nil {
+				return errors.New("tlcp: client did not provide a certificate")
+			}
+			// VerifyClientCertIfGiven / RequireAndVerifyClientCert：给了就验。
+			// KeyUsages=ClientAuth：客户端证书应含 ExtKeyUsageClientAuth
+			// （否则 stdlib/gmsm 默认按 ServerAuth 校验会误拒）。
+			if clientSignCert != nil {
+				if err := polluxsmx509.Verify(clientSignCert, polluxsmx509.VerifyOptions{
+					Roots:     config.clientRoots,
+					KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+				}); err != nil {
+					return fmt.Errorf("tlcp: client certificate verification failed: %w", err)
+				}
+			}
 		}
 	}
 
@@ -354,12 +384,12 @@ func (c *tlcpConn) createNewServerSession(serverHello *tlcpServerHelloMsg, maste
 	peerCertsCopy := make([][]byte, len(c.peerCertificates))
 	copy(peerCertsCopy, c.peerCertificates)
 	sess := &tlcpSessionState{
-		sessionID:       serverHello.sessionID,
-		version:         c.vers,
-		cipherSuite:     c.cipherSuite,
-		masterSecret:    msCopy,
+		sessionID:        serverHello.sessionID,
+		version:          c.vers,
+		cipherSuite:      c.cipherSuite,
+		masterSecret:     msCopy,
 		peerCertificates: peerCertsCopy,
-		createdAt:       time.Now(),
+		createdAt:        time.Now(),
 	}
 	c.config.sessionCache.Put(tlcpSessionKeyHex(sess.sessionID), sess)
 }
@@ -378,7 +408,10 @@ func (c *tlcpConn) readClientCCSAndFinished(transcript *tlcpFinishedHash, master
 	}
 	want := transcript.clientSum(masterSecret)
 	if constantTimeEq(fin.verifyData, want) != 1 {
-		return fmt.Errorf("tlcp: client's Finished verify_data mismatch (got %x want %x)", fin.verifyData, want)
+		// Do not leak the expected verify_data — it is derived from the
+		// master secret and transcript hash; exposing it could enable
+		// Finished-message oracle attacks or session compromise.
+		return errors.New("tlcp: client's Finished verify_data mismatch")
 	}
 	transcript.Write(finData)
 	return nil

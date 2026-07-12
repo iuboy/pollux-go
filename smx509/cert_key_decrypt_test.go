@@ -99,9 +99,10 @@ func TestDecryptPEMPrivateKey_ECPKCSEncrypted(t *testing.T) {
 	if block == nil {
 		t.Fatal("result is not valid PEM")
 	}
-	// SM2 key marshaled via smx509 produces PKCS#8 DER, so type is "PRIVATE KEY"
-	if block.Type != "PRIVATE KEY" {
-		t.Errorf("expected PRIVATE KEY, got %s", block.Type)
+	// SM2 key marshaled via smx509.MarshalECPrivateKey produces SEC1 DER,
+	// detectKeyType now correctly recognizes it as "EC PRIVATE KEY".
+	if block.Type != "EC PRIVATE KEY" {
+		t.Errorf("expected EC PRIVATE KEY, got %s", block.Type)
 	}
 }
 

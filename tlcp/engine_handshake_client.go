@@ -3,6 +3,7 @@ package tlcp
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -106,6 +107,23 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	if suite == nil {
 		return fmt.Errorf("tlcp: server selected unknown cipher suite %04x", serverHello.cipherSuite)
 	}
+	// Verify the server's choice is one we actually offered, preventing
+	// downgrade attacks where a malicious server selects a suite the client
+	// did not advertise.
+	offers := hello.cipherSuites
+	if len(offers) == 0 {
+		offers = config.cipherSuites
+	}
+	suiteOffered := false
+	for _, id := range offers {
+		if id == serverHello.cipherSuite {
+			suiteOffered = true
+			break
+		}
+	}
+	if !suiteOffered {
+		return fmt.Errorf("tlcp: server selected cipher suite %04x that was not offered", serverHello.cipherSuite)
+	}
 	if serverHello.compressionMethod != 0 {
 		return errors.New("tlcp: server selected non-null compression")
 	}
@@ -188,8 +206,51 @@ func (c *tlcpConn) clientHandshakeReal() error {
 		}
 	}
 
-	// (Optional) certificate verification against root CAs — stubbed; full
-	// verification lands with root-CA wiring.
+	// 6b. Verify the server's dual-certificate chain against configured root CAs.
+	if !config.insecureSkipVerify {
+		roots := polluxsmx509.NewCertPool()
+		for _, raw := range config.rootCAs {
+			rc, err := polluxsmx509.ParseCertificate(raw)
+			if err != nil {
+				return fmt.Errorf("tlcp: failed to parse root CA: %w", err)
+			}
+			roots.AddCert(rc)
+		}
+		if roots.Len() == 0 {
+			return errors.New("tlcp: no root CAs configured for verification")
+		}
+		// Build an intermediates pool from the extra certs in the chain
+		// (certMsg.certificates[2:] are intermediate CA certs).
+		intermediates := polluxsmx509.NewCertPool()
+		for _, raw := range certMsg.certificates[2:] {
+			if ic, err := polluxsmx509.ParseCertificate(raw); err == nil {
+				intermediates.AddCert(ic)
+			}
+		}
+		// Verify the signing certificate chain (used for ServerKeyExchange/
+		// CertificateVerify signatures) against the root pool.
+		if err := polluxsmx509.Verify(signCert, polluxsmx509.VerifyOptions{
+			Roots:         roots,
+			Intermediates: intermediates,
+			DNSName:       config.serverName,
+			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		}); err != nil {
+			return fmt.Errorf("tlcp: server certificate verification failed: %w", err)
+		}
+		// Verify the encryption certificate chain as well.
+		if err := polluxsmx509.Verify(encCert, polluxsmx509.VerifyOptions{
+			Roots:         roots,
+			Intermediates: intermediates,
+			DNSName:       config.serverName,
+			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		}); err != nil {
+			return fmt.Errorf("tlcp: server encryption certificate verification failed: %w", err)
+		}
+		// Verify dual-cert pairing constraints (same CA, correct key usages).
+		if err := polluxsmx509.VerifyDualCerts(signCert, encCert); err != nil {
+			return fmt.Errorf("tlcp: dual certificate pair validation failed: %w", err)
+		}
+	}
 
 	// 7. Read optional CertificateRequest, then ServerHelloDone.
 	nextData, err := c.readHandshake(transcript)
@@ -215,14 +276,16 @@ func (c *tlcpConn) clientHandshakeReal() error {
 		return errors.New("tlcp: failed to parse ServerHelloDone")
 	}
 
-	// 7b. If the server requested a certificate and we have one, send the
-	// client Certificate [sign, enc] then CertificateVerify (ECDHE requires
-	// both a signing cert and an encryption cert for MQV).
+	// 7b. If the server requested a certificate, send a Certificate message.
+	// Per TLS/TLCP, after a CertificateRequest the client MUST send a
+	// Certificate message (which may be empty) to avoid handshake desync.
 	var pms []byte
-	if certRequested && config.clientCerts != nil {
-		clientCertMsg := &tlcpCertificateMsg{
-			certificates: [][]byte{config.clientCerts.signCertDER, config.clientCerts.encCertDER},
+	if certRequested {
+		var certs [][]byte
+		if config.clientCerts != nil {
+			certs = [][]byte{config.clientCerts.signCertDER, config.clientCerts.encCertDER}
 		}
+		clientCertMsg := &tlcpCertificateMsg{certificates: certs}
 		if err := c.writeHandshakeRecord(clientCertMsg, transcript); err != nil {
 			return err
 		}
@@ -330,12 +393,12 @@ func (c *tlcpConn) createNewClientSession(serverHello *tlcpServerHelloMsg, maste
 	peerCertsCopy := make([][]byte, len(c.peerCertificates))
 	copy(peerCertsCopy, c.peerCertificates)
 	sess := &tlcpSessionState{
-		sessionID:       serverHello.sessionID,
-		version:         c.vers,
-		cipherSuite:     c.cipherSuite,
-		masterSecret:    msCopy,
+		sessionID:        serverHello.sessionID,
+		version:          c.vers,
+		cipherSuite:      c.cipherSuite,
+		masterSecret:     msCopy,
 		peerCertificates: peerCertsCopy,
-		createdAt:       time.Now(),
+		createdAt:        time.Now(),
 	}
 	key := tlcpSessionKeyHex(sess.sessionID)
 	c.config.sessionCache.Put(key, sess)

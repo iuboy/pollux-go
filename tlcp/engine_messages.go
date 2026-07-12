@@ -64,15 +64,6 @@ func tlcpReadHeader(s *cryptobyte.String, msgType uint8) bool {
 	return true
 }
 
-// addFixedBytes appends v asserting len(v)==n (cryptobyte has no direct helper).
-func tlcpAddFixedBytes(b *cryptobyte.Builder, v []byte, n int) {
-	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		_ = n // length is implicit via AddBytes; validation is on read side
-		b.AddBytes(v)
-	})
-	_ = fmt.Sprintf // keep fmt import if needed later; harmless
-}
-
 // =====================================================================
 // ClientHello (GB/T 38636-2020 §6.4.5.2)
 // =====================================================================
@@ -339,16 +330,16 @@ func (m *tlcpClientHelloMsg) unmarshalExtensions(extensions cryptobyte.String) b
 // =====================================================================
 
 type tlcpServerHelloMsg struct {
-	raw             []byte
-	version         uint16
-	random          []byte // 32 bytes
-	sessionID       []byte
-	cipherSuite     uint16
+	raw               []byte
+	version           uint16
+	random            []byte // 32 bytes
+	sessionID         []byte
+	cipherSuite       uint16
 	compressionMethod uint8
-	ocspStapling    bool
-	ocspResponse    []byte
-	alpnProtocol    string
-	serverNameAck   bool
+	ocspStapling      bool
+	ocspResponse      []byte
+	alpnProtocol      string
+	serverNameAck     bool
 }
 
 func (m *tlcpServerHelloMsg) tlcpMsgType() uint8 { return tlcpTypeServerHello }
@@ -654,7 +645,7 @@ func (m *tlcpCertificateVerifyMsg) unmarshal(data []byte) bool {
 // =====================================================================
 
 type tlcpClientKeyExchangeMsg struct {
-	raw       []byte
+	raw        []byte
 	ciphertext []byte
 }
 

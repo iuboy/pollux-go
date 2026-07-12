@@ -10,8 +10,8 @@ import (
 // closure, and reports whether the fields match the original. The comparison
 // closure returns true if equal.
 type tlcpMsgRoundTrip[T any] struct {
-	name     string
-	marshal  func(m *T) ([]byte, error)
+	name      string
+	marshal   func(m *T) ([]byte, error)
 	unmarshal func(out *T, data []byte) bool
 }
 
@@ -19,16 +19,16 @@ type tlcpMsgRoundTrip[T any] struct {
 
 func TestTLCPMsg_ClientHello_RoundTrip(t *testing.T) {
 	orig := &tlcpClientHelloMsg{
-		version:            tlcpVersionTLCP,
-		random:             bytes.Repeat([]byte{0x11}, 32),
-		sessionID:          []byte{0x01, 0x02, 0x03},
-		cipherSuites:       []uint16{SuiteECC_SM2_SM4_GCM_SM3, SuiteECC_SM2_SM4_CBC_SM3},
-		compressionMethods: []uint8{0}, // null compression only
-		serverName:         "example.com",
-		supportedCurves:    []tlcpCurveID{tlcpCurveSM2},
+		version:                      tlcpVersionTLCP,
+		random:                       bytes.Repeat([]byte{0x11}, 32),
+		sessionID:                    []byte{0x01, 0x02, 0x03},
+		cipherSuites:                 []uint16{SuiteECC_SM2_SM4_GCM_SM3, SuiteECC_SM2_SM4_CBC_SM3},
+		compressionMethods:           []uint8{0}, // null compression only
+		serverName:                   "example.com",
+		supportedCurves:              []tlcpCurveID{tlcpCurveSM2},
 		supportedSignatureAlgorithms: []tlcpSignatureScheme{tlcpSigSM2WithSM3},
-		alpnProtocols:      []string{"h2", "http/1.1"},
-		ocspStapling:       true,
+		alpnProtocols:                []string{"h2", "http/1.1"},
+		ocspStapling:                 true,
 	}
 	data, err := orig.marshal()
 	if err != nil {

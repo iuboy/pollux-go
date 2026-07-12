@@ -56,10 +56,12 @@ func ReadCryptoFrame(b []byte) (offset uint64, data []byte, n int, err error) {
 		return 0, nil, 0, fmt.Errorf("quicgm: read CRYPTO length: %w", err)
 	}
 	pos += m
-	end := pos + int(length)
-	if end > len(b) {
+	// Bounds-check in uint64 space to avoid int truncation on 32-bit platforms.
+	remaining := uint64(len(b) - pos)
+	if remaining < length {
 		return 0, nil, 0, fmt.Errorf("quicgm: CRYPTO length %d exceeds remaining %d bytes", length, len(b)-pos)
 	}
+	end := pos + int(length)
 	data = make([]byte, length)
 	copy(data, b[pos:end])
 	return offset, data, end, nil

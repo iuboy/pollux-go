@@ -121,7 +121,7 @@ func NewConfig() *Config {
 	return &Config{
 		Version:            Version11,
 		ClientAuth:         NoClientCert,
-		CipherSuites:       defaultCipherSuites,
+		CipherSuites:       DefaultCipherSuites(),
 		MinVersion:         tls.VersionTLS12,
 		MaxVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: false,
@@ -169,11 +169,22 @@ func configToNative(c *Config, isClient bool) (*tlcpEngineConfig, error) {
 	}
 	if !isClient && c.ClientAuth >= RequestClientCert {
 		nc.requestClientCert = true
+		nc.clientAuth = c.ClientAuth
 		// RequireAndVerifyClientCert needs client CA material to verify against;
 		// refuse to start the handshake if none is configured (matches stdlib
 		// crypto/tls behavior and prevents silently accepting any client cert).
 		if c.ClientAuth >= VerifyClientCertIfGiven && len(c.ClientCACertificates) == 0 {
 			return nil, errors.New("tlcp: RequireAndVerifyClientCert requires ClientCACertificates")
+		}
+		// Build the client CA pool for chain verification during the handshake.
+		// Without this, a rogue (untrusted-CA-signed) client cert would be accepted
+		// because CertificateVerify only proves private-key possession, not CA trust.
+		if c.ClientAuth >= VerifyClientCertIfGiven && len(c.ClientCACertificates) > 0 {
+			pool := polluxsmx509.NewCertPool()
+			for _, ca := range c.ClientCACertificates {
+				pool.AddCert(ca)
+			}
+			nc.clientRoots = pool
 		}
 	}
 	for _, cert := range c.SignRootCertificates {

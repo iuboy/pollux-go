@@ -216,3 +216,74 @@ func TestHandshakeSecrets_ZeroAll(t *testing.T) {
 	nilH.ZeroAll()
 	(&HandshakeSecrets{}).ZeroAll()
 }
+
+// TestHandleNewSessionTicket_RequiresClientFinished is the regression guard for
+// the transcript-completeness check in HandleNewSessionTicket. RFC 8446 §4.6.1
+// requires the resumption master secret to be derived over the transcript
+// CH..client Finished. Before the fix, HandleNewSessionTicket only gated on
+// c.masterSecret (set by HandleServerFinished), so a caller that processed a
+// post-handshake NewSessionTicket without first calling ClientFinished would
+// derive the RMS over an incomplete transcript — yielding a PSK the server
+// would reject on the next (resumption) connection.
+//
+// This test drives a handshake through HandleServerFinished only and then
+// asserts HandleNewSessionTicket refuses with a clear error instead of
+// silently producing a bad PSK.
+func TestHandleNewSessionTicket_RequiresClientFinished(t *testing.T) {
+	dcid := []byte{0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28}
+	cert, serverKey := generateTestSM2Cert(t)
+	server, err := NewServerHandshakerWithConfig(ServerConfig{
+		DCID:                         dcid,
+		Certificate:                  cert,
+		PrivateKey:                   serverKey,
+		SessionTicketKeys:            func() [][]byte { return [][]byte{bytes.Repeat([]byte{0xAB}, SessionTicketKeyLen)} },
+	})
+	if err != nil {
+		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
+	}
+	client, err := NewClientHandshakerWithConfig(ClientConfig{DCID: dcid, InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
+	}
+	ch, err := client.ClientHello()
+	if err != nil {
+		t.Fatalf("ClientHello: %v", err)
+	}
+	if err := server.HandleClientHello(ch); err != nil {
+		t.Fatalf("HandleClientHello: %v", err)
+	}
+	sh, ee, certMsg, cv, fin, err := server.ServerFlight()
+	if err != nil {
+		t.Fatalf("ServerFlight: %v", err)
+	}
+	if err := client.HandleServerFlight(sh, ee, certMsg, cv, fin); err != nil {
+		t.Fatalf("HandleServerFlight: %v", err)
+	}
+	// Server needs the client Finished to issue a ticket; do it on a throwaway
+	// copy of the client state so the real client retains "not finished" for
+	// the negative test below.
+	cfForTicket, err := client.ClientFinished()
+	if err != nil {
+		t.Fatalf("ClientFinished (for ticket): %v", err)
+	}
+	if err := server.HandleClientFinished(cfForTicket); err != nil {
+		t.Fatalf("HandleClientFinished: %v", err)
+	}
+	ticketMsg, err := server.NewSessionTicket(7200, 0x12345678)
+	if err != nil {
+		t.Fatalf("NewSessionTicket: %v", err)
+	}
+	_, ticketBody, _, err := ReadHandshakeMessage(ticketMsg)
+	if err != nil {
+		t.Fatalf("read ticket: %v", err)
+	}
+	// Reset the client's "ClientFinished ran" flag to exercise the guard: at
+	// this point ClientFinished() has already appended the Finished message to
+	// the transcript, but the flag is what the gate checks. HandleNewSessionTicket
+	// must refuse — in the real buggy scenario the transcript would also lack
+	// the Finished message, but the flag is the authoritative guard.
+	client.clientFinishedSent = false
+	if _, _, _, err := client.HandleNewSessionTicket(ticketBody); err == nil {
+		t.Fatal("HandleNewSessionTicket succeeded with clientFinishedSent=false (regression: RMS would be derived over wrong transcript)")
+	}
+}

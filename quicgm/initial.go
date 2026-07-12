@@ -50,6 +50,9 @@ func SealInitialPacket(dcid, scid, token []byte, pn uint64, payload []byte) ([]b
 	hdr := make([]byte, 0, 64)
 	hdr = append(hdr, firstByte)
 	hdr = appendUint32(hdr, QUICVersion1)
+	if len(dcid) == 0 {
+		return nil, errors.New("quicgm: dcid must be non-empty (it seeds the Initial secret)")
+	}
 	if err := checkCIDLen("dcid", dcid); err != nil {
 		return nil, err
 	}

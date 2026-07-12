@@ -64,15 +64,6 @@ func tlcpReadHeader(s *cryptobyte.String, msgType uint8) bool {
 	return true
 }
 
-// addFixedBytes appends v asserting len(v)==n (cryptobyte has no direct helper).
-func tlcpAddFixedBytes(b *cryptobyte.Builder, v []byte, n int) {
-	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		_ = n // length is implicit via AddBytes; validation is on read side
-		b.AddBytes(v)
-	})
-	_ = fmt.Sprintf // keep fmt import if needed later; harmless
-}
-
 // =====================================================================
 // ClientHello (GB/T 38636-2020 §6.4.5.2)
 // =====================================================================

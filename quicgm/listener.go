@@ -98,7 +98,11 @@ func withTicketCollector(qcfg *quic.Config, conn *Conn) *quic.Config {
 func (c *Conn) SessionTicket() (identity, psk []byte, ticketAgeAdd uint32, ok bool) {
 	c.ticketMu.Lock()
 	defer c.ticketMu.Unlock()
-	return c.sessionIdentity, c.sessionPSK, c.ticketAgeAdd, len(c.sessionPSK) > 0
+	// Return defensive copies so internal buffers never escape — the ticket
+	// collector callback reuses the same backing arrays for the next ticket.
+	identity = append([]byte(nil), c.sessionIdentity...)
+	psk = append([]byte(nil), c.sessionPSK...)
+	return identity, psk, c.ticketAgeAdd, len(c.sessionPSK) > 0
 }
 
 // Dial establishes a GM QUIC connection to cfg.Addr. On success the underlying

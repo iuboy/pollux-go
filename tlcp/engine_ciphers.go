@@ -185,6 +185,9 @@ func (f *tlcpPrefixNonceAEAD) Overhead() int { return f.aead.Overhead() }
 // nonce. additionalData is the TLCP record header. The full nonce is built in a
 // local variable — no shared state is mutated.
 func (f *tlcpPrefixNonceAEAD) Seal(out, explicitNonce, plaintext, additionalData []byte) []byte {
+	if len(explicitNonce) != f.ExplicitNonceSize() {
+		panic(fmt.Sprintf("tlcp: explicit nonce length %d, want %d", len(explicitNonce), f.ExplicitNonceSize()))
+	}
 	var nonce [tlcpAEADNonceLength]byte
 	copy(nonce[:], f.implicitPrefix[:])
 	copy(nonce[tlcpNoncePrefixLength:], explicitNonce)
@@ -193,6 +196,9 @@ func (f *tlcpPrefixNonceAEAD) Seal(out, explicitNonce, plaintext, additionalData
 
 // Open decrypts. explicitNonce is the 8 bytes read from the record.
 func (f *tlcpPrefixNonceAEAD) Open(out, explicitNonce, ciphertext, additionalData []byte) ([]byte, error) {
+	if len(explicitNonce) != f.ExplicitNonceSize() {
+		return nil, fmt.Errorf("tlcp: explicit nonce length %d, want %d", len(explicitNonce), f.ExplicitNonceSize())
+	}
 	var nonce [tlcpAEADNonceLength]byte
 	copy(nonce[:], f.implicitPrefix[:])
 	copy(nonce[tlcpNoncePrefixLength:], explicitNonce)

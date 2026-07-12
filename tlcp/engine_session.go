@@ -86,13 +86,17 @@ func (c *tlcpLRUSessionCache) Put(sessionKey string, cs *tlcpSessionState) {
 	if cs == nil {
 		// Delete semantics.
 		if el, ok := c.m[sessionKey]; ok {
+			oldEntry := el.Value.(*tlcpLruEntry)
+			zeroBytes(oldEntry.cs.masterSecret)
 			c.order.Remove(el)
 			delete(c.m, sessionKey)
 		}
 		return
 	}
 	if el, ok := c.m[sessionKey]; ok {
-		el.Value.(*tlcpLruEntry).cs = cs
+		oldEntry := el.Value.(*tlcpLruEntry)
+		zeroBytes(oldEntry.cs.masterSecret)
+		oldEntry.cs = cs
 		c.order.MoveToFront(el)
 		return
 	}

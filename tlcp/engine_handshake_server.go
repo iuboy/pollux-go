@@ -401,7 +401,10 @@ func (c *tlcpConn) readClientCCSAndFinished(transcript *tlcpFinishedHash, master
 	}
 	want := transcript.clientSum(masterSecret)
 	if constantTimeEq(fin.verifyData, want) != 1 {
-		return fmt.Errorf("tlcp: client's Finished verify_data mismatch (got %x want %x)", fin.verifyData, want)
+		// Do not leak the expected verify_data — it is derived from the
+		// master secret and transcript hash; exposing it could enable
+		// Finished-message oracle attacks or session compromise.
+		return errors.New("tlcp: client's Finished verify_data mismatch")
 	}
 	transcript.Write(finData)
 	return nil

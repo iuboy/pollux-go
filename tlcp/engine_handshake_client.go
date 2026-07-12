@@ -106,6 +106,23 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	if suite == nil {
 		return fmt.Errorf("tlcp: server selected unknown cipher suite %04x", serverHello.cipherSuite)
 	}
+	// Verify the server's choice is one we actually offered, preventing
+	// downgrade attacks where a malicious server selects a suite the client
+	// did not advertise.
+	offers := hello.cipherSuites
+	if len(offers) == 0 {
+		offers = config.cipherSuites
+	}
+	suiteOffered := false
+	for _, id := range offers {
+		if id == serverHello.cipherSuite {
+			suiteOffered = true
+			break
+		}
+	}
+	if !suiteOffered {
+		return fmt.Errorf("tlcp: server selected cipher suite %04x that was not offered", serverHello.cipherSuite)
+	}
 	if serverHello.compressionMethod != 0 {
 		return errors.New("tlcp: server selected non-null compression")
 	}

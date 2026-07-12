@@ -312,7 +312,17 @@ func tlcpECDHEClientProcessSKE(sigType tlcpSigType, signCertPub *ecdsa.PublicKey
 	if len(skeKey) < 4 {
 		return nil, errors.New("tlcp: ECDHE ServerKeyExchange too short")
 	}
+	// Validate curve_type and named_curve (must match tlcpParseECDHEParams).
+	if skeKey[0] != tlcpECDHECurveTypeNamed {
+		return nil, fmt.Errorf("tlcp: ECDHE unsupported curve_type %d", skeKey[0])
+	}
+	if binary.BigEndian.Uint16(skeKey[1:3]) != uint16(tlcpCurveSM2) {
+		return nil, fmt.Errorf("tlcp: ECDHE unsupported named_curve %d", binary.BigEndian.Uint16(skeKey[1:3]))
+	}
 	pubLen := int(skeKey[3])
+	if pubLen != tlcpSM2PointLength {
+		return nil, fmt.Errorf("tlcp: ECDHE unexpected point length %d", pubLen)
+	}
 	if len(skeKey) < 4+pubLen+2 {
 		return nil, errors.New("tlcp: ECDHE ServerKeyExchange truncated")
 	}

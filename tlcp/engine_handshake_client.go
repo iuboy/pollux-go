@@ -3,6 +3,7 @@ package tlcp
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -205,8 +206,36 @@ func (c *tlcpConn) clientHandshakeReal() error {
 		}
 	}
 
-	// (Optional) certificate verification against root CAs — stubbed; full
-	// verification lands with root-CA wiring.
+	// 6b. Verify the server's dual-certificate chain against configured root CAs.
+	if !config.insecureSkipVerify {
+		roots := polluxsmx509.NewCertPool()
+		for _, raw := range config.rootCAs {
+			if rc, err := polluxsmx509.ParseCertificate(raw); err == nil {
+				roots.AddCert(rc)
+			}
+		}
+		// Verify the signing certificate chain (used for ServerKeyExchange/
+		// CertificateVerify signatures) against the root pool.
+		if err := polluxsmx509.Verify(signCert, polluxsmx509.VerifyOptions{
+			Roots:     roots,
+			DNSName:   config.serverName,
+			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		}); err != nil {
+			return fmt.Errorf("tlcp: server certificate verification failed: %w", err)
+		}
+		// Verify the encryption certificate chain as well.
+		if err := polluxsmx509.Verify(encCert, polluxsmx509.VerifyOptions{
+			Roots:     roots,
+			DNSName:   config.serverName,
+			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		}); err != nil {
+			return fmt.Errorf("tlcp: server encryption certificate verification failed: %w", err)
+		}
+		// Verify dual-cert pairing constraints (same CA, correct key usages).
+		if err := polluxsmx509.VerifyDualCerts(signCert, encCert); err != nil {
+			return fmt.Errorf("tlcp: dual certificate pair validation failed: %w", err)
+		}
+	}
 
 	// 7. Read optional CertificateRequest, then ServerHelloDone.
 	nextData, err := c.readHandshake(transcript)

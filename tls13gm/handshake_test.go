@@ -233,10 +233,10 @@ func TestHandleNewSessionTicket_RequiresClientFinished(t *testing.T) {
 	dcid := []byte{0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28}
 	cert, serverKey := generateTestSM2Cert(t)
 	server, err := NewServerHandshakerWithConfig(ServerConfig{
-		DCID:                         dcid,
-		Certificate:                  cert,
-		PrivateKey:                   serverKey,
-		SessionTicketKeys:            func() [][]byte { return [][]byte{bytes.Repeat([]byte{0xAB}, SessionTicketKeyLen)} },
+		DCID:              dcid,
+		Certificate:       cert,
+		PrivateKey:        serverKey,
+		SessionTicketKeys: func() [][]byte { return [][]byte{bytes.Repeat([]byte{0xAB}, SessionTicketKeyLen)} },
 	})
 	if err != nil {
 		t.Fatalf("NewServerHandshakerWithConfig: %v", err)

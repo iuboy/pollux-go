@@ -28,13 +28,13 @@ func (rejectingAntiReplayCache) Check([]byte, time.Duration) bool { return false
 // remembers each digest for `window`; attempts older than `maxAge` (typically
 // the ticket lifetime) are rejected as expired.
 type memoryAntiReplayCache struct {
-	mu          sync.Mutex
-	entries     map[string]time.Time // digest -> expiry
-	window      time.Duration
-	maxAge      time.Duration
-	now         func() time.Time
-	lastSweep   time.Time
-	sweepEvery  time.Duration
+	mu         sync.Mutex
+	entries    map[string]time.Time // digest -> expiry
+	window     time.Duration
+	maxAge     time.Duration
+	now        func() time.Time
+	lastSweep  time.Time
+	sweepEvery time.Duration
 }
 
 // NewAntiReplayCache returns a process-local anti-replay cache. window is how

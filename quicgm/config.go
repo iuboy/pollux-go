@@ -111,6 +111,12 @@ func (c *ClientConfig) tls13ClientConfig() (*tls13gm.ClientConfig, error) {
 	if c.ServerName == "" && !c.InsecureSkipVerify {
 		return nil, errNoServerName
 	}
+	// 0-RTT requires a resumption PSK to key the early secret and binder;
+	// without one the offer is meaningless and the handshake will fail or
+	// behave undefinedly. Fail closed with a clear error instead.
+	if c.EarlyData && len(c.ResumptionPSK) == 0 {
+		return nil, errors.New("quicgm: EarlyData requires a non-empty ResumptionPSK")
+	}
 	return &tls13gm.ClientConfig{
 		ServerName:                    c.ServerName,
 		Roots:                         c.Roots,

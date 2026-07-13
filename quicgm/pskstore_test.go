@@ -38,9 +38,9 @@ func TestTicketKeyRotator_EmptySeedOK(t *testing.T) {
 
 // TestTicketKeyRotator_FullSeedDeterministic confirms that a full-length seed
 // is used verbatim as the initial current TEK (deterministic across replicas)
-// — the property the silent fallback previously broke. We read the rotator's
-// initial `current` field directly because keys() performs a lazy rotation on
-// first call (rotatedAt is the zero time), which is unrelated to seeding.
+// AND that keys() returns that seed-derived key on its first call. Previously
+// rotatedAt was the zero time, so keys() immediately rotated the seed away to
+// a random key — breaking multi-replica determinism.
 func TestTicketKeyRotator_FullSeedDeterministic(t *testing.T) {
 	seed := bytes.Repeat([]byte{0xA5}, tls13gm.SessionTicketKeyLen)
 	r1, err := newTicketKeyRotator(seed, time.Hour)
@@ -57,12 +57,43 @@ func TestTicketKeyRotator_FullSeedDeterministic(t *testing.T) {
 	if !bytes.Equal(r1.current, r2.current) {
 		t.Error("same full-length seed must produce identical initial current TEKs (multi-replica determinism)")
 	}
+	// The seed-derived key must survive the first keys() call (the regression:
+	// rotatedAt=zero used to rotate it away immediately).
+	if got := r1.keys()[0]; !bytes.Equal(got, seed) {
+		t.Errorf("first keys() call must return the seed-derived key, got %x want %x", got, seed)
+	}
+	if got := r2.keys()[0]; !bytes.Equal(got, seed) {
+		t.Errorf("first keys() call must return the seed-derived key, got %x want %x", got, seed)
+	}
+}
+
+// TestTicketKeyRotator_FirstCallDoesNotRotate is the focused regression guard
+// for the rotatedAt=zero-time bug: the first keys() call (well within
+// rotationPeriod of construction) must NOT rotate. We inject a controllable
+// clock so the test is deterministic regardless of when it runs.
+func TestTicketKeyRotator_FirstCallDoesNotRotate(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := start
+	r, err := newTicketKeyRotator(nil, time.Hour)
+	if err != nil {
+		t.Fatalf("newTicketKeyRotator: %v", err)
+	}
+	r.now = func() time.Time { return now }
+	original := r.current
+	// Advance only 1 minute — far less than the 1-hour rotationPeriod.
+	now = start.Add(time.Minute)
+	got := r.keys()
+	if len(got) != 1 || !bytes.Equal(got[0], original) {
+		t.Fatalf("keys() at +%v should return the original key without rotating; got %d keys, original=%x", time.Minute, len(got), original)
+	}
+	if !bytes.Equal(r.current, original) {
+		t.Fatal("keys() rotated the key within the rotation period (rotatedAt was not initialized)")
+	}
 }
 
 // TestTicketKeyRotator_LongSeedTruncated confirms a seed longer than the key
 // length is still accepted (first SessionTicketKeyLen bytes used), preserving
-// the pre-existing len(seed) >= SessionTicketKeyLen behavior. Reads the
-// initial current field (see FullSeedDeterministic for why not keys()).
+// the pre-existing len(seed) >= SessionTicketKeyLen behavior.
 func TestTicketKeyRotator_LongSeedTruncated(t *testing.T) {
 	seed := bytes.Repeat([]byte{0xB9}, tls13gm.SessionTicketKeyLen+5) // 21 bytes
 	r, err := newTicketKeyRotator(seed, time.Hour)

@@ -74,6 +74,12 @@ func (l *Listener) Addr() net.Addr { return l.inner.Addr() }
 // Conn wraps a GM QUIC connection.
 type Conn struct {
 	inner *quic.Conn
+	// udpConn is the underlying UDP socket owned by a client-side Conn created
+	// via Dial/DialEarly. quic.Dial does not close the supplied PacketConn on
+	// Conn.Close (it passes createdConn=false to its internal Transport), so
+	// the wrapper must close it to avoid FD leaks. nil for server-side Conns
+	// (Accept) where the Listener owns the socket.
+	udpConn *net.UDPConn
 
 	ticketMu        sync.Mutex
 	sessionIdentity []byte
@@ -113,32 +119,9 @@ func (c *Conn) SessionTicket() (identity, psk []byte, ticketAgeAdd uint32, ok bo
 }
 
 // Dial establishes a GM QUIC connection to cfg.Addr. On success the underlying
-// UDP connection is owned by the returned Conn; it is only closed on error.
+// UDP connection is owned by the returned Conn and closed when Close is called.
 func Dial(ctx context.Context, cfg ClientConfig) (*Conn, error) {
-	clientCfg, err := cfg.tls13ClientConfig()
-	if err != nil {
-		return nil, err
-	}
-	udpAddr, err := net.ResolveUDPAddr("udp", cfg.Addr)
-	if err != nil {
-		return nil, err
-	}
-	udpConn, err := net.ListenUDP("udp", nil)
-	if err != nil {
-		return nil, err
-	}
-	conn := &Conn{}
-	qc, err := quic.Dial(ctx, udpConn, udpAddr, &tls.Config{}, withTicketCollector(&quic.Config{
-		GMSM4GCM:          true,
-		GMHandshakeConfig: &quic.GMHandshakeConfig{Client: clientCfg},
-		MaxIdleTimeout:    cfg.idleTimeout(),
-	}, conn))
-	if err != nil {
-		udpConn.Close()
-		return nil, err
-	}
-	conn.inner = qc
-	return conn, nil
+	return dial(ctx, cfg, false)
 }
 
 // DialEarly establishes a GM QUIC connection and returns it before the
@@ -147,6 +130,14 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Conn, error) {
 // before the handshake completes is sent as 0-RTT and accepted only if the
 // server is configured with AllowEarlyData + a valid AntiReplayCache.
 func DialEarly(ctx context.Context, cfg ClientConfig) (*Conn, error) {
+	return dial(ctx, cfg, true)
+}
+
+// dial is the shared client-side dial implementation. early selects
+// quic.DialEarly (0-RTT) over quic.Dial. The created UDP socket is bound to
+// the returned Conn so Conn.Close releases it — quic.Dial does not close the
+// caller-supplied PacketConn.
+func dial(ctx context.Context, cfg ClientConfig, early bool) (*Conn, error) {
 	clientCfg, err := cfg.tls13ClientConfig()
 	if err != nil {
 		return nil, err
@@ -159,12 +150,18 @@ func DialEarly(ctx context.Context, cfg ClientConfig) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	conn := &Conn{}
-	qc, err := quic.DialEarly(ctx, udpConn, udpAddr, &tls.Config{}, withTicketCollector(&quic.Config{
+	conn := &Conn{udpConn: udpConn}
+	qcfg := withTicketCollector(&quic.Config{
 		GMSM4GCM:          true,
 		GMHandshakeConfig: &quic.GMHandshakeConfig{Client: clientCfg},
 		MaxIdleTimeout:    cfg.idleTimeout(),
-	}, conn))
+	}, conn)
+	var qc *quic.Conn
+	if early {
+		qc, err = quic.DialEarly(ctx, udpConn, udpAddr, &tls.Config{}, qcfg)
+	} else {
+		qc, err = quic.Dial(ctx, udpConn, udpAddr, &tls.Config{}, qcfg)
+	}
 	if err != nil {
 		udpConn.Close()
 		return nil, err
@@ -183,8 +180,19 @@ func (c *Conn) AcceptStream(ctx context.Context) (*quic.Stream, error) {
 	return c.inner.AcceptStream(ctx)
 }
 
-// Close closes the connection.
-func (c *Conn) Close() error { return c.inner.CloseWithError(0, "done") }
+// Close closes the connection. For a client-side Conn it also closes the
+// underlying UDP socket, which quic-go does not close on its own (the Dial*
+// path passes createdConn=false to the internal Transport).
+func (c *Conn) Close() error {
+	err := c.inner.CloseWithError(0, "done")
+	if c.udpConn != nil {
+		// Best-effort: report the QUIC close error but always close the socket.
+		if uerr := c.udpConn.Close(); uerr != nil && err == nil {
+			err = uerr
+		}
+	}
+	return err
+}
 
 // RemoteAddr returns the remote address.
 func (c *Conn) RemoteAddr() net.Addr { return c.inner.RemoteAddr() }

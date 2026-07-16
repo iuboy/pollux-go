@@ -201,7 +201,12 @@ func (c *tlcpConn) serverHandshakeReal() error {
 		}
 		// RequireAnyClientCert / RequireAndVerifyClientCert: a cert MUST be
 		// presented regardless of whether clientRoots is configured.
-		if config.clientAuth >= RequireAnyClientCert && clientSignCert == nil {
+		// NOTE: pollux-go's ClientAuthType iota ordering differs from stdlib
+		// crypto/tls — here VerifyClientCertIfGiven (3) > RequireAnyClientCert (2),
+		// so a range check (>= RequireAnyClientCert) would wrongly treat the
+		// optional "verify if given" mode as mandatory. Match only the two modes
+		// that unconditionally require a certificate.
+		if (config.clientAuth == RequireAnyClientCert || config.clientAuth == RequireAndVerifyClientCert) && clientSignCert == nil {
 			return errors.New("tlcp: client did not provide a certificate")
 		}
 		// 客户端签名证书链校验：防 rogue（不受信 CA 签发的）客户端证书。

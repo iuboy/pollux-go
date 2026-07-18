@@ -69,6 +69,47 @@ func OpenWithNonce(key []byte, s Sealed, aad []byte) ([]byte, error) {
 	return aead.Open(nil, s.Nonce, s.Ciphertext, aad)
 }
 
+// SealCombined encrypts plaintext and returns nonce || ciphertext+tag as a
+// single byte slice, with AAD bound to the ciphertext. This format mirrors
+// [github.com/iuboy/pollux-go/aes.SealCombined] so callers can treat AES-256-GCM
+// and SM4-GCM as interchangeable byte-for-byte layouts.
+//
+// Use [OpenCombined] to decrypt. The combined format saves the caller from
+// managing two slices at the cost of one extra allocation on decrypt.
+func SealCombined(key, plaintext, aad []byte) ([]byte, error) {
+	aead, err := NewGCM(key)
+	if err != nil {
+		return nil, err
+	}
+	nonce, err := GenerateNonce()
+	if err != nil {
+		return nil, err
+	}
+	// Seal appends ciphertext+tag to the first argument; passing nonce as dst
+	// yields the desired nonce || ct layout in a single allocation.
+	// cipher.AEAD.Seal returns a single []byte.
+	return aead.Seal(nonce, nonce, plaintext, aad), nil
+}
+
+// OpenCombined decrypts a blob produced by [SealCombined] (nonce ||
+// ciphertext+tag) with the given AAD. It is the inverse of SealCombined.
+//
+// Short inputs are rejected explicitly rather than degrading to an all-zero
+// nonce, which would mask caller misuse (truncated ciphertext, forgotten
+// nonce) as a generic decryption failure.
+func OpenCombined(key, ciphertext, aad []byte) ([]byte, error) {
+	aead, err := NewGCM(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(ciphertext) < aead.NonceSize()+aead.Overhead() {
+		return nil, errNonceMissing
+	}
+	nonce := ciphertext[:aead.NonceSize()]
+	body := ciphertext[aead.NonceSize():]
+	return aead.Open(nil, nonce, body, aad)
+}
+
 // ZeroKey securely zeroes an SM4 key slice. It delegates to
 // memsecure.ZeroBytes, which uses crypto/subtle XOR + unsafe write +
 // runtime.KeepAlive to resist dead-store elimination. Call via defer after

@@ -78,8 +78,8 @@ func (h *hmacSignerVerifier) Verify(tokenString string, v Claims) error {
 // sm2SignerVerifier implements [SignerVerifier] for SM2-SM3.
 type sm2SignerVerifier struct {
 	algo   Algorithm
-	priv   *sm2.PrivateKey   // *gmsmSM2.PrivateKey (embeds ecdsa.PrivateKey)
-	pub    *ecdsa.PublicKey  // sm2.PublicKey is an alias for *ecdsa.PublicKey
+	priv   *sm2.PrivateKey  // *gmsmSM2.PrivateKey (embeds ecdsa.PrivateKey)
+	pub    *ecdsa.PublicKey // sm2.PublicKey is an alias for *ecdsa.PublicKey
 	issuer string
 }
 

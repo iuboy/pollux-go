@@ -92,7 +92,7 @@ func TestArgon2id_VerifyRejectsMalformed(t *testing.T) {
 		"not-a-hash",
 		"$argon2id$v=19$garbage",
 		"$argon2id$v=99$m=1,t=1,p=1$x$x", // bad version
-		"$pbkdf2-sm3$i=1000$x$x",          // wrong scheme
+		"$pbkdf2-sm3$i=1000$x$x",         // wrong scheme
 	} {
 		if h.Verify("any", bad) {
 			t.Errorf("Verify unexpectedly accepted %q", bad)
@@ -175,10 +175,10 @@ func TestPBKDF2SM3_VerifyRejectsMalformed(t *testing.T) {
 	for _, bad := range []string{
 		"",
 		"not-a-hash",
-		"$pbkdf2-sm3$x$x",                 // missing iteration
-		"$pbkdf2-sm3$i=0$x$x",             // non-positive iteration
-		"$pbkdf2-sm3$i=1000$",             // truncated
-		"$argon2id$v=19$m=1,t=1,p=1$x$x",  // wrong scheme
+		"$pbkdf2-sm3$x$x",                // missing iteration
+		"$pbkdf2-sm3$i=0$x$x",            // non-positive iteration
+		"$pbkdf2-sm3$i=1000$",            // truncated
+		"$argon2id$v=19$m=1,t=1,p=1$x$x", // wrong scheme
 	} {
 		if h.Verify("any", bad) {
 			t.Errorf("Verify unexpectedly accepted %q", bad)

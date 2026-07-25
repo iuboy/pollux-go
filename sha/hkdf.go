@@ -25,7 +25,9 @@ func hkdfExpand(prk, info []byte, length int) ([]byte, error) {
 
 	n := (length + Size - 1) / Size
 
-	result := make([]byte, 0, length)
+	// Pre-allocate for exactly n blocks so the append loop never reallocates,
+	// even when length is not a multiple of Size.
+	result := make([]byte, 0, n*Size)
 	var prev []byte
 
 	for i := 1; i <= n; i++ {

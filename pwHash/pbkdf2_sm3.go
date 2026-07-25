@@ -1,7 +1,6 @@
 package pwhash
 
 import (
-	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
@@ -28,8 +27,15 @@ type PBKDF2SM3 struct {
 
 // NewPBKDF2SM3 constructs a pbkdf2-sm3 hasher with the given parameters.
 // Use [DefaultPBKDF2SM3Params] unless you have a specific reason to deviate.
-func NewPBKDF2SM3(p PBKDF2Params) *PBKDF2SM3 {
-	return &PBKDF2SM3{params: p}
+//
+// Returns an error if any parameter is outside the safe range. As with
+// [NewArgon2id], validating at construction prevents a misconfigured hasher
+// from producing an empty-salt or zero-iteration hash on the first Hash call.
+func NewPBKDF2SM3(p PBKDF2Params) (*PBKDF2SM3, error) {
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
+	return &PBKDF2SM3{params: p}, nil
 }
 
 // Algorithm returns "pbkdf2-sm3".
@@ -40,7 +46,7 @@ func (h *PBKDF2SM3) Algorithm() string { return pbkdf2SM3Algo }
 // generated for each call via crypto/rand.
 func (h *PBKDF2SM3) Hash(password string) (string, error) {
 	salt := make([]byte, h.params.SaltLength)
-	if _, err := rand.Read(salt); err != nil {
+	if _, err := readRandom(salt); err != nil {
 		return "", fmt.Errorf("pwhash/pbkdf2-sm3: %w", err)
 	}
 	dk, err := kdf.PBKDF2(

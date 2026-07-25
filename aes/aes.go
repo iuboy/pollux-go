@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -39,7 +40,7 @@ func NewCipher(key []byte) (cipher.Block, error) {
 func GenerateKey() ([]byte, error) {
 	key := make([]byte, KeySize)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
-		return nil, errors.New("aes: failed to generate key")
+		return nil, fmt.Errorf("aes: failed to generate key: %w", err)
 	}
 	return key, nil
 }

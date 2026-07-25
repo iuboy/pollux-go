@@ -1,7 +1,9 @@
 package jwt
 
 import (
+	"bytes"
 	"crypto/ecdsa"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +16,7 @@ import (
 // ─── HS256 / HS512 ───
 
 func TestHS256_RoundTrip(t *testing.T) {
-	sv := NewHS256([]byte("super-secret-key"), "test-issuer")
+	sv := mustHS256(t, "test-issuer")
 	claims := &jwt.RegisteredClaims{
 		Subject:   "user-42",
 		Issuer:    "test-issuer",
@@ -42,7 +44,7 @@ func TestHS256_RoundTrip(t *testing.T) {
 }
 
 func TestHS512_RoundTrip(t *testing.T) {
-	sv := NewHS512([]byte("another-secret"), "")
+	sv := mustHS512(t, "")
 	token, _ := sv.Sign(&jwt.RegisteredClaims{Subject: "x"})
 	if sv.Algorithm() != AlgHS512 {
 		t.Errorf("Algorithm = %s, want HS512", sv.Algorithm())
@@ -53,18 +55,22 @@ func TestHS512_RoundTrip(t *testing.T) {
 }
 
 func TestHS256_RejectsTamperedToken(t *testing.T) {
-	sv := NewHS256([]byte("k"), "iss")
+	sv := mustHS256(t, "iss")
 	token, _ := sv.Sign(&jwt.RegisteredClaims{Subject: "orig"})
-	// Flip the last char of the signature segment.
-	tampered := token[:len(token)-1] + "X"
+	tampered := tamperSignature(t, token)
 	if err := sv.Verify(tampered, &jwt.RegisteredClaims{}); err == nil {
 		t.Error("Verify accepted a tampered token")
 	}
 }
 
 func TestHS256_RejectsWrongSecret(t *testing.T) {
-	signer := NewHS256([]byte("secret-a"), "")
-	verifier := NewHS256([]byte("secret-b"), "")
+	signer := mustHS256(t, "")
+	// A different but length-valid secret for the verifier.
+	otherSecret := bytes.Repeat([]byte("z"), minHS256KeyLen)
+	verifier, err := NewHS256(otherSecret, "")
+	if err != nil {
+		t.Fatalf("NewHS256(otherSecret) err = %v", err)
+	}
 	token, _ := signer.Sign(&jwt.RegisteredClaims{Subject: "x"})
 	if err := verifier.Verify(token, &jwt.RegisteredClaims{}); err == nil {
 		t.Error("Verify accepted token signed with a different secret")
@@ -79,16 +85,31 @@ func TestHS256_RejectsSM2Token(t *testing.T) {
 	sm2SV, _ := NewSM2SM3(priv, &priv.PublicKey, "")
 	sm2Token, _ := sm2SV.Sign(&jwt.RegisteredClaims{Subject: "x"})
 
-	hs256 := NewHS256([]byte("any-secret"), "")
+	hs256 := mustHS256(t, "")
 	if err := hs256.Verify(sm2Token, &jwt.RegisteredClaims{}); err == nil {
 		t.Error("HS256 verifier accepted an SM2 token (alg confusion)")
+	}
+}
+
+// TestNewHS256_RejectsShortKey covers H2: an HMAC secret shorter than the
+// hash output size is rejected at construction, since it would weaken the MAC
+// below its advertised strength (RFC 2104 §3).
+func TestNewHS256_RejectsShortKey(t *testing.T) {
+	if _, err := NewHS256(bytes.Repeat([]byte("k"), minHS256KeyLen-1), ""); err == nil {
+		t.Error("NewHS256 accepted a 31-byte key")
+	}
+}
+
+// TestNewHS512_RejectsShortKey covers H2 for HS512.
+func TestNewHS512_RejectsShortKey(t *testing.T) {
+	if _, err := NewHS512(bytes.Repeat([]byte("k"), minHS512KeyLen-1), ""); err == nil {
+		t.Error("NewHS512 accepted a 63-byte key")
 	}
 }
 
 // ─── SM2-SM3 ───
 
 // newTestSM2Key generates a fresh SM2 keypair for the test. Each test uses its
-// own key to avoid state coupling.
 func newTestSM2Key(t *testing.T) (*sm2.PrivateKey, *ecdsa.PublicKey) {
 	t.Helper()
 	priv, err := sm2.GenerateKeyDefault()
@@ -96,6 +117,36 @@ func newTestSM2Key(t *testing.T) (*sm2.PrivateKey, *ecdsa.PublicKey) {
 		t.Fatalf("sm2.GenerateKeyDefault err = %v", err)
 	}
 	return priv, &priv.PublicKey
+}
+
+// testHS256Secret / testHS512Secret are fixed secrets that satisfy the
+// constructor's minimum key length (H2). They are not secret — the tests only
+// exercise sign/verify mechanics, not key strength.
+var (
+	testHS256Secret = bytes.Repeat([]byte("a"), minHS256KeyLen) // 32 bytes
+	testHS512Secret = bytes.Repeat([]byte("b"), minHS512KeyLen) // 64 bytes
+)
+
+// mustHS256 wraps NewHS256 with the fixed test secret, failing the test on a
+// constructor error (which would only happen if testHS256Secret shrank below
+// the minimum).
+func mustHS256(t *testing.T, issuer string) SignerVerifier {
+	t.Helper()
+	sv, err := NewHS256(testHS256Secret, issuer)
+	if err != nil {
+		t.Fatalf("NewHS256 err = %v", err)
+	}
+	return sv
+}
+
+// mustHS512 is the HS512 analogue of mustHS256.
+func mustHS512(t *testing.T, issuer string) SignerVerifier {
+	t.Helper()
+	sv, err := NewHS512(testHS512Secret, issuer)
+	if err != nil {
+		t.Fatalf("NewHS512 err = %v", err)
+	}
+	return sv
 }
 
 func TestSM2SM3_RoundTrip(t *testing.T) {
@@ -137,10 +188,30 @@ func TestSM2SM3_RejectsTamperedToken(t *testing.T) {
 	priv, pub := newTestSM2Key(t)
 	sv, _ := NewSM2SM3(priv, pub, "")
 	token, _ := sv.Sign(&jwt.RegisteredClaims{Subject: "orig"})
-	tampered := token[:len(token)-1] + "Z"
+	tampered := tamperSignature(t, token)
 	if err := sv.Verify(tampered, &jwt.RegisteredClaims{}); err == nil {
 		t.Error("SM2 verifier accepted a tampered token")
 	}
+}
+
+// tamperSignature flips the first byte of the base64url-decoded signature
+// segment and re-encodes it, guaranteeing a byte-level change. This replaces
+// the previous "flip the last base64 char" approach, which silently no-oped
+// ~7% of the time because the trailing base64 char carries bits outside the
+// signature's byte boundary (SM2 ASN.1 length is not always 6-bit aligned).
+func tamperSignature(t *testing.T, token string) string {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token has %d parts, want 3", len(parts))
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(sig) == 0 {
+		t.Fatalf("decode signature segment: err=%v len=%d", err, len(sig))
+	}
+	sig[0] ^= 0xFF // flip all bits of the first byte — guaranteed to change it
+	parts[2] = base64.RawURLEncoding.EncodeToString(sig)
+	return parts[0] + "." + parts[1] + "." + parts[2]
 }
 
 func TestSM2SM3_RejectsDifferentKey(t *testing.T) {
@@ -160,7 +231,7 @@ func TestSM2SM3_RejectsHS256Token(t *testing.T) {
 	_, pub := newTestSM2Key(t)
 	sm2Verifier, _ := NewSM2SM3(nil, pub, "")
 
-	hs256 := NewHS256([]byte("any-secret"), "")
+	hs256 := mustHS256(t, "")
 	hs256Token, _ := hs256.Sign(&jwt.RegisteredClaims{Subject: "x"})
 
 	if err := sm2Verifier.Verify(hs256Token, &jwt.RegisteredClaims{}); err == nil {
@@ -206,7 +277,7 @@ func TestSigningMethodRegisteredWithLibrary(t *testing.T) {
 // ─── IssueWithExpiry helper ───
 
 func TestIssueWithExpiry_HS256(t *testing.T) {
-	sv := NewHS256([]byte("k"), "iss")
+	sv := mustHS256(t, "iss")
 	token, err := IssueWithExpiry(sv, "sub-1", "iss", time.Hour)
 	if err != nil {
 		t.Fatalf("IssueWithExpiry err = %v", err)

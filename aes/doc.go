@@ -5,9 +5,9 @@
 // (Chinese national cryptography) primitives alongside their international
 // counterparts under a uniform, Go-idiomatic API. This package exists so that
 // callers can treat AES-256-GCM and SM4-GCM as interchangeable: both packages
-// expose NewCipher / GenerateKey / NewGCM / SealRandomNonce / Sealed / Encrypt
-// / Decrypt with matching signatures, differing only in key size (AES-256 =
-// 32 bytes, SM4 = 16 bytes).
+// expose NewCipher / GenerateKey / NewGCM / SealRandomNonce / Sealed /
+// SealCombined / OpenWithNonce / OpenCombined with matching signatures,
+// differing only in key size (AES-256 = 32 bytes, SM4 = 16 bytes).
 //
 // # Why AES-256 only
 //

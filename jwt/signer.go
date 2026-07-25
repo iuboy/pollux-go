@@ -8,6 +8,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/iuboy/pollux-go/internal/memsecure"
 	"github.com/iuboy/pollux-go/sm2"
 )
 
@@ -16,6 +17,19 @@ import (
 // alg-confusion defense (rejecting, say, an HS256 token presented to an SM2
 // verifier).
 var ErrAlgorithmMismatch = errors.New("jwt: token alg header does not match verifier")
+
+// ErrInvalidKeySize is returned by the HMAC constructors when the symmetric
+// secret is shorter than the hash output size, which would weaken the MAC below
+// its advertised security level (RFC 2104 §3 requires key length ≥ HashLen).
+var ErrInvalidKeySize = errors.New("jwt: secret key too short for the algorithm")
+
+// Minimum HMAC key lengths. HS256 needs ≥256 bits (32 bytes) of key material
+// to reach its full security strength; HS512 needs ≥512 bits (64 bytes). These
+// match the hash output sizes per RFC 2104.
+const (
+	minHS256KeyLen = 32
+	minHS512KeyLen = 64
+)
 
 // hmacSignerVerifier implements [SignerVerifier] for HS256/HS512.
 //
@@ -33,24 +47,42 @@ type hmacSignerVerifier struct {
 // NewHS256 constructs an HS256 SignerVerifier backed by the given symmetric
 // secret. issuer is recorded for the verifier's iss enforcement if the
 // caller wires one via jwt.WithIssuer at parse time.
-func NewHS256(secret []byte, issuer string) SignerVerifier {
+//
+// Returns [ErrInvalidKeySize] if secret is shorter than 32 bytes (256 bits),
+// the minimum key length for HMAC-SHA-256 to reach its full security strength
+// (RFC 2104 §3).
+func NewHS256(secret []byte, issuer string) (SignerVerifier, error) {
+	if len(secret) < minHS256KeyLen {
+		return nil, fmt.Errorf("%w: HS256 needs at least %d bytes, got %d", ErrInvalidKeySize, minHS256KeyLen, len(secret))
+	}
 	return &hmacSignerVerifier{
 		method: jwt.SigningMethodHS256,
 		algo:   AlgHS256,
 		secret: secret,
 		issuer: issuer,
-	}
+	}, nil
 }
 
 // NewHS512 constructs an HS512 SignerVerifier. See [NewHS256].
-func NewHS512(secret []byte, issuer string) SignerVerifier {
+//
+// Returns [ErrInvalidKeySize] if secret is shorter than 64 bytes (512 bits).
+func NewHS512(secret []byte, issuer string) (SignerVerifier, error) {
+	if len(secret) < minHS512KeyLen {
+		return nil, fmt.Errorf("%w: HS512 needs at least %d bytes, got %d", ErrInvalidKeySize, minHS512KeyLen, len(secret))
+	}
 	return &hmacSignerVerifier{
 		method: jwt.SigningMethodHS512,
 		algo:   AlgHS512,
 		secret: secret,
 		issuer: issuer,
-	}
+	}, nil
 }
+
+// Zeroize securely clears the HMAC secret held by the SignerVerifier. Callers
+// should invoke it (typically via defer) once the SignerVerifier is no longer
+// needed, to keep the secret's lifetime bounded — consistent with the
+// ZeroKey/ZeroNonce helpers in the aes and sm4 packages.
+func (h *hmacSignerVerifier) Zeroize() { memsecure.ZeroBytes(h.secret) }
 
 func (h *hmacSignerVerifier) Algorithm() Algorithm { return h.algo }
 
@@ -62,7 +94,10 @@ func (h *hmacSignerVerifier) Sign(claims Claims) (string, error) {
 func (h *hmacSignerVerifier) Verify(tokenString string, v Claims) error {
 	parsed, err := jwt.ParseWithClaims(tokenString, v, func(t *jwt.Token) (any, error) {
 		if t.Method.Alg() != h.method.Alg() {
-			return nil, fmt.Errorf("%w: got %s want %s", ErrAlgorithmMismatch, t.Method.Alg(), h.method.Alg())
+			// Return only the sentinel — exposing the expected algorithm in a
+			// wrapped error could leak the server's configured alg to an
+			// attacker probing endpoints.
+			return nil, ErrAlgorithmMismatch
 		}
 		return h.secret, nil
 	})
@@ -116,7 +151,8 @@ func (s *sm2SignerVerifier) Verify(tokenString string, v Claims) error {
 	}
 	parsed, err := jwt.ParseWithClaims(tokenString, v, func(t *jwt.Token) (any, error) {
 		if t.Method.Alg() != SigningMethodSM2SM3.Alg() {
-			return nil, fmt.Errorf("%w: got %s want %s", ErrAlgorithmMismatch, t.Method.Alg(), SigningMethodSM2SM3.Alg())
+			// See hmacSignerVerifier.Verify: do not leak the expected alg.
+			return nil, ErrAlgorithmMismatch
 		}
 		return s.pub, nil
 	})
@@ -133,6 +169,11 @@ func (s *sm2SignerVerifier) Verify(tokenString string, v Claims) error {
 // RegisteredClaims with sub, issuer, and an expiry offset, then signs with sv.
 // Returned for callers that want a one-shot issue API without constructing
 // claims manually.
+//
+// Note: the issuer argument here populates the token's iss claim directly; it
+// is independent of any issuer stored on sv at construction. Callers that
+// later validate with jwt.WithIssuer MUST pass the same issuer to both sites,
+// or verification will reject the token.
 func IssueWithExpiry(sv Signer, subject, issuer string, ttl time.Duration) (string, error) {
 	now := time.Now()
 	claims := jwt.RegisteredClaims{

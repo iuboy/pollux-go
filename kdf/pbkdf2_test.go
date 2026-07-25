@@ -125,3 +125,33 @@ func TestPBKDF2_KeyLenSmallerThanHashSize(t *testing.T) {
 		t.Errorf("dk len = %d, want 5", len(dk))
 	}
 }
+
+// ─── security regression tests (C2 / C3) ───
+//
+// Guard against attacker-controlled iter/keyLen causing CPU/memory exhaustion
+// or integer overflow. These are reachable when PHC strings from untrusted
+// input are parsed and fed to PBKDF2 (see pwHash/pbkdf2_sm3.go).
+
+// TestPBKDF2_RejectsExcessiveIteration covers C2: a pathological iteration
+// count must be rejected up-front rather than stalling the derivation loop.
+func TestPBKDF2_RejectsExcessiveIteration(t *testing.T) {
+	_, err := PBKDF2([]byte("p"), []byte("s"), 1<<30, 16, sha256.New)
+	if err == nil {
+		t.Fatal("PBKDF2 accepted iter=1<<30 (no upper bound)")
+	}
+	if !errors.Is(err, ErrInvalidIteration) {
+		t.Errorf("err = %v, want ErrInvalidIteration", err)
+	}
+}
+
+// TestPBKDF2_RejectsExcessiveKeyLen covers C3: a keyLen near MaxInt would
+// overflow numBlocks*hLen and panic in make(); the upper bound prevents it.
+func TestPBKDF2_RejectsExcessiveKeyLen(t *testing.T) {
+	_, err := PBKDF2([]byte("p"), []byte("s"), 10, 1<<30, sha256.New)
+	if err == nil {
+		t.Fatal("PBKDF2 accepted keyLen=1<<30 (no upper bound)")
+	}
+	if !errors.Is(err, ErrInvalidKeyLen) {
+		t.Errorf("err = %v, want ErrInvalidKeyLen", err)
+	}
+}

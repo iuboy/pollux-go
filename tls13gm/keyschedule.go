@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/iuboy/pollux-go/internal/memsecure"
 	"github.com/iuboy/pollux-go/sm3"
 )
 
@@ -13,8 +14,35 @@ type TrafficKeys struct {
 	IV  []byte
 }
 
+// Zero securely zeroes the Key and IV material via memsecure.ZeroBytes
+// (constant-time XOR + unsafe write + runtime.KeepAlive). Call when the
+// traffic keys are no longer needed (e.g. after a key update replaces them)
+// so the material does not linger on the heap. Mirrors QUICPacketKeys.Zero
+// for API consistency across the package's key-bearing types.
+func (t *TrafficKeys) Zero() {
+	if t == nil {
+		return
+	}
+	memsecure.ZeroBytes(t.Key)
+	memsecure.ZeroBytes(t.IV)
+}
+
 // DeriveEarlySecret computes the early secret from the IKM (PSK or zeros).
 // salt is all zeros for the initial extract.
+//
+// When ikm is empty (nil or zero-length) it is replaced with a zero string of
+// HashLen — this is the RFC 8446 §7.1 behavior for "no PSK" (the early secret
+// is derived from a known all-zero IKM, which is cryptographically safe because
+// the early secret only feeds into the "derived" label, not directly into
+// traffic keys). This is INTENTIONAL and not a security weakness: the
+// zero-IKM path is the standard full-handshake (non-resumption) path.
+//
+// Callers that DO have a PSK MUST pass it explicitly — relying on the
+// zero-default would silently produce a full-handshake early secret instead
+// of a PSK-bound one, defeating resumption. The HandshakeSecrets /
+// NewClientHandshakerWithConfig / NewServerHandshakerWithConfig constructors
+// route the PSK correctly; direct callers of DeriveEarlySecret should check
+// len(ikm) > 0 before calling if they intend PSK mode.
 func DeriveEarlySecret(ikm []byte) []byte {
 	if len(ikm) == 0 {
 		ikm = make([]byte, sm3.Size)

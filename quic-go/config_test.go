@@ -88,6 +88,12 @@ func configWithNonZeroNonFunctionFields(t *testing.T) *Config {
 		switch fn := typ.Field(i).Name; fn {
 		case "GetConfigForClient", "RequireAddressValidation", "GetLogWriter", "AllowConnectionWindowIncrease", "Tracer":
 			// Can't compare functions.
+		case "GMOnClientSessionTicket":
+			// GM fork field: function type, can't compare via DeepEqual. Left nil.
+		case "GMSM4GCM":
+			f.Set(reflect.ValueOf(true))
+		case "GMHandshakeConfig":
+			f.Set(reflect.ValueOf(&GMHandshakeConfig{}))
 		case "Versions":
 			f.Set(reflect.ValueOf([]Version{1, 2, 3}))
 		case "ConnectionIDLength":

@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/iuboy/pollux-go/sm2"
@@ -37,11 +38,16 @@ func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]b
 	if peerPublic == nil {
 		return nil, errors.New("tls13gm: peerPublic is nil")
 	}
-	// Curve identity check. The ECDH scalar below is the SM2 private scalar, so it
-	// MUST only ever be multiplied on the SM2 curve. Performing it on a different
-	// (e.g. NIST) curve would be a catastrophic cross-curve error leaking the
-	// private scalar. sm2.PublicKey is a type alias for ecdsa.PublicKey, so the
-	// type system cannot enforce this — the check must be explicit.
+	// Curve identity check on BOTH keys. The ECDH scalar below is the SM2
+	// private scalar, so it MUST only ever be multiplied on the SM2 curve.
+	// Performing it on a different (e.g. NIST) curve would be a catastrophic
+	// cross-curve error leaking the private scalar. sm2.PublicKey is a type
+	// alias for ecdsa.PublicKey, so the type system cannot enforce this — the
+	// check must be explicit on BOTH the local private key's curve AND the
+	// peer's public key's curve.
+	if privateKey.Curve != sm2.P256() {
+		return nil, errors.New("tls13gm: local private key is not on the SM2 curve")
+	}
 	if peerPublic.Curve != sm2.P256() {
 		return nil, errors.New("tls13gm: peer public key is not on the SM2 curve")
 	}
@@ -73,7 +79,15 @@ func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]b
 		return nil, errors.New("tls13gm: ECDH scalar multiplication failed")
 	}
 	shared := x.Bytes()
-	// Pad shared secret to 32 bytes.
+	// Defense in depth: the SM2 curve's x-coordinate is at most 32 bytes
+	// (256-bit field), but a future curve change or implementation bug could
+	// produce a longer value. Cap at scalarSize explicitly rather than
+	// silently truncating via shared[:scalarSize].
+	if len(shared) > scalarSize {
+		return nil, fmt.Errorf("tls13gm: ECDH shared secret %d bytes exceeds scalar size %d (curve mismatch?)", len(shared), scalarSize)
+	}
+	// Pad shared secret to 32 bytes (left-pad with zeros for fixed-width
+	// HKDF extraction downstream).
 	if len(shared) < scalarSize {
 		padded := make([]byte, scalarSize)
 		copy(padded[scalarSize-len(shared):], shared)

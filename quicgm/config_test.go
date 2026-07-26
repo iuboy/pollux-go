@@ -35,13 +35,25 @@ func TestTls13ClientConfig_EarlyDataRequiresPSK(t *testing.T) {
 		t.Fatalf("full-handshake config (no EarlyData, no PSK) should be valid: %v", err)
 	}
 
-	// EarlyData=true WITH a PSK is fine.
+	// EarlyData=true WITH a PSK AND an identity is fine.
 	cfgPSK := ClientConfig{
+		ServerName:         "example.com",
+		EarlyData:          true,
+		ResumptionPSK:      []byte("a-resumption-psk-of-some-length"),
+		ResumptionIdentity: []byte("opaque-server-ticket"),
+	}
+	if _, err := cfgPSK.tls13ClientConfig(); err != nil {
+		t.Fatalf("EarlyData with a PSK and identity should be valid: %v", err)
+	}
+
+	// EarlyData=true with a PSK but NO identity must be rejected per RFC 8446
+	// §4.2.11 (pre_shared_key requires a non-empty identity).
+	cfgPSKNoIdentity := ClientConfig{
 		ServerName:    "example.com",
 		EarlyData:     true,
 		ResumptionPSK: []byte("a-resumption-psk-of-some-length"),
 	}
-	if _, err := cfgPSK.tls13ClientConfig(); err != nil {
-		t.Fatalf("EarlyData with a PSK should be valid: %v", err)
+	if _, err := cfgPSKNoIdentity.tls13ClientConfig(); err == nil {
+		t.Fatalf("EarlyData with a PSK but no identity should be rejected")
 	}
 }

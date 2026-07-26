@@ -22,7 +22,15 @@ var (
 // (Route C). The server certificate must be an SM2 certificate; its private key
 // signs CertificateVerify.
 type ServerConfig struct {
-	Addr               string
+	Addr string
+	// Certificate is the server's leaf certificate. It MUST be an SM2
+	// certificate (public key on the SM2 P256 curve); the GM handshake layer
+	// rejects non-SM2 keys at tls13gm.NewServerHandshakerWithConfig. The
+	// static type is the stdlib *x509.Certificate because Go's type system
+	// cannot distinguish "SM2 cert" from "RSA/ECDSA cert" — smx509 and stdlib
+	// share the same *x509.Certificate type. If you need compile-time SM2
+	// enforcement, wrap the cert in a smx509-validated loader that rejects
+	// non-SM2 keys before constructing ServerConfig.
 	Certificate        *x509.Certificate
 	PrivateKey         *sm2.PrivateKey
 	ClientCAs          *smx509.CertPool
@@ -116,6 +124,13 @@ func (c *ClientConfig) tls13ClientConfig() (*tls13gm.ClientConfig, error) {
 	// behave undefinedly. Fail closed with a clear error instead.
 	if c.EarlyData && len(c.ResumptionPSK) == 0 {
 		return nil, errors.New("quicgm: EarlyData requires a non-empty ResumptionPSK")
+	}
+	// RFC 8446 §4.2.11: a client offering pre_shared_key MUST pair the PSK with
+	// a non-empty opaque identity (the server-issued ticket). Reject the
+	// misconfiguration early rather than letting the binder/transcript math
+	// produce a malformed ClientHello.
+	if c.EarlyData && len(c.ResumptionIdentity) == 0 {
+		return nil, errors.New("quicgm: EarlyData requires a non-empty ResumptionIdentity (the server-issued ticket)")
 	}
 	return &tls13gm.ClientConfig{
 		ServerName:                    c.ServerName,

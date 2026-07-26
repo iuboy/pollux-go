@@ -21,6 +21,14 @@ const (
 	// being meaningfully memory-hard.
 	minArgon2Memory = 4 * 1024
 
+	// maxArgon2Memory sets a practical upper bound on Argon2 memory cost
+	// (1 GiB) to prevent DoS via malicious PHC strings.
+	maxArgon2Memory = 1 * 1024 * 1024
+
+	// maxArgon2Parallelism sets a reasonable upper bound on parallelism (64)
+	// to prevent goroutine pool exhaustion in multi-user scenarios.
+	maxArgon2Parallelism = 64
+
 	// maxPBKDF2Iteration mirrors kdf.maxIteration so a hasher configured here
 	// agrees with the bound enforced inside kdf.PBKDF2.
 	maxPBKDF2Iteration = 10_000_000
@@ -54,10 +62,14 @@ func (p Argon2idParams) Validate() error {
 	switch {
 	case p.Memory < minArgon2Memory:
 		return errors.New("pwhash: argon2id memory must be at least 4 MiB (4096 KiB)")
+	case p.Memory > maxArgon2Memory:
+		return errors.New("pwhash: argon2id memory exceeds safe upper bound (1 GiB)")
 	case p.Iterations == 0:
 		return errors.New("pwhash: argon2id iterations must be positive")
 	case p.Parallelism == 0:
 		return errors.New("pwhash: argon2id parallelism must be positive")
+	case p.Parallelism > maxArgon2Parallelism:
+		return errors.New("pwhash: argon2id parallelism exceeds safe upper bound (64)")
 	case p.SaltLength < minSaltLength:
 		return errors.New("pwhash: argon2id salt length must be at least 8 bytes")
 	case p.KeyLength < minKeyLength:

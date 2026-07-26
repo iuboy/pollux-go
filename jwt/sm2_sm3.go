@@ -14,7 +14,9 @@ import (
 
 // ErrInvalidSM2Key is returned when Sign/Verify receive a key of the wrong
 // type. SM2 signing requires *sm2.PrivateKey; verifying requires
-// *ecdsa.PublicKey (which is what sm2.PublicKey aliases).
+// *ecdsa.PublicKey (which is what sm2.PublicKey aliases). The error wraps the
+// actual received type via fmt.Errorf so callers debugging a misconfigured
+// signer can see what they passed.
 var ErrInvalidSM2Key = errors.New("jwt/sm2sm3: key must be *sm2.PrivateKey (sign) or *ecdsa.PublicKey (verify)")
 
 // init registers the SM2-SM3 signing method with golang-jwt so its parser
@@ -40,6 +42,13 @@ func init() {
 // The default user ID is gmstd.DefaultSM2UserID ("1234567812345678"). Both
 // ends MUST agree on the user ID or signatures will not verify.
 //
+// User ID customization: the current implementation pins the user ID to the
+// GM/T 0009 default at package init time; there is no public API to override
+// it on the registered SigningMethodSM2SM3 singleton. Callers that need a
+// non-default user ID (e.g. for a profile that mandates a key-bound UID) must
+// construct a separate SigningMethod instance with the desired uid and
+// register it with jwt.RegisterSigningMethod under a distinct alg name.
+//
 // golang-jwt v5 SigningMethod contract:
 //   - Sign(signingString string, key any) ([]byte, error) — returns raw sig
 //   - Verify(signingString string, sig []byte, key any) error — receives raw sig
@@ -48,6 +57,10 @@ var SigningMethodSM2SM3 jwt.SigningMethod = &signingMethodSM2SM3{
 	uid: []byte(gmstd.DefaultSM2UserID),
 }
 
+// signingMethodSM2SM3 is the SM2+SM3 SigningMethod. The uid field is set at
+// construction and treated as read-only thereafter; concurrent reads from
+// Sign/Verify are safe. A future SetUID-style mutator would need to guard uid
+// with a mutex.
 type signingMethodSM2SM3 struct {
 	uid []byte // GM/T 0009 user ID; default "1234567812345678"
 }
@@ -61,7 +74,7 @@ func (m *signingMethodSM2SM3) Alg() string { return string(AlgSM2SM3) }
 func (m *signingMethodSM2SM3) Sign(signingString string, key any) ([]byte, error) {
 	priv, ok := key.(*sm2.PrivateKey)
 	if !ok || priv == nil {
-		return nil, ErrInvalidSM2Key
+		return nil, fmt.Errorf("%w: sign expects *sm2.PrivateKey, got %T", ErrInvalidSM2Key, key)
 	}
 	sig, err := sm2.SignWithSM2(rand.Reader, priv, m.uid, []byte(signingString))
 	if err != nil {
@@ -81,7 +94,7 @@ func (m *signingMethodSM2SM3) Sign(signingString string, key any) ([]byte, error
 func (m *signingMethodSM2SM3) Verify(signingString string, sig []byte, key any) error {
 	pub, ok := key.(*ecdsa.PublicKey)
 	if !ok || pub == nil {
-		return ErrInvalidSM2Key
+		return fmt.Errorf("%w: verify expects *ecdsa.PublicKey, got %T", ErrInvalidSM2Key, key)
 	}
 	if !sm2.VerifyWithSM2(pub, m.uid, []byte(signingString), sig) {
 		return jwt.ErrSignatureInvalid

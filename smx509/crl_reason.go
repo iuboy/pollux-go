@@ -62,9 +62,22 @@ var (
 // CreateCRLReasonExtension builds a CRLReason extension (RFC 5280 §5.3.1).
 // The extension is non-critical.
 func CreateCRLReasonExtension(reason CRLReason) pkix.Extension {
+	// Validate reason range (RFC 5280 §5.3.1: valid values are 0-10 excluding 7).
+	if reason < 0 || reason > 10 || reason == 7 {
+		return pkix.Extension{
+			Id:       OIDCRLReason,
+			Critical: false,
+		}
+	}
 	// CRLReason is an ENUMERATED type per RFC 5280 §5.3.1 (tag 0x0A, not
 	// INTEGER tag 0x02). Use asn1.Enumerated for spec-conformant encoding.
-	value, _ := asn1.Marshal(asn1.Enumerated(reason))
+	value, err := asn1.Marshal(asn1.Enumerated(reason))
+	if err != nil {
+		return pkix.Extension{
+			Id:       OIDCRLReason,
+			Critical: false,
+		}
+	}
 	return pkix.Extension{
 		Id:       OIDCRLReason,
 		Critical: false,
@@ -79,7 +92,13 @@ func CreateInvalidityDateExtension(date time.Time) pkix.Extension {
 	// InvalidityDate is a GeneralizedTime per RFC 5280 §5.3.2 (tag 0x18).
 	// Marshal the time.Time directly with "generalized" params so the tag is
 	// correct; marshaling a string would produce UTF8String (tag 0x0C).
-	value, _ := asn1.MarshalWithParams(date.UTC(), "generalized")
+	value, err := asn1.MarshalWithParams(date.UTC(), "generalized")
+	if err != nil {
+		return pkix.Extension{
+			Id:       OIDInvalidityDate,
+			Critical: false,
+		}
+	}
 	return pkix.Extension{
 		Id:       OIDInvalidityDate,
 		Critical: false,
@@ -88,13 +107,17 @@ func CreateInvalidityDateExtension(date time.Time) pkix.Extension {
 }
 
 // ParseCRLReason extracts the CRLReason from a CRL entry's extensions.
-// Returns (ReasonUnspecified, false) if the extension is absent.
+// Returns (ReasonUnspecified, false) if the extension is absent or the value
+// is outside the RFC 5280 §5.3.1 valid range (0-10, excluding 7).
 func ParseCRLReason(extensions []pkix.Extension) (CRLReason, bool) {
 	for _, ext := range extensions {
 		if ext.Id.Equal(OIDCRLReason) {
 			var reason asn1.Enumerated
 			if _, err := asn1.Unmarshal(ext.Value, &reason); err == nil {
-				return CRLReason(reason), true
+				r := CRLReason(reason)
+				if r >= 0 && r <= 10 && r != 7 {
+					return r, true
+				}
 			}
 		}
 	}

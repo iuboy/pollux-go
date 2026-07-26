@@ -66,10 +66,22 @@ func UnmarshalUncompressed(data []byte) (*ecdsa.PublicKey, error) {
 	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
 }
 
-// Equal reports whether two SM2 public keys are equal.
+// Equal reports whether two SM2 public keys are equal. Both keys MUST be on
+// the SM2 curve (P256); keys on different curves are never equal even if their
+// coordinates happen to match, preventing cross-curve confusion attacks.
 func Equal(x, y *ecdsa.PublicKey) bool {
 	if x == nil || y == nil {
 		return x == y
+	}
+	// Compare curve identity first — coordinate-only comparison would let a
+	// P-256 key from a non-SM2 curve match an SM2 key with identical coords.
+	if x.Curve != y.Curve {
+		// Fall back to curve-parameter comparison in case the two curves are
+		// distinct instances with identical parameters (e.g. gmsm vs stdlib).
+		xp, yp := x.Curve.Params(), y.Curve.Params()
+		if xp == nil || yp == nil || xp.Name != yp.Name || xp.P.Cmp(yp.P) != 0 {
+			return false
+		}
 	}
 	return x.X.Cmp(y.X) == 0 && x.Y.Cmp(y.Y) == 0
 }
@@ -113,6 +125,9 @@ func (s *SecureKeyBytes) Destroy() {
 func PrivateKeyToBytesSecure(key *PrivateKey) (*SecureKeyBytes, error) {
 	if key == nil {
 		return nil, errors.New("sm2: nil private key")
+	}
+	if key.D == nil {
+		return nil, errors.New("sm2: private key scalar D is nil")
 	}
 	const scalarSize = 32 // SM2 curve order size in bytes
 	out := make([]byte, scalarSize)

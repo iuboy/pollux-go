@@ -1,4 +1,4 @@
-package http
+package https
 
 import (
 	"crypto/ecdsa"
@@ -51,7 +51,21 @@ func DetectMode(signCert *tls.Certificate) Mode {
 	case *ecdsa.PrivateKey:
 		// Guard against typed nil (e.g. var k *ecdsa.PrivateKey; cert.PrivateKey = k)
 		// which would panic on pub.Curve access.
-		if pub != nil && pub.Curve == sm2.P256() {
+		if pub == nil || pub.Curve == nil {
+			return ModeTLS
+		}
+		// Compare curve parameters rather than interface identity: gmsm and
+		// stdlib may expose distinct *elliptic.CurveParams-backed instances for
+		// the same curve, so == on the Curve interface is unreliable. Match by
+		// the SM2 curve's named parameters instead.
+		sm2Params := sm2.P256().Params()
+		gotParams := pub.Curve.Params()
+		if gotParams != nil && sm2Params != nil &&
+			gotParams.P.Cmp(sm2Params.P) == 0 &&
+			gotParams.N.Cmp(sm2Params.N) == 0 &&
+			gotParams.B.Cmp(sm2Params.B) == 0 &&
+			gotParams.Gx.Cmp(sm2Params.Gx) == 0 &&
+			gotParams.Gy.Cmp(sm2Params.Gy) == 0 {
 			return ModeTLCP
 		}
 	}

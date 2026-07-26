@@ -40,7 +40,7 @@ func TestBlackBox_SM9_SignVerify(t *testing.T) {
 		t.Fatal("signature should not be empty")
 	}
 
-	if !polluxSM9.Verify(master.PublicKey(), uid, hash, sig) {
+	if !polluxSM9.VerifyBool(master.PublicKey(), uid, hash, sig) {
 		t.Error("Verify should accept valid signature")
 	}
 }
@@ -53,7 +53,7 @@ func TestBlackBox_SM9_SignVerify_WrongUID(t *testing.T) {
 	sig, _ := polluxSM9.Sign(userKey, []byte("test"))
 
 	wrongUID := []byte("bob@test.com")
-	if polluxSM9.Verify(master.PublicKey(), wrongUID, []byte("test"), sig) {
+	if polluxSM9.VerifyBool(master.PublicKey(), wrongUID, []byte("test"), sig) {
 		t.Error("Verify should reject wrong UID")
 	}
 }
@@ -64,7 +64,7 @@ func TestBlackBox_SM9_SignVerify_WrongHash(t *testing.T) {
 	userKey, _ := polluxSM9.GenerateSignUserKey(master, uid)
 
 	sig, _ := polluxSM9.Sign(userKey, []byte("hash1"))
-	if polluxSM9.Verify(master.PublicKey(), uid, []byte("hash2"), sig) {
+	if polluxSM9.VerifyBool(master.PublicKey(), uid, []byte("hash2"), sig) {
 		t.Error("Verify should reject wrong hash")
 	}
 }
@@ -76,7 +76,7 @@ func TestBlackBox_SM9_SignVerify_TamperedSig(t *testing.T) {
 
 	sig, _ := polluxSM9.Sign(userKey, []byte("test"))
 	sig[0] ^= 0xff
-	if polluxSM9.Verify(master.PublicKey(), uid, []byte("test"), sig) {
+	if polluxSM9.VerifyBool(master.PublicKey(), uid, []byte("test"), sig) {
 		t.Error("Verify should reject tampered signature")
 	}
 }

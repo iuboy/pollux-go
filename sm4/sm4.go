@@ -3,7 +3,7 @@ package sm4
 import (
 	"crypto/cipher"
 	"crypto/rand"
-	"errors"
+	"fmt"
 	"io"
 
 	gmsmSM4 "github.com/emmansun/gmsm/sm4"
@@ -27,7 +27,7 @@ func NewCipher(key []byte) (cipher.Block, error) {
 func GenerateKey() ([]byte, error) {
 	key := make([]byte, KeySize)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
-		return nil, errors.New("sm4: failed to generate key")
+		return nil, fmt.Errorf("sm4: failed to generate key: %w", err)
 	}
 	return key, nil
 }

@@ -64,7 +64,8 @@ const tlcpVersionTLCP uint16 = 0x0101
 // tlcpCertType* are CertificateRequest certificate_types values. TLCP reuses
 // the TLS 1.0 values (RSA=1, DSS=2, ECDSA=64) and adds IBC=80.
 const (
-	tlcpCertTypeRSADSS uint8 = 2  // dss_sign
-	tlcpCertTypeECDSA  uint8 = 64 // ecdsa_sign
-	tlcpCertTypeIBC    uint8 = 80 // ibc
+	tlcpCertTypeRSA     uint8 = 1  // rsa_sign (TLS 1.0 alias)
+	tlcpCertTypeRSADSS  uint8 = 2  // dss_sign
+	tlcpCertTypeECDSA   uint8 = 64 // ecdsa_sign
+	tlcpCertTypeIBC     uint8 = 80 // ibc
 )

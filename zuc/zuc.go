@@ -1,25 +1,50 @@
 package zuc
 
 import (
+	"fmt"
+
 	gmsmCipher "github.com/emmansun/gmsm/cipher"
 	gmsmZUC "github.com/emmansun/gmsm/zuc"
 )
 
 // SeekableStream is a stream cipher that supports seeking.
+//
+// Concurrency: SeekableStream values are NOT safe for concurrent use — the
+// underlying gmsm stream cipher maintains an internal keystream buffer and
+// counter that XORKeyStream and Seek mutate without synchronization, matching
+// the standard library crypto/cipher.Stream contract. Callers sharing a
+// stream across goroutines must serialize access; for parallel encryption,
+// construct one stream per goroutine with an independent key/IV.
 type SeekableStream = gmsmCipher.SeekableStream
 
 // EIA represents a ZUC-based integrity/authentication hash.
+//
+// Concurrency: EIA values are NOT safe for concurrent use; Write/Sum mutate
+// an internal MAC state. See SeekableStream's concurrency note.
 type EIA = gmsmZUC.EIA
 
 // NewCipher creates a ZUC stream cipher with the given key and IV.
 // Key must be 16 bytes (ZUC-128) or 32 bytes (ZUC-256).
-// IV must be 16 bytes (ZUC-128) or 23 bytes (ZUC-256), matching the key variant;
-// gmsm rejects a mismatched IV length.
+// IV must be 16 bytes (ZUC-128) or 23 bytes (ZUC-256), matching the key variant.
+//
+// Returns a typed error naming the offending parameter when key or IV length
+// is invalid, so callers can distinguish a key-length mistake from an IV-
+// length mistake without parsing the underlying gmsm error string.
 //
 // SECURITY WARNING: Reusing the same key+IV pair produces identical keystream,
 // enabling XOR-based plaintext recovery (two-time pad attack). Each call must
 // use a unique key/IV combination. See package documentation for details.
 func NewCipher(key, iv []byte) (SeekableStream, error) {
+	if len(key) != 16 && len(key) != 32 {
+		return nil, fmt.Errorf("zuc: key length %d invalid (want 16 for ZUC-128 or 32 for ZUC-256)", len(key))
+	}
+	wantIV := 16
+	if len(key) == 32 {
+		wantIV = 23
+	}
+	if len(iv) != wantIV {
+		return nil, fmt.Errorf("zuc: IV length %d invalid (want %d for %d-byte key)", len(iv), wantIV, len(key))
+	}
 	return gmsmZUC.NewCipher(key, iv)
 }
 
@@ -54,6 +79,13 @@ func Encrypt(key []byte, count, bearer, direction uint32, plaintext []byte) ([]b
 	if err != nil {
 		return nil, err
 	}
+	// Note: gmsmZUC.NewEEACipher returns a non-interface concrete type
+	// boxed into the stream cipher interface; staticcheck proves (via
+	// cross-package analysis) it never returns a nil interface. A defensive
+	// `if stream == nil` check here is dead code (SA4023) and was removed.
+	// If gmsm ever changes the contract, the XORKeyStream call below will
+	// panic loudly rather than fail silently — which is the desired
+	// failure mode for a contract regression.
 	ciphertext := make([]byte, len(plaintext))
 	stream.XORKeyStream(ciphertext, plaintext)
 	return ciphertext, nil
@@ -65,6 +97,8 @@ func MAC(key []byte, count, bearer, direction uint32, data []byte) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
+	// See Encrypt for why no defensive `if h == nil` check here:
+	// gmsmZUC.NewEIAHash never returns a nil interface (SA4023).
 	if _, err := h.Write(data); err != nil {
 		return nil, err
 	}

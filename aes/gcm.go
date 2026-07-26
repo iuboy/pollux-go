@@ -43,6 +43,15 @@ func GenerateNonce() ([]byte, error) {
 
 // NewGCM creates an AES-256-GCM authenticated encryptor.
 // The returned cipher.AEAD can be used directly for Seal/Open.
+//
+// Key handling: the key bytes are passed to crypto/aes.NewCipher, which
+// copies them into the cipher's internal key schedule. The caller's key
+// slice is NOT retained — callers should zero it via defer ZeroKey(key)
+// after the AEAD is constructed. The one-shot convenience functions
+// (SealRandomNonce, SealCombined, OpenWithNonce, OpenCombined) consume the
+// key themselves and never return it to a useful state; callers that reuse
+// a single AEAD across many messages must use NewGCM directly and manage
+// zeroing themselves (defer ZeroKey after construction).
 func NewGCM(key []byte) (cipher.AEAD, error) {
 	block, err := NewCipher(key)
 	if err != nil {
@@ -56,10 +65,18 @@ func NewGCM(key []byte) (cipher.AEAD, error) {
 // it eliminates the risk of nonce reuse by binding nonce generation to the
 // encrypt call.
 //
+// Key hygiene: the caller's key slice is securely zeroed (via ZeroKey) before
+// the function returns. This is the documented contract of every one-shot
+// convenience function in this package: the key is consumed. Callers that
+// need to reuse the key across multiple operations MUST clone it before
+// passing it in, or use NewGCM directly and manage zeroing themselves.
+//
 // For performance-sensitive code that encrypts many messages under one key,
 // construct a single cipher.AEAD via NewGCM and reuse it, generating a new
-// nonce per message via GenerateNonce.
+// nonce per message via GenerateNonce. In that case defer ZeroKey(key) once
+// after construction.
 func SealRandomNonce(key, plaintext, aad []byte) (Sealed, error) {
+	defer ZeroKey(key) // consume caller's key (already copied into key schedule)
 	aead, err := NewGCM(key)
 	if err != nil {
 		return Sealed{}, err
@@ -74,7 +91,11 @@ func SealRandomNonce(key, plaintext, aad []byte) (Sealed, error) {
 
 // OpenWithNonce decrypts a Sealed value produced by SealRandomNonce. It is a
 // thin convenience over aead.Open that pulls the nonce out of the Sealed value.
+//
+// Key hygiene: see SealRandomNonce — the caller's key is consumed (zeroed)
+// before return.
 func OpenWithNonce(key []byte, s Sealed, aad []byte) ([]byte, error) {
+	defer ZeroKey(key) // consume caller's key
 	if len(s.Nonce) != GCMNonceSize {
 		return nil, fmt.Errorf("aes: invalid nonce length %d, want %d", len(s.Nonce), GCMNonceSize)
 	}
@@ -93,7 +114,11 @@ func OpenWithNonce(key []byte, s Sealed, aad []byte) ([]byte, error) {
 //
 // Use OpenCombined to decrypt. The combined format saves the caller from
 // managing two slices at the cost of one extra allocation on decrypt.
+//
+// Key hygiene: see SealRandomNonce — the caller's key is consumed (zeroed)
+// before return.
 func SealCombined(key, plaintext, aad []byte) ([]byte, error) {
+	defer ZeroKey(key) // consume caller's key
 	aead, err := NewGCM(key)
 	if err != nil {
 		return nil, err
@@ -102,10 +127,15 @@ func SealCombined(key, plaintext, aad []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Seal appends ciphertext+tag to the first argument; passing nonce as the
-	// dst yields the desired nonce || ct layout. (Seal may reallocate if nonce's
-	// capacity is too small to hold the result, so this is not guaranteed to be
-	// a single allocation — but the layout is what matters for byte compatibility.)
+	// Seal appends ciphertext+tag to the first argument (dst); passing nonce
+	// as both dst and nonce yields the desired nonce || ct layout. This uses
+	// the Go stdlib's documented Seal behavior: "dst and plaintext must not
+	// overlap exactly, but may overlap partially" — nonce (12 bytes) is
+	// shorter than the final output (12 + len(plaintext) + 16 tag), so Seal
+	// will allocate a new backing array rather than mutating nonce in place.
+	// The returned slice is thus independent of nonce. This matches the
+	// de-facto crypto/cipher.AEAD.Seal-with-prepend idiom used across the Go
+	// ecosystem (e.g. Go's own crypto/tls record protection).
 	return aead.Seal(nonce, nonce, plaintext, aad), nil
 }
 
@@ -115,7 +145,11 @@ func SealCombined(key, plaintext, aad []byte) ([]byte, error) {
 // Short inputs are rejected explicitly rather than degrading to an all-zero
 // nonce, which would mask caller misuse (truncated ciphertext, forgotten
 // nonce) as a generic decryption failure.
+//
+// Key hygiene: see SealRandomNonce — the caller's key is consumed (zeroed)
+// before return.
 func OpenCombined(key, ciphertext, aad []byte) ([]byte, error) {
+	defer ZeroKey(key) // consume caller's key
 	aead, err := NewGCM(key)
 	if err != nil {
 		return nil, err

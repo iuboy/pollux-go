@@ -33,8 +33,8 @@ func BuildClientTLSConfig(opts TLSClientOptions) (*tls.Config, error) {
 
 	cfg := &tls.Config{
 		ServerName:         opts.ServerName,
-		Certificates:       opts.Certificates,
-		NextProtos:         opts.NextProtos,
+		Certificates:       copyCertificates(opts.Certificates),
+		NextProtos:         copyStrings(opts.NextProtos),
 		InsecureSkipVerify: opts.InsecureSkipVerify,
 	}
 	if opts.MinVersion != 0 {
@@ -62,8 +62,8 @@ func BuildServerTLSConfig(opts TLSProxyServerOptions) (*tls.Config, error) {
 	}
 
 	cfg := &tls.Config{
-		Certificates: opts.Certificates,
-		NextProtos:   opts.NextProtos,
+		Certificates: copyCertificates(opts.Certificates),
+		NextProtos:   copyStrings(opts.NextProtos),
 		ClientAuth:   opts.ClientAuth,
 	}
 	if opts.MinVersion != 0 {
@@ -75,4 +75,25 @@ func BuildServerTLSConfig(opts TLSProxyServerOptions) (*tls.Config, error) {
 		cfg.ClientCAs = opts.ClientCAs.ToStandardPool()
 	}
 	return cfg, nil
+}
+
+// copyCertificates returns a deep copy of a []tls.Certificate slice, so the
+// returned tls.Config does not share its backing array with the caller.
+func copyCertificates(in []tls.Certificate) []tls.Certificate {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]tls.Certificate, len(in))
+	copy(out, in)
+	return out
+}
+
+// copyStrings returns a deep copy of a []string slice.
+func copyStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
 }

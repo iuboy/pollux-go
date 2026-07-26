@@ -1,8 +1,12 @@
 // Package sm2 implements the SM2 elliptic curve public key cryptography
 // algorithm (GM/T 0003-2012), following crypto/ecdsa conventions.
 //
-// SM2 provides digital signatures and key exchange on the SM2 elliptic curve.
-// PrivateKey implements the crypto.Signer interface.
+// SM2 provides digital signatures and public-key encryption on the SM2
+// elliptic curve. PrivateKey implements the crypto.Signer interface.
+//
+// Note: this package does NOT implement SM2 key agreement (MQV). For TLCP
+// ECDHE key agreement, see the internal tlcp engine package which uses the
+// gmsm MQV primitives directly.
 //
 // Basic usage:
 //

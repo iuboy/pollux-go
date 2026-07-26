@@ -40,7 +40,15 @@ type memoryAntiReplayCache struct {
 // NewAntiReplayCache returns a process-local anti-replay cache. window is how
 // long a digest is remembered after first sight; maxAge is the maximum
 // acceptable ticket age (reject older tickets as expired).
+//
+// Returns a rejecting cache (rejects all 0-RTT) if window or maxAge is non-
+// positive, since a zero window would let the same digest be re-accepted
+// indefinitely (exp.After(now) with a zero expiry is always false), breaking
+// the anti-replay guarantee.
 func NewAntiReplayCache(window, maxAge time.Duration) AntiReplayCache {
+	if window <= 0 || maxAge <= 0 {
+		return rejectingAntiReplayCache{}
+	}
 	return &memoryAntiReplayCache{
 		entries:    make(map[string]time.Time),
 		window:     window,

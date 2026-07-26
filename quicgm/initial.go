@@ -100,6 +100,9 @@ func SealInitialPacket(dcid, scid, token []byte, pn uint64, payload []byte) ([]b
 // Initial with the same dcid that seeded those keys. It returns the version,
 // scid, token, recovered packet number, and decrypted payload.
 func OpenInitialPacket(dcid, packet []byte) (version uint32, scid, token []byte, pn uint64, payload []byte, err error) {
+	if len(dcid) == 0 {
+		return 0, nil, nil, 0, nil, errors.New("quicgm: dcid must be non-empty (it seeds the Initial secret)")
+	}
 	clientIn, _, err := tls13gm.DeriveQUICInitialSecrets(dcid)
 	if err != nil {
 		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: derive initial secret: %w", err)
@@ -117,10 +120,9 @@ func OpenInitialPacket(dcid, packet []byte) (version uint32, scid, token []byte,
 		return 0, nil, nil, 0, nil, errors.New("quicgm: not a long-header packet")
 	}
 	// RFC 9000 §17.2: the Fixed Bit in long headers MUST be 1, and bits 5-4
-	// encode the long-header packet type (Initial = 0b00). Validate before key
-	// derivation / AEAD to reject Retry (0b10) or 0-RTT-style packets early.
-	// The high 4 bits are not header-protection-eligible (RFC 9001 §5.4.1), so
-	// these checks are valid before RemoveHeaderProtection.
+	// encode the long-header packet type (Initial = 0b00). The high 4 bits are
+	// not header-protection-eligible (RFC 9001 §5.4.1), so these checks are
+	// valid before RemoveHeaderProtection.
 	if packet[0]&0x40 == 0 {
 		return 0, nil, nil, 0, nil, errors.New("quicgm: fixed bit not set in long header")
 	}
@@ -174,11 +176,17 @@ func OpenInitialPacket(dcid, packet []byte) (version uint32, scid, token []byte,
 	if uint64(pnLen) > length {
 		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: declared length %d smaller than packet number %d", length, pnLen)
 	}
-	ctLen := int(length) - pnLen
-	headerEnd := pnOffset + pnLen
-	if headerEnd+ctLen > len(packet) {
+	// Bounds-check in uint64 space to avoid int truncation on 32-bit platforms.
+	if length > uint64(len(packet)-pnOffset) {
 		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: declared length %d exceeds packet tail %d", length, len(packet)-pnOffset)
 	}
+	// Guard against int overflow on 32-bit platforms (QUIC packet lengths are
+	// practically bounded, but as a library we defend the boundary).
+	if length > uint64(1<<31-1) {
+		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: declared length %d too large", length)
+	}
+	ctLen := int(length) - pnLen
+	headerEnd := pnOffset + pnLen
 	headerAAD := packet[:headerEnd]
 	ciphertext := packet[headerEnd : headerEnd+ctLen]
 

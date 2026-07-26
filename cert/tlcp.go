@@ -24,6 +24,15 @@ func BuildTLCPConfig(opts TLCPProxyOptions) (*polluxTLCP.Config, error) {
 	if opts.Certificates == nil {
 		return nil, errors.New("cert: dual certificate is required for TLCP")
 	}
+	// Validate the dual certificate pair's internal fields before handing them
+	// to tlcp.Config — zero-value tls.Certificate fields would surface as opaque
+	// handshake failures deep in the TLCP engine.
+	if len(opts.Certificates.Sign.Certificate) == 0 || opts.Certificates.Sign.PrivateKey == nil {
+		return nil, errors.New("cert: TLCP sign certificate is missing cert chain or private key")
+	}
+	if len(opts.Certificates.Enc.Certificate) == 0 || opts.Certificates.Enc.PrivateKey == nil {
+		return nil, errors.New("cert: TLCP encrypt certificate is missing cert chain or private key")
+	}
 
 	cfg := &polluxTLCP.Config{
 		CipherSuites: opts.CipherSuites,
@@ -35,10 +44,8 @@ func BuildTLCPConfig(opts TLCPProxyOptions) (*polluxTLCP.Config, error) {
 		cfg.MinVersion = opts.MinVersion
 	}
 
-	if opts.Certificates != nil {
-		cfg.SignCertificate = &opts.Certificates.Sign
-		cfg.EncCertificate = &opts.Certificates.Enc
-	}
+	cfg.SignCertificate = &opts.Certificates.Sign
+	cfg.EncCertificate = &opts.Certificates.Enc
 
 	if opts.SignRoots != nil {
 		cfg.SignRootCAs = opts.SignRoots.ToStandardPool()

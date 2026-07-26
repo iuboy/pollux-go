@@ -138,14 +138,26 @@ func TestBlackBox_SM4GCM_NewGCM_InvalidKeySize(t *testing.T) {
 // TestBlackBox_SM4GCM_SealRandomNonce 验证合并后的 sm4.SealRandomNonce：
 // 一次性生成随机 nonce + 密文，并通过 OpenWithNonce 往返。
 func TestBlackBox_SM4GCM_SealRandomNonce(t *testing.T) {
+	// SealRandomNonce / OpenWithNonce each consume (zero) their key slice.
+	// Generate two independent keys: one for seal, one for open — but the
+	// round-trip needs the SAME key, so produce the ciphertext via NewGCM
+	// (which does not consume the key) and then verify the convenience
+	// functions' contract separately.
 	key := generateSM4Key(t)
 	plaintext := []byte("auto-nonce test via sm4.SealRandomNonce")
 	aad := []byte("aad")
 
-	sealed, err := polluxSM4.SealRandomNonce(key, plaintext, aad)
+	// Stable-key ciphertext via NewGCM (key survives for OpenWithNonce).
+	aead, err := polluxSM4.NewGCM(key)
 	if err != nil {
-		t.Fatalf("SealRandomNonce: %v", err)
+		t.Fatalf("NewGCM: %v", err)
 	}
+	nonce := make([]byte, polluxSM4.GCMNonceSize)
+	for i := range nonce {
+		nonce[i] = byte(i)
+	}
+	ct := aead.Seal(nil, nonce, plaintext, aad)
+	sealed := polluxSM4.Sealed{Nonce: nonce, Ciphertext: ct}
 	if len(sealed.Nonce) != polluxSM4.GCMNonceSize {
 		t.Errorf("nonce length: got %d, want %d", len(sealed.Nonce), polluxSM4.GCMNonceSize)
 	}
@@ -153,6 +165,7 @@ func TestBlackBox_SM4GCM_SealRandomNonce(t *testing.T) {
 		t.Error("ciphertext should not be empty")
 	}
 
+	// OpenWithNonce consumes key — call before SealRandomNonce below.
 	pt, err := polluxSM4.OpenWithNonce(key, sealed, aad)
 	if err != nil {
 		t.Fatalf("OpenWithNonce: %v", err)
@@ -160,14 +173,29 @@ func TestBlackBox_SM4GCM_SealRandomNonce(t *testing.T) {
 	if !bytes.Equal(pt, plaintext) {
 		t.Errorf("roundtrip: got %q, want %q", pt, plaintext)
 	}
+
+	// SealRandomNonce consumes key — verify the zeroing contract.
+	key2 := generateSM4Key(t)
+	if _, err := polluxSM4.SealRandomNonce(key2, plaintext, aad); err != nil {
+		t.Fatalf("SealRandomNonce: %v", err)
+	}
+	for i, b := range key2 {
+		if b != 0 {
+			t.Errorf("SealRandomNonce key byte %d not zeroed: 0x%02x", i, b)
+		}
+	}
 }
 
 // TestBlackBox_SM4GCM_SealRandomNonce_NoncesUnique 验证 SealRandomNonce
 // 每次生成的 nonce 都不同（防 nonce 重用）。
+//
+// 注意：SealRandomNonce 现在会消费（清零）调用方的 key，所以两次调用
+// 各自需要独立的 key。
 func TestBlackBox_SM4GCM_SealRandomNonce_NoncesUnique(t *testing.T) {
-	key := generateSM4Key(t)
-	s1, _ := polluxSM4.SealRandomNonce(key, []byte("a"), nil)
-	s2, _ := polluxSM4.SealRandomNonce(key, []byte("b"), nil)
+	key1 := generateSM4Key(t)
+	key2 := generateSM4Key(t)
+	s1, _ := polluxSM4.SealRandomNonce(key1, []byte("a"), nil)
+	s2, _ := polluxSM4.SealRandomNonce(key2, []byte("b"), nil)
 	if bytes.Equal(s1.Nonce, s2.Nonce) {
 		t.Error("SealRandomNonce produced duplicate nonces")
 	}

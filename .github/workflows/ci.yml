@@ -12,6 +12,7 @@ jobs:
   test:
     name: Build & Test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -30,6 +31,7 @@ jobs:
   lint:
     name: Lint & Security
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -38,10 +40,14 @@ jobs:
           cache: true
       - name: gosec
         # Excludes mirror Makefile GOSEC_EXCLUDE — rules reviewed as safe for a
-        # GM stack (see Makefile header for the per-rule rationale).
+        # GM stack (see Makefile header for the per-rule rationale). The
+        # vendored quic-go/ fork is excluded (upstream code, PATCHES.md) —
+        # same exclusion staticcheck applies below, since gosec flags the
+        # upstream unsafe calls (G103) in quic-go's Linux socket helpers
+        # that we cannot change.
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@latest
-          gosec -exclude G104,G115,G304,G401,G402,G405,G501,G502,G505 -quiet ./...
+          go list ./... | grep -v '/quic-go' | xargs gosec -exclude G104,G115,G304,G401,G402,G405,G501,G502,G505 -quiet
       - name: staticcheck
         # CI runs only the SA (correctness) checks. ST (style) checks are
         # skipped: protocol identifiers like TLS_SM4_GCM_SM3 / SuiteECDHE_SM2_*

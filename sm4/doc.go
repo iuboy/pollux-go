@@ -16,7 +16,10 @@
 //
 // Reusing a nonce (GCM) or IV (CBC, CTR, CFB) with the same key is catastrophic:
 //
-//   - GCM: nonce reuse allows key recovery and message forgery.
+//   - GCM: nonce reuse allows recovery of the GHASH authentication subkey H,
+//     enabling message forgery, and produces a two-time pad on the CTR-mode
+//     keystream, leaking plaintext XOR relationships. (It does NOT recover the
+//     SM4 encryption key itself.)
 //   - CTR: reuse produces a two-time pad, leaking plaintext via XOR.
 //   - CBC: reuse enables block-wise correlation attacks.
 //

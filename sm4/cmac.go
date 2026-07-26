@@ -8,6 +8,13 @@ import (
 
 // CMAC implements the Cipher-based Message Authentication Code (CMAC)
 // algorithm per NIST SP 800-38B, using SM4 as the underlying block cipher.
+//
+// Concurrency: CMAC is NOT safe for concurrent use. The Write/Sum/Reset
+// methods mutate internal buffer and state fields without synchronization,
+// matching the contract of the standard library's hash.Hash (which also does
+// not require concurrency safety). Callers sharing a CMAC across goroutines
+// must serialize access externally; for parallel MAC computation, construct
+// one CMAC per goroutine.
 type CMAC struct {
 	k1, k2    []byte
 	buffer    []byte // accumulates incoming data (partial block)

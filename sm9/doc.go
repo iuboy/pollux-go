@@ -4,5 +4,6 @@
 // This package simplifies the gmsm API by providing a cleaner interface
 // for key generation, signing, encryption, and key encapsulation.
 //
-// Status: wrapper around gmsm/sm9
+// This package delegates to github.com/emmansun/gmsm/sm9 for the core
+// implementation.
 package sm9

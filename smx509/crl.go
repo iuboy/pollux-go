@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/x509"
+	"errors"
 	"reflect"
 
 	smx509pkg "github.com/emmansun/gmsm/smx509"
@@ -11,7 +12,17 @@ import (
 
 // CreateRevocationList creates a CRL signed by the issuer.
 // If the issuer key is SM2, gmsm/smx509 is used for SM2+SM3 signing.
+// template, issuer, and signer MUST all be non-nil.
 func CreateRevocationList(template *x509.RevocationList, issuer *x509.Certificate, signer crypto.Signer) ([]byte, error) {
+	if template == nil {
+		return nil, errors.New("smx509: nil CRL template")
+	}
+	if issuer == nil {
+		return nil, errors.New("smx509: nil issuer certificate")
+	}
+	if signer == nil {
+		return nil, errors.New("smx509: nil signer")
+	}
 	if IsSM2PublicKey(signer.Public()) {
 		smIssuer, err := toSMX509Certificate(issuer)
 		if err != nil {

@@ -1,4 +1,4 @@
-package http
+package https
 
 import (
 	"crypto/tls"
@@ -75,7 +75,18 @@ func NewTLS13Client(opts TLS13ClientOptions) (*http.Client, error) {
 }
 
 // ListenAndServeTLS13 starts an HTTP server that only accepts TLS 1.3 connections.
+// cfg MUST already enforce MinVersion >= TLS 1.3; if cfg is nil a default
+// TLS 1.3-only config is created. cfg.MinVersion is forced up to TLS 1.3 if a
+// caller supplied a weaker setting, so the function name's contract holds
+// regardless of caller configuration mistakes.
 func ListenAndServeTLS13(addr string, handler http.Handler, cfg *tls.Config) error {
+	if cfg == nil {
+		cfg = &tls.Config{}
+	} else {
+		// Clone to avoid mutating caller-owned config.
+		cfg = cfg.Clone()
+	}
+	cfg.MinVersion = tls.VersionTLS13
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err

@@ -17,9 +17,11 @@
 // cloudfile's cryptosuite needs to switch JWT backends by configuration:
 // HS256 for the international default, SM2-SM3 for GM compliance. Exposing
 // both behind [Signer] / [Verifier] keeps the token manager call site
-// agnostic. The interface intentionally mirrors what cloudfile's
-// token/manager.go does today (Sign(claims) / Parse(tokenString, claims)),
-// so the migration is a constructor swap.
+// agnostic. The interface mirrors cloudfile's token/manager.go call shape —
+// Sign(claims) to issue and Verify(tokenString, claims) to validate — so the
+// migration is a constructor swap. Note the Verifier method is named Verify
+// (not Parse, unlike the underlying golang-jwt API); the call-site rename is
+// part of the migration.
 //
 // # GM/T 0009 user ID
 //
@@ -27,6 +29,11 @@
 // fixes the default user ID as "1234567812345678". [SigningMethodSM2SM3] uses
 // [github.com/iuboy/pollux-go/gmstd.DefaultSM2UserID] for both sign and verify
 // so the two ends interoperate by default.
+//
+// The user ID is currently fixed at package init time on the singleton
+// SigningMethodSM2SM3; there is no public API to override it. Callers that
+// need a non-default user ID must construct and register a distinct
+// SigningMethod under a different alg name.
 //
 // # Key formats
 //

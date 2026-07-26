@@ -236,10 +236,14 @@ func loadCertificate(filename string) (*x509.Certificate, error) {
 }
 
 // parseCertificatePEM parses x509 certificate from PEM-encoded data.
+// Rejects non-CERTIFICATE PEM block types (e.g. private key PEM).
 func parseCertificatePEM(data []byte) (*x509.Certificate, error) {
 	block, _ := pem.Decode(data)
 	if block == nil {
 		return nil, errors.New("tlcp: failed to decode PEM block")
+	}
+	if block.Type != "CERTIFICATE" {
+		return nil, fmt.Errorf("tlcp: unexpected PEM block type %q, want CERTIFICATE", block.Type)
 	}
 	return polluxSmx509.ParseCertificate(block.Bytes)
 }

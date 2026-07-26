@@ -1068,7 +1068,7 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 	// Reconstruct the real ticket age from the obfuscated value the client
 	// reported and the ticket_age_add encoded in the ticket (RFC 8446
 	// §4.2.11.1); forwarded to EarlyDataAcceptor for 0-RTT anti-replay (§8).
-	s.resumptionRealAge = time.Duration(int64(identities[0].ObfuscatedTicketAge-ageAdd)) * time.Second
+	s.resumptionRealAge = time.Duration(int64(identities[0].ObfuscatedTicketAge-ageAdd)) * time.Millisecond
 	// Recompute the binder over the same transcript the client used: the
 	// ClientHello truncated just before the binders field (identities included,
 	// binders excluded, pre_shared_key ext_len kept full) — RFC 8446 §4.2.11.
@@ -1389,4 +1389,43 @@ func containsUint16List(data []byte, lenSize int, want uint16) bool {
 		}
 	}
 	return false
+}
+
+// Zero securely zeroes every secret-bearing []byte field held by the
+// ClientHandshaker: the TLS 1.3 key-derivation intermediates (handshake /
+// master / resumption-master secrets, handshake-traffic secrets), the
+// HandshakeSecrets sub-structure (via ZeroAll), and the resumption PSK /
+// identity copied from ClientConfig.
+//
+// It is intended to be called when the handshaker is no longer needed (e.g.
+// from the QUIC CryptoSetup's Close path) so that long-lived key-derivation
+// intermediates do not linger on the heap. Best-effort, like crypto/tls.
+func (h *ClientHandshaker) Zero() {
+	if h == nil {
+		return
+	}
+	memsecure.ZeroBytes(h.handshakeSecret)
+	memsecure.ZeroBytes(h.masterSecret)
+	memsecure.ZeroBytes(h.resumptionMasterSecret)
+	memsecure.ZeroBytes(h.clientHSTraffic)
+	memsecure.ZeroBytes(h.serverHSTraffic)
+	memsecure.ZeroBytes(h.resumptionPSK)
+	memsecure.ZeroBytes(h.resumptionIdentity)
+	h.secrets.Zero() // Use Zero (not ZeroAll) per docs: traffic secrets owned by transport layer
+}
+
+// Zero is the ServerHandshaker counterpart of ClientHandshaker.Zero. In
+// addition to the common derivation intermediates it clears the
+// resumptionSelectedPSK recovered from a validated client PSK binder.
+func (h *ServerHandshaker) Zero() {
+	if h == nil {
+		return
+	}
+	memsecure.ZeroBytes(h.handshakeSecret)
+	memsecure.ZeroBytes(h.masterSecret)
+	memsecure.ZeroBytes(h.clientHSTraffic)
+	memsecure.ZeroBytes(h.serverHSTraffic)
+	memsecure.ZeroBytes(h.resumptionMasterSecret)
+	memsecure.ZeroBytes(h.resumptionSelectedPSK)
+	h.secrets.Zero() // Use Zero (not ZeroAll) per docs: traffic secrets owned by transport layer
 }

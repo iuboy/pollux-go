@@ -22,11 +22,22 @@ const (
 // (GM/T 0009-2012) via createSM2OCSPResponse; otherwise it delegates to
 // golang.org/x/crypto/ocsp.CreateResponse, which cannot handle SM2 keys
 // (its signingParamsForPublicKey rejects sm2.P256()).
-func CreateOCSPResponse(template *ocsp.Response, responderCert *x509.Certificate, signer crypto.Signer) ([]byte, error) {
-	if sm2Key, ok := signer.(*sm2.PrivateKey); ok {
-		return createSM2OCSPResponse(responderCert, responderCert, *template, sm2Key)
+//
+// issuer is the CA whose key issued the certificate being responded about (used
+// to compute the CertID name/key hashes). responderCert is the certificate
+// whose private key signs the response; it MAY equal issuer (CA-direct
+// responder) or be a delegated responder cert signed by issuer.
+func CreateOCSPResponse(issuer, responderCert *x509.Certificate, template *ocsp.Response, signer crypto.Signer) ([]byte, error) {
+	if issuer == nil {
+		return nil, errors.New("smx509: issuer certificate is required to compute the OCSP CertID")
 	}
-	return ocsp.CreateResponse(responderCert, responderCert, *template, signer)
+	if responderCert == nil {
+		return nil, errors.New("smx509: responder certificate is required to sign the OCSP response")
+	}
+	if sm2Key, ok := signer.(*sm2.PrivateKey); ok {
+		return createSM2OCSPResponse(issuer, responderCert, *template, sm2Key)
+	}
+	return ocsp.CreateResponse(issuer, responderCert, *template, signer)
 }
 
 // ParseOCSPRequest parses a DER-encoded OCSP request.

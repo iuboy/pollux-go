@@ -549,7 +549,19 @@ func (g *GMCryptoSetup) ClientSessionTicket() (identity, psk []byte, ticketAgeAd
 	return g.clientSessionIdentity, g.clientSessionPSK, g.clientTicketAgeAdd
 }
 
-func (g *GMCryptoSetup) Close() error { return nil }
+// Close is invoked by quic-go when the connection is torn down. We use it to
+// zero the handshaker's long-lived key-derivation intermediates (handshake /
+// master / resumption-master secrets, traffic secrets, resumption PSK) so they
+// do not linger on the heap. Best-effort, mirroring crypto/tls.
+func (g *GMCryptoSetup) Close() error {
+	if g.clientHs != nil {
+		g.clientHs.Zero()
+	}
+	if g.serverHs != nil {
+		g.serverHs.Zero()
+	}
+	return nil
+}
 
 func (g *GMCryptoSetup) ConnectionState() ConnectionState {
 	// tls.ConnectionState does not carry the cipher suite, so the GM suite

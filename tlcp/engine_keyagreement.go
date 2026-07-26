@@ -113,18 +113,15 @@ func tlcpECCProcessClientKeyExchange(decrypter crypto.Decrypter, ckePayload []by
 	}
 	// gotlcp trims trailing extra padding beyond the ASN1 sequence length; we do
 	// the same so a client that pads (or a non-conformant peer) does not break.
-	// Handle all DER length forms (short, 0x81, 0x82) robustly.
+	// Handle all DER length forms (short, 0x81, 0x82) and REJECT non-canonical
+	// encodings per DER (X.690 §8.1.3): a length < 128 MUST use the short form,
+	// and a long-form length byte MUST NOT have trailing zero padding.
+	// Rejecting malformed lengths prevents an attacker from crafting ambiguous
+	// wire bytes that bypass length-based checks downstream.
 	if len(ciphertext) >= 2 {
-		var seqLen int
-		switch {
-		case ciphertext[1] <= 0x7F: // short-form length
-			seqLen = 2 + int(ciphertext[1])
-		case ciphertext[1] == 0x81 && len(ciphertext) >= 3: // long-form, 1 byte
-			seqLen = 3 + int(ciphertext[2])
-		case ciphertext[1] == 0x82 && len(ciphertext) >= 4: // long-form, 2 bytes
-			seqLen = 4 + int(ciphertext[2])<<8 + int(ciphertext[3])
-		default:
-			seqLen = len(ciphertext) // unknown form; pass as-is to decrypter
+		seqLen, err := decodeSM2ASN1SequenceLength(ciphertext)
+		if err != nil {
+			return nil, fmt.Errorf("tlcp: ClientKeyExchange ciphertext ASN.1 length: %w", err)
 		}
 		if seqLen <= len(ciphertext) {
 			ciphertext = ciphertext[:seqLen]
@@ -138,6 +135,53 @@ func tlcpECCProcessClientKeyExchange(decrypter crypto.Decrypter, ckePayload []by
 		return nil, errors.New("tlcp: decrypted pre-master secret has wrong length")
 	}
 	return plain, nil
+}
+
+// decodeSM2ASN1SequenceLength parses the length prefix of an SM2 ASN.1
+// SEQUENCE (tag 0x30) and returns the total byte count the sequence occupies
+// (tag + length-prefix + content). Enforces DER canonical-encoding rules
+// (X.690 §8.1.3):
+//   - Lengths < 128 MUST use the short form (single byte 0x00..0x7F).
+//   - Long-form lengths MUST NOT use more length bytes than necessary (no
+//     leading zero padding), and MUST NOT encode a value < 128.
+//   - Indefinite-length form (0x80) is forbidden in DER.
+// Rejecting non-canonical encodings prevents ambiguous wire bytes that could
+// be used to bypass length-based checks downstream.
+func decodeSM2ASN1SequenceLength(ciphertext []byte) (int, error) {
+	// Caller guarantees len >= 2 and ciphertext[0] == 0x30 (SEQUENCE tag).
+	switch b := ciphertext[1]; {
+	case b <= 0x7F: // short-form length
+		return 2 + int(b), nil
+	case b == 0x80:
+		return 0, errors.New("indefinite-length form (0x80) is forbidden in DER")
+	case b == 0x81:
+		if len(ciphertext) < 3 {
+			return 0, errors.New("truncated 0x81 long-form length")
+		}
+		v := int(ciphertext[2])
+		// DER: a value < 128 MUST use short form, not 0x81 <v>.
+		if v < 0x80 {
+			return 0, fmt.Errorf("non-canonical DER length: 0x81 0x%02x encodes %d (< 128, must use short form)", v, v)
+		}
+		return 3 + v, nil
+	case b == 0x82:
+		if len(ciphertext) < 4 {
+			return 0, errors.New("truncated 0x82 long-form length")
+		}
+		v := int(ciphertext[2])<<8 | int(ciphertext[3])
+		// DER: a value that fits in one length byte MUST use 0x81, not 0x82.
+		if v < 0x100 {
+			return 0, fmt.Errorf("non-canonical DER length: 0x82 encodes %d (fits in 0x81 form)", v)
+		}
+		return 4 + v, nil
+	case b == 0x83, b == 0x84:
+		// pollux SM2 ciphertexts are at most a few hundred bytes; 3- or 4-byte
+		// length encodings only appear in adversarial input. Reject rather than
+		// than handling forms we never expect to see legitimately.
+		return 0, fmt.Errorf("unsupported DER long-form length 0x%02x (SM2 ciphertexts never reach this size)", b)
+	default:
+		return 0, fmt.Errorf("reserved/invalid DER length prefix 0x%02x", b)
+	}
 }
 
 // tlcpECCSignedParams assembles the bytes signed in a TLCP ECC
@@ -280,7 +324,18 @@ func tlcpECDHEServerGenerateSKE(sigType tlcpSigType, signer crypto.Signer, encPr
 // tlcpECDHEServerProcessCKE derives the PMS from the client's ephemeral key
 // (and the client's long-term enc public key from the encryption certificate).
 // Uses SM2 MQV (sponsor role) + SM3-KDF.
+//
+// state MUST be non-nil — it carries the server's long-term + ephemeral MQV
+// keys produced by tlcpECDHEServerGenerateSKE. A nil state is a programmer
+// error (the engine pipeline guarantees state was created by GenerateSKE);
+// we reject it explicitly rather than dereferencing nil on sponsorPriv.
 func tlcpECDHEServerProcessCKE(state *tlcpECDHEServerKeyExchange, clientEncPub *ecdsa.PublicKey, ckePayload []byte) ([]byte, error) {
+	if state == nil {
+		return nil, errors.New("tlcp: ECDHE server state is nil (GenerateSKE not called)")
+	}
+	if state.sponsorPriv == nil || state.sponsorEph == nil {
+		return nil, errors.New("tlcp: ECDHE server state is incomplete (sponsorPriv/sponsorEph missing)")
+	}
 	_, clientEphPub, err := tlcpParseECDHEParams(ckePayload)
 	if err != nil {
 		return nil, err
@@ -308,35 +363,35 @@ func tlcpECDHEServerProcessCKE(state *tlcpECDHEServerKeyExchange, clientEncPub *
 // tlcpECDHEClientProcessSKE verifies the server's ServerKeyExchange signature
 // and extracts the server's ephemeral public key. Returns the client state
 // holding the server ephemeral key.
+//
+// The ECDHEParams prefix (curve_type + named_curve + point) is decoded via the
+// shared tlcpParseECDHEParams helper rather than re-implementing the curve
+// validation inline — keeping the two call sites (server-side CKE parsing and
+// client-side SKE parsing) in lockstep so a future wire-format change only
+// needs one edit.
 func tlcpECDHEClientProcessSKE(sigType tlcpSigType, signCertPub *ecdsa.PublicKey, clientRandom, serverRandom, skeKey []byte) (*tlcpECDHEClientState, error) {
 	if len(skeKey) < 4 {
 		return nil, errors.New("tlcp: ECDHE ServerKeyExchange too short")
 	}
-	// Validate curve_type and named_curve (must match tlcpParseECDHEParams).
-	if skeKey[0] != tlcpECDHECurveTypeNamed {
-		return nil, fmt.Errorf("tlcp: ECDHE unsupported curve_type %d", skeKey[0])
-	}
-	if binary.BigEndian.Uint16(skeKey[1:3]) != uint16(tlcpCurveSM2) {
-		return nil, fmt.Errorf("tlcp: ECDHE unsupported named_curve %d", binary.BigEndian.Uint16(skeKey[1:3]))
-	}
-	pubLen := int(skeKey[3])
-	if pubLen != tlcpSM2PointLength {
-		return nil, fmt.Errorf("tlcp: ECDHE unexpected point length %d", pubLen)
-	}
-	if len(skeKey) < 4+pubLen+2 {
-		return nil, errors.New("tlcp: ECDHE ServerKeyExchange truncated")
-	}
-	paramsBytes := skeKey[:4+pubLen]
-	serverEphPub, err := newEcdhPublicKey(paramsBytes[4:])
+	// Reuse the shared ECDHEParams parser for curve_type/named_curve/point
+	// validation. It returns paramsBytes (the consumed prefix) so we can slice
+	// the trailing signature cleanly.
+	paramsBytes, serverEphPub, err := tlcpParseECDHEParams(skeKey)
 	if err != nil {
-		return nil, fmt.Errorf("tlcp: parse server ephemeral key: %w", err)
+		return nil, err
 	}
-	// Verify signature.
-	sigLen := int(skeKey[4+pubLen])<<8 | int(skeKey[4+pubLen+1])
-	if 4+pubLen+2+sigLen != len(skeKey) {
+	// SKE = ECDHEParams || uint16-sig-len || signature. Validate the trailing
+	// signature length field and verify the signature over the reconstructed
+	// signed-params input.
+	rest := skeKey[len(paramsBytes):]
+	if len(rest) < 2 {
+		return nil, errors.New("tlcp: ECDHE ServerKeyExchange truncated before signature length")
+	}
+	sigLen := int(rest[0])<<8 | int(rest[1])
+	if 2+sigLen != len(rest) {
 		return nil, errors.New("tlcp: ECDHE SKE signature length mismatch")
 	}
-	sig := skeKey[4+pubLen+2:]
+	sig := rest[2:]
 	tbs := tlcpECDHESignedParams(clientRandom, serverRandom, paramsBytes)
 	if err := tlcpVerifyHandshakeSignature(sigType, signCertPub, tbs, sig); err != nil {
 		return nil, fmt.Errorf("tlcp: ECDHE SKE signature: %w", err)

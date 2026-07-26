@@ -96,11 +96,18 @@ func (m *NewSessionTicketMsg) unmarshalBody(b []byte) error {
 }
 
 // ParseNewSessionTicketBody parses a NewSessionTicket handshake message body
-// (the bytes after the 4-byte handshake header) and returns the resumption PSK
-// (the Ticket field, carried verbatim) together with the ticket_age_add. A
-// client uses these to feed ClientConfig.ResumptionPSK /
+// (the bytes after the 4-byte handshake header) and returns the opaque Ticket
+// identity (the Ticket field, carried verbatim) together with the
+// ticket_age_add.
+//
+// Note: the returned ticket is the OPAQUE identity to send back in a future
+// pre_shared_key extension — it is NOT the raw PSK. The server encrypts the PSK
+// into the ticket via EncryptSessionTicket; the client recovers the PSK itself
+// from the resumption master secret and the ticket nonce via
+// DeriveResumptionPSK (RFC 8446 §4.6.1). A client uses the returned identity
+// to feed ClientConfig.ResumptionIdentity and the age to compute
 // ResumptionObfuscatedTicketAge for a subsequent 0-RTT attempt.
-func ParseNewSessionTicketBody(b []byte) (psk []byte, ticketAgeAdd uint32, err error) {
+func ParseNewSessionTicketBody(b []byte) (identity []byte, ticketAgeAdd uint32, err error) {
 	m := &NewSessionTicketMsg{}
 	if err := m.unmarshalBody(b); err != nil {
 		return nil, 0, err

@@ -68,6 +68,17 @@ func ReadCryptoFrame(b []byte) (offset uint64, data []byte, n int, err error) {
 	if remaining < length {
 		return 0, nil, 0, fmt.Errorf("quicgm: CRYPTO length %d exceeds remaining %d bytes", length, remaining)
 	}
+	// Guard against int overflow on 32-bit platforms and cap the allocation
+	// to a reasonable maximum. CRYPTO frames carry TLS handshake messages
+	// (ClientHello, Certificate, etc.) which are practically bounded well
+	// below 1 MiB; a length above 16 MiB indicates a malformed or malicious
+	// frame. Without this cap an attacker-controlled length near MaxInt32
+	// would trigger a multi-GiB allocation (OOM) on 64-bit platforms, or an
+	// int overflow panic on 32-bit platforms.
+	const maxCryptoFrameLen = 16 << 20 // 16 MiB
+	if length > maxCryptoFrameLen {
+		return 0, nil, 0, fmt.Errorf("quicgm: CRYPTO length %d exceeds maximum %d", length, maxCryptoFrameLen)
+	}
 	end := pos + int(length)
 	data = make([]byte, length)
 	copy(data, b[pos:end])

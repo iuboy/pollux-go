@@ -22,3 +22,15 @@ func SuiteName(id uint16) string {
 		return "unknown"
 	}
 }
+
+// SigSchemeName returns a human-readable name for known TLS 1.3 signature
+// schemes. Used in error messages (e.g. CertificateVerify alg-mismatch) so
+// the diagnostic shows "SM2SigSM3" rather than a raw hex value.
+func SigSchemeName(ss uint16) string {
+	switch ss {
+	case SM2SigSM3:
+		return "SM2SigSM3"
+	default:
+		return "unknown"
+	}
+}

@@ -52,15 +52,17 @@ func ZeroUint32(data []uint32) {
 	// Guard len*4 against integer overflow on 32-bit builds (where int is 32
 	// bits wide); on such targets an attacker-controlled slice length near
 	// MaxInt32/4 would wrap byteLen and yield an out-of-bounds view.
-	if uint64(len(data)) > (1<<32-1)/4 {
-		return
+	// When the guard trips we skip XOR but still run the direct-write layer
+	// below — silently returning without zeroing would leak key material.
+	if uint64(len(data)) <= (1<<32-1)/4 {
+		byteLen := len(data) * 4
+		view := unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen) // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
+		// XOR with itself so values self-cancel to zero.
+		subtle.XORBytes(view, view, view)
 	}
-	byteLen := len(data) * 4
-	view := unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen) // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
-	// XOR with itself so values self-cancel to zero.
-	subtle.XORBytes(view, view, view)
 
-	// Layer 2: direct write.
+	// Layer 2: direct write (always runs, even when the XOR layer was skipped
+	// due to the overflow guard).
 	for i := range data {
 		*(*uint32)(unsafe.Pointer(&data[i])) = 0 // #nosec G103 -- intentional direct write to defeat dead-store elimination
 	}
@@ -77,15 +79,16 @@ func ZeroUint64(data []uint64) {
 
 	// Layer 1: XOR-based zeroing (consistent with ZeroBytes pattern).
 	// Guard len*8 against integer overflow on 32-bit builds (see ZeroUint32).
-	if uint64(len(data)) > (1<<32-1)/8 {
-		return
+	// When the guard trips we skip XOR but still run the direct-write layer.
+	if uint64(len(data)) <= (1<<32-1)/8 {
+		byteLen := len(data) * 8
+		view := unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen) // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
+		// XOR with itself so values self-cancel to zero.
+		subtle.XORBytes(view, view, view)
 	}
-	byteLen := len(data) * 8
-	view := unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen) // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
-	// XOR with itself so values self-cancel to zero.
-	subtle.XORBytes(view, view, view)
 
-	// Layer 2: direct write.
+	// Layer 2: direct write (always runs, even when the XOR layer was skipped
+	// due to the overflow guard).
 	for i := range data {
 		*(*uint64)(unsafe.Pointer(&data[i])) = 0 // #nosec G103 -- intentional direct write to defeat dead-store elimination
 	}

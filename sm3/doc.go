@@ -12,5 +12,7 @@
 //	// Or use the one-shot function:
 //	digest := sm3.Sum(data)
 //
-// Status: wrapper around gmsm/sm3
+// This package delegates to github.com/emmansun/gmsm/sm3 for the core
+// implementation. The wrapper provides a Go-idiomatic API (New, Sum, KDF,
+// HKDF, HMAC) symmetric with the sha package for SHA-256.
 package sm3

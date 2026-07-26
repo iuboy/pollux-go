@@ -52,7 +52,11 @@ func ChoosePacketNumberLen(pn uint64, largestAcked *uint64) (PacketNumberLen, er
 
 // TruncatePacketNumber returns the low n octets of pn, i.e. the value to place
 // in the (header-protection-eligible) packet-number field on the wire.
+// n must be 1..4; other values produce a zero result.
 func TruncatePacketNumber(pn uint64, n PacketNumberLen) uint64 {
+	if n < 1 || n > 4 {
+		return 0
+	}
 	return pn & ((1 << (8 * uint64(n))) - 1)
 }
 
@@ -63,6 +67,9 @@ func TruncatePacketNumber(pn uint64, n PacketNumberLen) uint64 {
 // Arithmetic is performed in int64 (packet numbers are < 2^62, well within
 // range) to avoid uint64 underflow in the half-window comparisons.
 func DecodePacketNumber(largestAcked, truncatedPN uint64, n PacketNumberLen) uint64 {
+	if n < 1 || n > 4 {
+		return 0
+	}
 	pnNBits := int64(8 * uint64(n))
 	pnWin := int64(1) << pnNBits
 	pnHwin := pnWin >> 1
@@ -85,6 +92,9 @@ func DecodePacketNumber(largestAcked, truncatedPN uint64, n PacketNumberLen) uin
 // returns the extended slice. This is the plaintext packet-number field before
 // header protection is applied.
 func AppendPacketNumber(b []byte, pn uint64, n PacketNumberLen) []byte {
+	if n < 1 || n > 4 {
+		return b
+	}
 	t := TruncatePacketNumber(pn, n)
 	for i := int(n) - 1; i >= 0; i-- {
 		b = append(b, byte(t>>(8*uint(i))))

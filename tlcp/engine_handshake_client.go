@@ -8,10 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
-	"net"
 	"time"
 
+	"github.com/iuboy/pollux-go/internal/memsecure"
 	polluxsmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
@@ -99,8 +98,13 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	if serverHello.version != tlcpVersionTLCP {
 		return fmt.Errorf("tlcp: server chose version %04x, want %04x", serverHello.version, tlcpVersionTLCP)
 	}
+	// vers/haveVers are read by writeRecord under out.mu (see engine_conn.go);
+	// write them under the same lock so Close()'s alert goroutine can't observe
+	// a torn update while a concurrent Handshake() is mid-flight.
+	c.out.mu.Lock()
 	c.vers = serverHello.version
 	c.haveVers = true
+	c.out.mu.Unlock()
 	c.cipherSuite = serverHello.cipherSuite
 
 	suite := tlcpLookupCipherSuite(serverHello.cipherSuite)
@@ -308,36 +312,41 @@ func (c *tlcpConn) clientHandshakeReal() error {
 		pms, ckePayload, err = tlcpECCGenerateClientKeyExchange(c.vers, config.rand, encPub)
 	}
 	if err != nil {
-		return err
-	}
-	cke := &tlcpClientKeyExchangeMsg{ciphertext: ckePayload}
-	if err := c.writeHandshakeRecord(cke, transcript); err != nil {
-		return err
-	}
-
-	// 8b. Send CertificateVerify (if we sent a client signing cert): SM2 sign
-	// over the transcript hash up to this point.
-	if certRequested && config.clientCerts != nil && config.clientCerts.signSigner != nil {
-		signed := transcript.sum()
-		sig, err := tlcpSignHandshake(config.rand, sigType, config.clientCerts.signSigner, signed)
-		if err != nil {
+			zeroBytes(pms)
 			return err
 		}
-		cv := &tlcpCertificateVerifyMsg{signature: sig}
-		if err := c.writeHandshakeRecord(cv, transcript); err != nil {
+		cke := &tlcpClientKeyExchangeMsg{ciphertext: ckePayload}
+		if err := c.writeHandshakeRecord(cke, transcript); err != nil {
+			zeroBytes(pms)
 			return err
 		}
-	}
 
-	// 9. Derive master secret and establish traffic keys.
-	masterSecret := tlcpMasterFromPreMaster(pms, hello.random, serverHello.random)
-	zeroBytes(pms)
-	if err := c.establishKeys(suite, masterSecret, hello.random, serverHello.random); err != nil {
-		return err
-	}
+		// 8b. Send CertificateVerify (if we sent a client signing cert): SM2 sign
+		// over the transcript hash up to this point.
+		if certRequested && config.clientCerts != nil && config.clientCerts.signSigner != nil {
+			signed := transcript.sum()
+			sig, err := tlcpSignHandshake(config.rand, sigType, config.clientCerts.signSigner, signed)
+			if err != nil {
+				zeroBytes(pms)
+				return err
+			}
+			cv := &tlcpCertificateVerifyMsg{signature: sig}
+			if err := c.writeHandshakeRecord(cv, transcript); err != nil {
+				zeroBytes(pms)
+				return err
+			}
+		}
+
+		// 9. Derive master secret and establish traffic keys.
+		masterSecret := tlcpMasterFromPreMaster(pms, hello.random, serverHello.random)
+		zeroBytes(pms)
+		if err := c.establishKeys(suite, masterSecret, hello.random, serverHello.random); err != nil {
+			zeroBytes(masterSecret)
+			return err
+		}
 
 	// 10. Send CCS + client Finished (buffered, then flushed).
-	c.buffering = true
+	c.buffering.Store(true)
 	if err := c.writeRecord(tlcpRecordChangeCipherSpec, []byte{1}); err != nil {
 		return err
 	}
@@ -424,25 +433,30 @@ func (c *tlcpConn) clientResumeHandshake(suite *tlcpCipherSuite, hello *tlcpClie
 	c.peerCertificates = c.session.peerCertificates
 
 	if err := c.establishKeys(suite, masterSecret, hello.random, serverHello.random); err != nil {
-		return err
-	}
+			zeroBytes(masterSecret)
+			return err
+		}
 
-	// Resume: server sends its Finished first, client reads then sends its own.
-	if err := c.readServerCCSAndFinished(transcript, masterSecret); err != nil {
-		return err
-	}
+		// Resume: server sends its Finished first, client reads then sends its own.
+		if err := c.readServerCCSAndFinished(transcript, masterSecret); err != nil {
+			zeroBytes(masterSecret)
+			return err
+		}
 
-	c.buffering = true
-	if err := c.writeRecord(tlcpRecordChangeCipherSpec, []byte{1}); err != nil {
-		return err
-	}
-	finished := &tlcpFinishedMsg{verifyData: transcript.clientSum(masterSecret)}
-	if err := c.writeHandshakeRecord(finished, transcript); err != nil {
-		return err
-	}
-	if err := c.flush(); err != nil {
-		return err
-	}
+		c.buffering.Store(true)
+		if err := c.writeRecord(tlcpRecordChangeCipherSpec, []byte{1}); err != nil {
+			zeroBytes(masterSecret)
+			return err
+		}
+		finished := &tlcpFinishedMsg{verifyData: transcript.clientSum(masterSecret)}
+		if err := c.writeHandshakeRecord(finished, transcript); err != nil {
+			zeroBytes(masterSecret)
+			return err
+		}
+		if err := c.flush(); err != nil {
+			zeroBytes(masterSecret)
+			return err
+		}
 
 	zeroBytes(masterSecret)
 	return nil
@@ -484,19 +498,12 @@ func mustMarshal(m interface{ marshal() ([]byte, error) }) []byte {
 }
 
 // zeroBytes overwrites b with zeros (sensitive material).
+// Delegates to memsecure.ZeroBytes for multi-layer defense against dead-store
+// elimination (crypto/subtle XOR + unsafe write + runtime.KeepAlive).
 func zeroBytes(b []byte) {
-	for i := range b {
-		b[i] = 0
-	}
+	memsecure.ZeroBytes(b)
 }
 
 // Replace the conn.go clientHandshake stub with the real driver (build-tag
 // guard ensures single definition).
 func (c *tlcpConn) clientHandshake() error { return c.clientHandshakeReal() }
-
-// ensure unused imports don't break the build when features are added later.
-var (
-	_ = bytes.Compare
-	_ = big.NewInt
-	_ = net.IPv4
-)

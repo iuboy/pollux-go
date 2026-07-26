@@ -72,6 +72,39 @@ func TestSM2KDF_ZeroLength(t *testing.T) {
 	}
 }
 
+// TestSM2KDF_NegativeLength covers the negative klen branch: the underlying
+// sm3.KDF rejects klen <= 0; the gmstd wrapper must surface that error rather
+// than panic or return an empty slice.
+func TestSM2KDF_NegativeLength(t *testing.T) {
+	_, err := SM2KDF([]byte("z"), -1)
+	if err == nil {
+		t.Error("negative klen should return error")
+	}
+}
+
+// TestSM2KDF_EmptySharedSecret covers the empty-z branch: sm3.KDF rejects
+// empty input with a distinct error so callers do not silently derive a key
+// from a degenerate shared secret.
+func TestSM2KDF_EmptySharedSecret(t *testing.T) {
+	_, err := SM2KDF([]byte{}, 32)
+	if err == nil {
+		t.Error("empty shared secret should return error")
+	}
+	// nil z must be rejected identically.
+	if _, err := SM2KDF(nil, 32); err == nil {
+		t.Error("nil shared secret should return error")
+	}
+}
+
+// TestSM2KDF_OversizedLength covers the new maxKDFLen guard added in
+// OCR Tier 2 — a klen above the cap must error rather than OOM.
+func TestSM2KDF_OversizedLength(t *testing.T) {
+	_, err := SM2KDF([]byte("z"), 1<<31) // 2 GiB > 1 GiB cap
+	if err == nil {
+		t.Error("oversized klen should return error")
+	}
+}
+
 func TestGenerateSM4Key(t *testing.T) {
 	key, err := GenerateSM4Key()
 	if err != nil {

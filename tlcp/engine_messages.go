@@ -27,6 +27,13 @@ import (
 // tlcpHandshakeMessage is implemented by every handshake message struct so the
 // transcript-hash helper (and later the state machines) can treat them
 // uniformly.
+//
+// Concurrency: message structs are NOT safe for concurrent use. The marshal()/
+// unmarshal() methods cache into the m.raw field without synchronization. The
+// TLCP handshake is driven by a single goroutine (the connection's Handshake
+// goroutine, holding handshakeMutex), so the cache is never accessed
+// concurrently in the engine. Callers that hold message structs across
+// goroutines must serialize access themselves.
 type tlcpHandshakeMessage interface {
 	tlcpMsgType() uint8
 }

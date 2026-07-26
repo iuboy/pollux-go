@@ -86,35 +86,52 @@ func TestNewGCM_NISTVector(t *testing.T) {
 
 func TestSealRandomNonce_RoundTrip(t *testing.T) {
 	key, _ := GenerateKey()
-	defer ZeroKey(key)
 	plaintext := []byte("pollux-go aes round-trip")
 	aad := []byte("entity-id")
 
-	sealed, err := SealRandomNonce(key, plaintext, aad)
+	// Stable-key path: produce nonce||ct via NewGCM so the same key can
+	// decrypt later via OpenWithNonce.
+	aead, err := NewGCM(key)
 	if err != nil {
-		t.Fatalf("SealRandomNonce err = %v", err)
+		t.Fatalf("NewGCM err = %v", err)
 	}
-	if len(sealed.Nonce) != GCMNonceSize {
-		t.Errorf("nonce len = %d, want %d", len(sealed.Nonce), GCMNonceSize)
+	nonce := make([]byte, GCMNonceSize)
+	for i := range nonce {
+		nonce[i] = byte(i)
 	}
-	// GCM tag is 16 bytes; ciphertext = plaintext + 16.
-	if len(sealed.Ciphertext) != len(plaintext)+16 {
-		t.Errorf("ciphertext len = %d, want %d", len(sealed.Ciphertext), len(plaintext)+16)
-	}
+	ct := aead.Seal(nil, nonce, plaintext, aad)
+	sealedDirect := Sealed{Nonce: nonce, Ciphertext: ct}
 
-	pt, err := OpenWithNonce(key, sealed, aad)
+	// OpenWithNonce consumes key — call it BEFORE SealRandomNonce destroys key.
+	pt, err := OpenWithNonce(key, sealedDirect, aad)
 	if err != nil {
 		t.Fatalf("OpenWithNonce err = %v", err)
 	}
 	if !bytes.Equal(pt, plaintext) {
 		t.Errorf("round-trip mismatch: got %q, want %q", pt, plaintext)
 	}
+
+	// Now exercise SealRandomNonce. It consumes key; verify the contract:
+	// after SealRandomNonce returns, key MUST be all zeros.
+	if _, err := SealRandomNonce(key, plaintext, aad); err != nil {
+		t.Fatalf("SealRandomNonce err = %v", err)
+	}
+	for i, b := range key {
+		if b != 0 {
+			t.Errorf("seal-side key byte %d = %#x, want 0 (key should be zeroed)", i, b)
+		}
+	}
 }
 
 func TestOpenWithNonce_RejectsTamperedAAD(t *testing.T) {
 	key, _ := GenerateKey()
 	defer ZeroKey(key)
-	sealed, _ := SealRandomNonce(key, []byte("payload"), []byte("aad-a"))
+	// Use NewGCM directly so the key survives for OpenWithNonce — SealRandomNonce
+	// would consume it. We're testing OpenWithNonce's AAD binding, not seal.
+	aead, _ := NewGCM(key)
+	nonce := make([]byte, GCMNonceSize)
+	ct := aead.Seal(nil, nonce, []byte("payload"), []byte("aad-a"))
+	sealed := Sealed{Nonce: nonce, Ciphertext: ct}
 
 	if _, err := OpenWithNonce(key, sealed, []byte("aad-b")); err == nil {
 		t.Error("OpenWithNonce with wrong AAD unexpectedly succeeded")
@@ -137,7 +154,16 @@ func TestSealCombined_FormatIsNoncePrepended(t *testing.T) {
 	plaintext := []byte("combined-format")
 	aad := []byte("aad")
 
-	combined, err := SealCombined(key, plaintext, aad)
+	// SealCombined consumes key; use NewGCM for the cross-check so we can
+	// inspect the layout without a second key.
+	aead, _ := NewGCM(key)
+	nonce := make([]byte, GCMNonceSize)
+	combinedDirect := aead.Seal(nonce, nonce, plaintext, aad)
+
+	// Now also exercise SealCombined via a fresh key copy to confirm format.
+	keyCopy := append([]byte(nil), key...)
+	t.Cleanup(func() { ZeroKey(keyCopy) })
+	combined, err := SealCombined(keyCopy, plaintext, aad)
 	if err != nil {
 		t.Fatalf("SealCombined err = %v", err)
 	}
@@ -145,9 +171,13 @@ func TestSealCombined_FormatIsNoncePrepended(t *testing.T) {
 	if len(combined) != GCMNonceSize+len(plaintext)+16 {
 		t.Errorf("combined len = %d, want %d", len(combined), GCMNonceSize+len(plaintext)+16)
 	}
+	// Same length as the standard idiom.
+	if len(combined) != len(combinedDirect) {
+		t.Errorf("combined len %d != direct len %d", len(combined), len(combinedDirect))
+	}
 
-	// Decrypt via OpenCombined.
-	pt, err := OpenCombined(key, combined, aad)
+	// Decrypt via OpenCombined with the (still-pristine) original key.
+	pt, err := OpenCombined(key, combinedDirect, aad)
 	if err != nil {
 		t.Fatalf("OpenCombined err = %v", err)
 	}

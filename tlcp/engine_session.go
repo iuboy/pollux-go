@@ -17,6 +17,13 @@ import (
 
 // tlcpSessionState captures the resumption material from a full handshake.
 // masterSecret is stored as a copy; the cache zeroes it on eviction.
+//
+// Concurrency note: tlcpLRUSessionCache.Get returns a *shallow copy* of the
+// cached state (independent slice headers for masterSecret/peerCertificates),
+// so a caller reading the returned state cannot race with a concurrent Put
+// that zeroes the cached masterSecret on eviction. The copy is made under the
+// cache lock; callers receive an independent object they own for the duration
+// of the handshake.
 type tlcpSessionState struct {
 	sessionID        []byte
 	version          uint16
@@ -24,6 +31,29 @@ type tlcpSessionState struct {
 	masterSecret     []byte
 	peerCertificates [][]byte // DER list, role-dependent (client sees server certs)
 	createdAt        time.Time
+}
+
+// clone returns a deep-enough copy of the state for safe handoff to a caller
+// that may outlive the cache entry. masterSecret and peerCertificates get
+// fresh backing arrays; scalar fields copy by value.
+func (s *tlcpSessionState) clone() *tlcpSessionState {
+	if s == nil {
+		return nil
+	}
+	out := &tlcpSessionState{
+		version:     s.version,
+		cipherSuite: s.cipherSuite,
+		createdAt:   s.createdAt,
+	}
+	out.sessionID = append([]byte(nil), s.sessionID...)
+	out.masterSecret = append([]byte(nil), s.masterSecret...)
+	if len(s.peerCertificates) > 0 {
+		out.peerCertificates = make([][]byte, len(s.peerCertificates))
+		for i, der := range s.peerCertificates {
+			out.peerCertificates[i] = append([]byte(nil), der...)
+		}
+	}
+	return out
 }
 
 // tlcpSessionCache is the contract for a session store. Implementations must be
@@ -61,6 +91,10 @@ type tlcpLruEntry struct {
 	cs  *tlcpSessionState
 }
 
+// Get returns a *clone* of the cached session state (independent slice
+// backing arrays), so the caller cannot race with a concurrent Put that
+// zeroes the cached masterSecret on eviction. Callers receive an independent
+// object they own for the duration of the handshake.
 func (c *tlcpLRUSessionCache) Get(sessionKey string) (*tlcpSessionState, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -70,14 +104,14 @@ func (c *tlcpLRUSessionCache) Get(sessionKey string) (*tlcpSessionState, bool) {
 		if front == nil {
 			return nil, false
 		}
-		return front.Value.(*tlcpLruEntry).cs, true
+		return front.Value.(*tlcpLruEntry).cs.clone(), true
 	}
 	el, ok := c.m[sessionKey]
 	if !ok || el == nil {
 		return nil, false
 	}
 	c.order.MoveToFront(el)
-	return el.Value.(*tlcpLruEntry).cs, true
+	return el.Value.(*tlcpLruEntry).cs.clone(), true
 }
 
 func (c *tlcpLRUSessionCache) Put(sessionKey string, cs *tlcpSessionState) {

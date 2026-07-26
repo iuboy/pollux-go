@@ -10,13 +10,14 @@ import (
 // zero, which RFC 5280 §4.1.2.2 forbids (serial must be a positive integer).
 var ErrSerialZero = errors.New("smx509: generated serial number is zero")
 
-// serialBitLen is the serial number entropy length in bits. RFC 5280 §4.1.2.2
-// requires CA certificates to use at least 20 bytes (160 bits) of randomness;
-// the upper bound for the encoded serial is also 20 octets. We cap at 2^159
-// (not 2^160) so the most-significant bit is never set — this avoids the DER
-// leading-0x00 sign byte that would push the encoding to 21 octets and violate
-// the 20-octet limit. 159 bits still far exceeds the CA/Browser Forum 64-bit
-// entropy minimum.
+// serialBitLen is the serial number entropy length in bits.
+//
+// RFC 5280 §4.1.2.2 requires the serial number to be a positive integer whose
+// DER encoding is at most 20 octets. CA/Browser Forum Baseline Requirements
+// recommend at least 64 bits of entropy. We cap at 2^159 (not 2^160) so the
+// most-significant bit is never set — this avoids the DER leading-0x00 sign
+// byte that would push the encoding to 21 octets and violate the 20-octet
+// limit. 159 bits far exceeds the 64-bit entropy minimum.
 const serialBitLen = 159
 
 // GenerateSerialNumber returns a cryptographically random positive integer

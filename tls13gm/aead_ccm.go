@@ -39,6 +39,14 @@ func NewCCMAEAD(key, nonce []byte) (*CCMAEAD, error) {
 }
 
 // CCMAEAD provides SM4-CCM encryption/decryption for TLS 1.3 records.
+//
+// Concurrency: CCMAEAD is NOT safe for concurrent use — the underlying
+// cipher.AEAD implementation maintains internal state that Seal/Open mutate
+// without synchronization, matching the standard library's documented
+// contract ("Implementations must not be used concurrently"). The TLS 1.3
+// record layer serializes Seal/Open via the connection's out.mu/in.mu locks,
+// so the no-concurrency contract is naturally satisfied. Callers sharing a
+// CCMAEAD across goroutines must serialize access externally.
 type CCMAEAD struct {
 	aead       cipher.AEAD
 	fixedNonce []byte
@@ -60,8 +68,12 @@ func (a *CCMAEAD) Open(seqNum uint64, ciphertext, aad []byte) ([]byte, error) {
 // i.e. the number of bytes Seal appends to the plaintext.
 func (a *CCMAEAD) Overhead() int { return a.aead.Overhead() }
 
-// computeCCMNonce computes the nonce by XORing the sequence number into the
-// fixed nonce, identical to the GCM nonce construction in TLS 1.3.
+// computeCCMNonce computes the nonce by XORing the 8-byte big-endian
+// sequence number into the low 8 bytes of the fixed 12-byte IV, identical
+// to the GCM nonce construction in TLS 1.3 (RFC 8446 §5.3) and to
+// computeNonce in aead.go. The seqNum is shifted in 8-bit chunks from the
+// LSB (>>0) to the MSB (>>56), each XORed into nonce[11-i]; this is
+// big-endian byte order, matching the RFC's "right-aligned" XOR convention.
 func computeCCMNonce(fixedNonce []byte, seqNum uint64) []byte {
 	nonce := make([]byte, len(fixedNonce))
 	copy(nonce, fixedNonce)

@@ -96,6 +96,9 @@ func newTLCPCBCEncrypter(key, iv []byte) (*tlcpCBCStream, error) {
 	if len(key) != 16 {
 		return nil, fmt.Errorf("tlcp: SM4 key length %d, want 16", len(key))
 	}
+	if len(iv) != 16 {
+		return nil, fmt.Errorf("tlcp: SM4-CBC IV length %d, want 16", len(iv))
+	}
 	mode, err := polluxSM4.NewCBCEncrypter(key, iv)
 	if err != nil {
 		return nil, err
@@ -106,6 +109,9 @@ func newTLCPCBCEncrypter(key, iv []byte) (*tlcpCBCStream, error) {
 func newTLCPCBCDecrypter(key, iv []byte) (*tlcpCBCStream, error) {
 	if len(key) != 16 {
 		return nil, fmt.Errorf("tlcp: SM4 key length %d, want 16", len(key))
+	}
+	if len(iv) != 16 {
+		return nil, fmt.Errorf("tlcp: SM4-CBC IV length %d, want 16", len(iv))
 	}
 	mode, err := polluxSM4.NewCBCDecrypter(key, iv)
 	if err != nil {
@@ -184,6 +190,12 @@ func (f *tlcpPrefixNonceAEAD) Overhead() int { return f.aead.Overhead() }
 // Seal encrypts plaintext under the implicit prefix + the per-record explicit
 // nonce. additionalData is the TLCP record header. The full nonce is built in a
 // local variable — no shared state is mutated.
+//
+// Seal panics on explicitNonce length mismatch (matching cipher.AEAD's contract
+// which also panics on bad nonces). The caller (tlcpConn.encrypt) builds the
+// explicit nonce from hc.seq at a fixed width, so a length mismatch here is a
+// programmer error, not a peer-controlled value. Open returns an error because
+// the explicit nonce comes from the wire and is attacker-influenced.
 func (f *tlcpPrefixNonceAEAD) Seal(out, explicitNonce, plaintext, additionalData []byte) []byte {
 	if len(explicitNonce) != f.ExplicitNonceSize() {
 		panic(fmt.Sprintf("tlcp: explicit nonce length %d, want %d", len(explicitNonce), f.ExplicitNonceSize()))

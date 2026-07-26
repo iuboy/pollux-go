@@ -115,6 +115,13 @@ func parsePreSharedKeyExtension(data []byte) (identities []PskIdentity, binders 
 // INCLUDING the identities vector, EXCLUDING the 2-byte binders_len prefix and
 // the binders themselves.
 //
+// Assumption: the caller offers exactly ONE identity (the only mode tls13gm
+// supports — single-PSK resumption). The placeholder binder vector built
+// below hardcodes a single binder of sm3.Size bytes; a multi-identity
+// ClientHello would mis-encode here. RFC 8446 requires len(binders) ==
+// len(identities), so the binder offset math (bindersField constant) is only
+// correct for the single-identity case.
+//
 // Crucially the pre_shared_key extension's ext_len keeps its FULL value
 // (covering identities + binders); only the trailing binders field is cut. This
 // matches OpenSSL's binderoffset (EVP_DigestUpdate(init_buf->data, binderoffset)

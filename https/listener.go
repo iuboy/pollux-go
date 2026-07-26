@@ -1,10 +1,11 @@
-package http
+package https
 
 import (
 	"bufio"
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -13,8 +14,9 @@ import (
 )
 
 var (
-	errNotHandshake       = errors.New("pollux/http: not a TLS/TLCP handshake")
-	errProtocolNotAllowed = errors.New("pollux/http: protocol version not allowed")
+	errNotHandshake       = errors.New("pollux/https: not a TLS/TLCP handshake")
+	errProtocolNotAllowed = errors.New("pollux/https: protocol version not allowed by ProtocolMask")
+	errUnknownProtocol    = errors.New("pollux/https: unknown protocol version in record header")
 )
 
 const (
@@ -108,8 +110,13 @@ func NewHybridListener(inner net.Listener, tlcpCfg *tlcp.Config, tlsCfg *tls.Con
 // SetHandshakeTimeout sets the maximum time to wait for handshake completion.
 // A zero or negative value disables the timeout (not recommended for production).
 //
-// WARNING: This method is NOT safe to call concurrently with Accept.
-// Set timeout parameters before calling Accept.
+// Concurrency: the field is read under l.mu, so the call itself is data-race
+// safe. However, Accept snapshots handshakeTimeout into a local under l.mu and
+// then uses that snapshot without re-checking — so a SetHandshakeTimeout call
+// made AFTER Accept has released the lock only takes effect on the NEXT Accept.
+// This is the intended hot-reload contract: in-flight handshakes use the
+// timeout that was current when they started. Callers that need to abort an
+// in-flight handshake should close the underlying listener instead.
 func (l *hybridListener) SetHandshakeTimeout(d time.Duration) {
 	l.mu.Lock()
 	l.handshakeTimeout = d
@@ -117,6 +124,9 @@ func (l *hybridListener) SetHandshakeTimeout(d time.Duration) {
 }
 
 // SetProtocolMask sets which protocol versions are allowed.
+//
+// Concurrency: see SetHandshakeTimeout — the field write is race-safe, but
+// Accept uses a snapshot, so a change only takes effect on the next Accept.
 func (l *hybridListener) SetProtocolMask(mask ProtocolMask) {
 	l.mu.Lock()
 	l.protocolMask = mask
@@ -143,6 +153,15 @@ func (l *hybridListener) Accept() (net.Conn, error) {
 		}
 	}
 
+	// bufio.NewReader wraps conn so Peek can inspect the record-header version
+	// without consuming bytes the subsequent TLS/TLCP handshake needs. The
+	// default 4096-byte buffer is held for the connection's lifetime via the
+	// readerConn wrapper, even though only the first 5 bytes are needed post-
+	// Peek. For long-lived connections (WebSocket, gRPC) this 4KB/conn is an
+	// accepted tradeoff — the alternative (reading 5 bytes into a fixed buffer
+	// and prepending them via a custom net.Conn) would re-implement
+	// bufio.Reader's framing. If a deployment with very high conn counts
+	// needs to claw back the 4KB, switch to a manual 5-byte read + prepend.
 	br := bufio.NewReader(conn)
 	header, err := br.Peek(recordHeaderLen)
 	if err != nil {
@@ -177,9 +196,13 @@ func (l *hybridListener) Accept() (net.Conn, error) {
 			}
 			useTLCP = false
 		} else {
-			// Unknown version - reject to avoid protocol confusion attacks
+			// Unknown version - reject to avoid protocol confusion attacks.
+			// Distinct from errProtocolNotAllowed so a debugger can tell a
+			// ProtocolMask-filtered rejection (operator policy) from a genuinely
+			// unknown version (e.g. 0x0200, SSLv3 0x0300) that never matched
+			// any expected protocol family.
 			conn.Close()
-			return nil, errProtocolNotAllowed
+			return nil, fmt.Errorf("%w: 0x%04x", errUnknownProtocol, version)
 		}
 	}
 

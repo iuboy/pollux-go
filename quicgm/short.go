@@ -18,7 +18,13 @@ import (
 // helpers; pass PacketNumberLen4 when there is no ack feedback yet. The
 // receiver reconstructs the full packet number with DecodePacketNumber against
 // its largest acknowledged number.
-func Seal1RTTPacket(keys *tls13gm.QUICPacketKeys, dcid []byte, pn uint64, pnLen PacketNumberLen, payload []byte) ([]byte, error) {
+//
+// keyPhase is the Key Phase bit (RFC 9001 §6): 0 for the initial key
+// generation, 1 after a key update. The caller tracks the current generation
+// and MUST flip this bit the first time it sends under a new generation so
+// the receiver knows to switch to the updated keys. pollux does not enforce
+// the cadence — the transport (e.g. quic-go) owns the key-update threshold.
+func Seal1RTTPacket(keys *tls13gm.QUICPacketKeys, dcid []byte, pn uint64, pnLen PacketNumberLen, keyPhase bool, payload []byte) ([]byte, error) {
 	if pnLen < 1 || pnLen > 4 {
 		return nil, fmt.Errorf("quicgm: packet number length %d must be 1..4", pnLen)
 	}
@@ -31,9 +37,15 @@ func Seal1RTTPacket(keys *tls13gm.QUICPacketKeys, dcid []byte, pn uint64, pnLen 
 	}
 	// keys are caller-owned (a handshake secret set); not zeroed here.
 
-	// First byte: short header (0), fixed bit (1), spin/reserved/key-phase = 0,
-	// packet number length - 1 => 0x40 | (pnLen-1).
+	// First byte: short header (0), fixed bit (1), then bits 4-1 carry spin,
+	// reserved, key-phase, reserved; the low 2 bits encode pnLen-1. RFC 9000
+	// §17.3.1 fixes the layout as 01 <spin> 1 <key-phase> <reserved*2> <pnLen>.
+	// keyPhase=1 sets bit 3 (0x08) so the receiver can detect a generation
+	// change (RFC 9001 §6).
 	firstByte := byte(0x40) | byte(pnLen-1)
+	if keyPhase {
+		firstByte |= 0x08
+	}
 
 	hdr := make([]byte, 0, 32)
 	hdr = append(hdr, firstByte)

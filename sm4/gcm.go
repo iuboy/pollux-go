@@ -2,7 +2,6 @@ package sm4
 
 import (
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"io"
 
@@ -30,7 +29,7 @@ type Sealed struct {
 func GenerateNonce() ([]byte, error) {
 	nonce := make([]byte, GCMNonceSize)
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, errors.New("sm4: failed to generate nonce")
+		return nil, fmt.Errorf("sm4: failed to generate nonce: %w", err)
 	}
 	return nonce, nil
 }
@@ -40,10 +39,18 @@ func GenerateNonce() ([]byte, error) {
 // it eliminates the risk of nonce reuse by binding nonce generation to the
 // encrypt call.
 //
+// Key hygiene: the caller's key slice is securely zeroed (via ZeroKey) before
+// the function returns. This is the documented contract of every one-shot
+// convenience function in this package: the key is consumed. Callers that
+// need to reuse the key across multiple operations MUST clone it before
+// passing it in, or use NewGCM directly and manage zeroing themselves.
+//
 // For performance-sensitive code that encrypts many messages under one key,
 // construct a single cipher.AEAD via NewGCM and reuse it, generating a new
-// nonce per message via GenerateNonce.
+// nonce per message via GenerateNonce. In that case defer ZeroKey(key) once
+// after construction.
 func SealRandomNonce(key, plaintext, aad []byte) (Sealed, error) {
+	defer ZeroKey(key) // consume caller's key (already copied into key schedule)
 	aead, err := NewGCM(key)
 	if err != nil {
 		return Sealed{}, err
@@ -58,7 +65,11 @@ func SealRandomNonce(key, plaintext, aad []byte) (Sealed, error) {
 
 // OpenWithNonce decrypts a Sealed value produced by SealRandomNonce. It is a
 // thin convenience over aead.Open that pulls the nonce out of the Sealed value.
+//
+// Key hygiene: see SealRandomNonce — the caller's key is consumed (zeroed)
+// before return.
 func OpenWithNonce(key []byte, s Sealed, aad []byte) ([]byte, error) {
+	defer ZeroKey(key) // consume caller's key
 	if len(s.Nonce) != GCMNonceSize {
 		return nil, fmt.Errorf("sm4: invalid nonce length %d, want %d", len(s.Nonce), GCMNonceSize)
 	}
@@ -76,7 +87,11 @@ func OpenWithNonce(key []byte, s Sealed, aad []byte) ([]byte, error) {
 //
 // Use [OpenCombined] to decrypt. The combined format saves the caller from
 // managing two slices at the cost of one extra allocation on decrypt.
+//
+// Key hygiene: see SealRandomNonce — the caller's key is consumed (zeroed)
+// before return.
 func SealCombined(key, plaintext, aad []byte) ([]byte, error) {
+	defer ZeroKey(key) // consume caller's key
 	aead, err := NewGCM(key)
 	if err != nil {
 		return nil, err
@@ -97,7 +112,11 @@ func SealCombined(key, plaintext, aad []byte) ([]byte, error) {
 // Short inputs are rejected explicitly rather than degrading to an all-zero
 // nonce, which would mask caller misuse (truncated ciphertext, forgotten
 // nonce) as a generic decryption failure.
+//
+// Key hygiene: see SealRandomNonce — the caller's key is consumed (zeroed)
+// before return.
 func OpenCombined(key, ciphertext, aad []byte) ([]byte, error) {
+	defer ZeroKey(key) // consume caller's key
 	aead, err := NewGCM(key)
 	if err != nil {
 		return nil, err

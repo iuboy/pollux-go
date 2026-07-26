@@ -56,6 +56,13 @@ func (m *ClientHelloMsg) unmarshalBody(b []byte) error {
 	}
 	m.LegacyVersion = uint16(b[p])<<8 | uint16(b[p+1])
 	p += 2
+	// RFC 8446 §4.1.2: legacy_version MUST be 0x0303 (TLS 1.2). We accept the
+	// 0x0301..0x0304 family for interop with peers/middleboxes that rewrite
+	// the legacy field; truly foreign values (SSLv3 0x0300, TLCP 0x0101) are
+	// rejected. Matches the ServerHello-side tolerance.
+	if m.LegacyVersion < 0x0301 || m.LegacyVersion > 0x0304 {
+		return fmt.Errorf("tls13gm: ClientHello legacy_version %#x outside TLS legacy range", m.LegacyVersion)
+	}
 	copy(m.Random[:], b[p:p+32])
 	p += 32
 
@@ -75,6 +82,11 @@ func (m *ClientHelloMsg) unmarshalBody(b []byte) error {
 	}
 	csLen := int(b[p])<<8 | int(b[p+1])
 	p += 2
+	// RFC 8446 §4.1.2: cipher_suites MUST contain at least one suite. An empty
+	// list is a malformed ClientHello that would never negotiate.
+	if csLen == 0 {
+		return errors.New("tls13gm: ClientHello cipher_suites list is empty (RFC 8446 §4.1.2 requires at least one)")
+	}
 	if csLen%2 != 0 || p+csLen > len(b) {
 		return fmt.Errorf("tls13gm: ClientHello cipher suites length %d out of range", csLen)
 	}
@@ -92,8 +104,13 @@ func (m *ClientHelloMsg) unmarshalBody(b []byte) error {
 	if p+cmLen > len(b) || cmLen < 1 {
 		return fmt.Errorf("tls13gm: ClientHello compression methods length %d out of range", cmLen)
 	}
-	// TLS 1.3 requires exactly the null method; we tolerate the vector but do
-	// not store it.
+	// RFC 8446 §4.1.2: compression_methods MUST contain exactly one byte, the
+	// null method (0x00). TLS 1.3 deprecated all other compression; accepting
+	// a non-null method would let a non-conformant peer sneak past the
+	// legacy-field check. We require the precise form.
+	if cmLen != 1 || b[p] != 0x00 {
+		return fmt.Errorf("tls13gm: ClientHello compression_methods must be exactly [0x00] per RFC 8446 §4.1.2 (got %d bytes starting with 0x%02x)", cmLen, b[p])
+	}
 	p += cmLen
 
 	exts, n, err := parseExtensions(b[p:])

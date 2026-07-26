@@ -44,9 +44,19 @@ func ParsePrivateKeyPEM(pemData []byte) (any, error) {
 		return nil, errEncryptedPrivateKey
 	}
 
-	// SM2 first: pollux-go sm2 accepts only SM2 keys; non-SM2 returns errNotSM2Key.
+	// SM2 first: pollux-go sm2 accepts only SM2 keys. Distinguish "not SM2"
+	// (expected fallthrough to standard parsers) from genuine SM2 parse errors
+	// (DER corruption, ASN.1 syntax errors) which should NOT be masked by the
+	// stdlib fallback path — otherwise a corrupt SM2 key produces a confusing
+	// "cannot parse private key PEM" instead of the real parse error.
 	if sm2Key, err := sm2.ParsePrivateKeyFromPEM(pemData); err == nil {
 		return sm2Key, nil
+	} else if !errors.Is(err, sm2.ErrNotSM2Key) {
+		// errNotSM2Key is the only acceptable fallthrough signal; anything
+		// else is a real SM2 parse failure that should surface directly.
+		// (sm2.ErrNotSM2Key is the package-level sentinel; errors.Is handles
+		// both sentinel equality and future wrapping.)
+		return nil, fmt.Errorf("smx509: SM2 private key parse failed: %w", err)
 	}
 
 	// Standard algorithms: PKCS#8 → PKCS#1 (RSA) → EC SEC1.

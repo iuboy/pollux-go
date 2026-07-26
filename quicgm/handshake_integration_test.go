@@ -150,7 +150,7 @@ func TestHandshake_DrivesKeyLevels(t *testing.T) {
 
 	// --- 1-RTT level: client-sealed (c_ap), server-opened ---
 	rttPayload := []byte("application data over 1-RTT")
-	rttPkt, err := Seal1RTTPacket(cs.ClientApplicationKeys, dcid, 9, PacketNumberLen2, rttPayload)
+	rttPkt, err := Seal1RTTPacket(cs.ClientApplicationKeys, dcid, 9, PacketNumberLen2, false, rttPayload)
 	if err != nil {
 		t.Fatalf("Seal1RTTPacket: %v", err)
 	}

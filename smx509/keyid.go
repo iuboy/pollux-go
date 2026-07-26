@@ -29,7 +29,10 @@ func CreateSubjectKeyIdentifierExtension(keyID []byte) pkix.Extension {
 	if len(keyID) == 0 {
 		return pkix.Extension{}
 	}
-	value, _ := asn1.Marshal(keyID)
+	value, err := asn1.Marshal(keyID)
+	if err != nil {
+		return pkix.Extension{}
+	}
 	return pkix.Extension{
 		Id:       OIDSubjectKeyIdentifier,
 		Critical: false,
@@ -51,6 +54,12 @@ func GenerateSubjectKeyIdentifier(pubKey crypto.PublicKey) ([]byte, error) {
 	return hash.Sum(nil), nil
 }
 
+// authorityKeyIdentifier is the RFC 5280 §4.2.1.1 SEQUENCE structure.
+// Tags mirror crypto/x509's internal representation.
+type authorityKeyIdentifier struct {
+	KeyIdentifier []byte `asn1:"optional,tag:0"`
+}
+
 // CreateAuthorityKeyIdentifierExtension builds an AuthorityKeyIdentifier
 // extension (RFC 5280 §4.2.1.1) from a key identifier. AKI is non-critical.
 // Returns an empty Extension if keyID is empty.
@@ -58,7 +67,10 @@ func CreateAuthorityKeyIdentifierExtension(keyID []byte) pkix.Extension {
 	if len(keyID) == 0 {
 		return pkix.Extension{}
 	}
-	value, _ := asn1.Marshal(keyID)
+	value, err := asn1.Marshal(authorityKeyIdentifier{KeyIdentifier: keyID})
+	if err != nil {
+		return pkix.Extension{}
+	}
 	return pkix.Extension{
 		Id:       OIDAuthorityKeyIdentifier,
 		Critical: false,
@@ -146,7 +158,8 @@ func GetSubjectKeyIdentifier(cert *x509.Certificate) []byte {
 
 // GetAuthorityKeyIdentifier extracts the AuthorityKeyIdentifier from a
 // certificate. Prefers the pre-parsed cert.AuthorityKeyId; falls back to
-// scanning Extensions. Returns nil if absent or cert is nil.
+// scanning Extensions and parsing the RFC 5280 SEQUENCE wrapper.
+// Returns nil if absent or cert is nil.
 func GetAuthorityKeyIdentifier(cert *x509.Certificate) []byte {
 	if cert == nil {
 		return nil
@@ -156,9 +169,9 @@ func GetAuthorityKeyIdentifier(cert *x509.Certificate) []byte {
 	}
 	for _, ext := range cert.Extensions {
 		if ext.Id.Equal(OIDAuthorityKeyIdentifier) {
-			var keyID []byte
-			if _, err := asn1.Unmarshal(ext.Value, &keyID); err == nil {
-				return keyID
+			var aki authorityKeyIdentifier
+			if _, err := asn1.Unmarshal(ext.Value, &aki); err == nil {
+				return aki.KeyIdentifier
 			}
 		}
 	}

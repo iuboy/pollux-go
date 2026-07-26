@@ -57,10 +57,16 @@ func GetCipherSuites(mode CryptoMode) ([]uint16, error) {
 }
 
 // getSecureNational returns the recommended national suites: GCM with forward
-// secrecy (ECDHE). CBC and static ECC suites are intentionally excluded.
+// secrecy (ECDHE) plus the RFC 8998 TLS 1.3 GM suites (which are inherently
+// forward-secret — TLS 1.3 mandates ephemeral key exchange). CBC and static
+// ECC suites are intentionally excluded.
 func getSecureNational() []uint16 {
 	return []uint16{
 		ECDHE_SM2_WITH_SM4_GCM_SM3,
+		// RFC 8998 §3 TLS 1.3 GM suites: both are AEAD with mandatory
+		// ephemeral key exchange, so they meet the same PFS+AEAD bar.
+		TLS_SM4_GCM_SM3,
+		TLS_SM4_CCM_SM3,
 	}
 }
 

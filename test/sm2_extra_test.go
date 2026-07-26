@@ -178,69 +178,9 @@ func TestBlackBox_SM2_NewSM2SignerOption(t *testing.T) {
 	}
 }
 
-// ========== 密钥交换 ==========
-
-func TestBlackBox_SM2_KeyExchange(t *testing.T) {
-	alicePriv, _ := polluxSM2.GenerateKey(rand.Reader)
-	bobPriv, _ := polluxSM2.GenerateKey(rand.Reader)
-
-	alice, err := polluxSM2.NewKeyExchangePerformer(alicePriv, &bobPriv.PublicKey, []byte("alice@test.com"), []byte("bob@test.com"), 32)
-	if err != nil {
-		t.Fatalf("NewKeyExchangePerformer alice: %v", err)
-	}
-	bob, err := polluxSM2.NewKeyExchangePerformer(bobPriv, &alicePriv.PublicKey, []byte("bob@test.com"), []byte("alice@test.com"), 32)
-	if err != nil {
-		t.Fatalf("NewKeyExchangePerformer bob: %v", err)
-	}
-
-	aliceEph, _ := alice.GenerateEphemeralKey()
-	bobEph, _ := bob.GenerateEphemeralKey()
-
-	bobShared, bobSig, err := bob.ComputeSharedSecretAsResponder(rand.Reader, aliceEph)
-	if err != nil {
-		t.Fatalf("Bob ComputeSharedSecretAsResponder: %v", err)
-	}
-
-	aliceShared, _, err := alice.ComputeSharedSecretAsInitiator(bobEph, bobSig)
-	if err != nil {
-		t.Fatalf("Alice ComputeSharedSecretAsInitiator: %v", err)
-	}
-
-	if !bytes.Equal(aliceShared, bobShared) {
-		t.Errorf("shared key mismatch:\n  alice=%x\n  bob  =%x", aliceShared, bobShared)
-	}
-}
-
-func TestBlackBox_SM2_KeyExchange_DifferentKeyLengths(t *testing.T) {
-	priv1, _ := polluxSM2.GenerateKey(rand.Reader)
-	priv2, _ := polluxSM2.GenerateKey(rand.Reader)
-
-	for _, klen := range []int{16, 24, 32} {
-		t.Run("", func(t *testing.T) {
-			p1, err := polluxSM2.NewKeyExchangePerformer(priv1, &priv2.PublicKey, []byte("A"), []byte("B"), klen)
-			if err != nil {
-				t.Fatal(err)
-			}
-			p2, err := polluxSM2.NewKeyExchangePerformer(priv2, &priv1.PublicKey, []byte("B"), []byte("A"), klen)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			eph1, _ := p1.GenerateEphemeralKey()
-			eph2, _ := p2.GenerateEphemeralKey()
-
-			shared2, sig2, _ := p2.ComputeSharedSecretAsResponder(rand.Reader, eph1)
-			shared1, _, _ := p1.ComputeSharedSecretAsInitiator(eph2, sig2)
-
-			if len(shared1) != klen {
-				t.Errorf("key length: got %d, want %d", len(shared1), klen)
-			}
-			if !bytes.Equal(shared1, shared2) {
-				t.Error("shared keys mismatch")
-			}
-		})
-	}
-}
+// Note: SM2 key exchange (GM/T 0003.3-2012) was removed in gmsm v0.44.0 (#524).
+// The previous KeyExchangePerformer API is no longer available. Use the SM2
+// digital envelope (sm2.EnvelopeEncrypt) or tls13gm ECDHE for key distribution.
 
 // ========== 数字信封 SM4 ==========
 

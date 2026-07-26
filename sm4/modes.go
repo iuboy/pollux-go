@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -91,7 +92,7 @@ func NewCFBDecrypter(key, iv []byte) (cipher.Stream, error) {
 func GenerateIV() ([]byte, error) {
 	iv := make([]byte, BlockSize)
 	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		return nil, errors.New("sm4: failed to generate IV")
+		return nil, fmt.Errorf("sm4: failed to generate IV: %w", err)
 	}
 	return iv, nil
 }

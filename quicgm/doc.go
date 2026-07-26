@@ -2,14 +2,24 @@
 // (TLS_SM4_GCM_SM3, 0x00C6), integrating the GM cryptographic primitives from
 // the tls13gm package with the vendored quic-go fork.
 //
+// Throughout this package, "Route C" denotes the SM4-GCM-SM3 cipher suite
+// (TLS_SM4_GCM_SM3, 0x00C6), as opposed to "Route A" = standard AES-128-GCM
+// QUIC. This terminology is introduced up-front so the connection-layer and
+// packet-protection-layer descriptions below can use it without ambiguity.
+//
 // The package exposes two layers:
 //
 //   - Connection layer: Listen/Dial/DialEarly, plus Listener/Conn/ServerConfig/
 //     ClientConfig, provide RFC 9001 GM QUIC endpoints (server + client,
-//     including 0-RTT). AntiReplayCache guards 0-RTT against replay. The
-//     connection state machine (ACK, retransmission, stream multiplexing,
-//     congestion control) is provided by the vendored quic-go fork, which
-//     polls the GM handshake via an injected GMCryptoSetup.
+//     including 0-RTT). AntiReplayCache guards 0-RTT against replay; the default
+//     in-memory implementation (NewAntiReplayCache) is single-process only and
+//     is the fail-safe default that rejects all 0-RTT when no cache is
+//     configured. Multi-replica deployments MUST inject a shared cache (e.g.
+//     Redis) — see the AntiReplayCache interface — otherwise 0-RTT replays
+//     cannot be detected across replicas. The connection state machine (ACK,
+//     retransmission, stream multiplexing, congestion control) is provided by
+//     the vendored quic-go fork, which polls the GM handshake via an injected
+//     GMCryptoSetup.
 //   - Packet-protection layer: SealInitialPacket/OpenInitialPacket,
 //     SealHandshakePacket/OpenHandshakePacket, Seal1RTTPacket/Open1RTTPacket,
 //     and QUICPacketProtector implement the RFC 9001 §5 payload + header
@@ -22,7 +32,4 @@
 // ClientHandshaker/ServerHandshaker; quicgm feeds the resulting
 // HandshakeSecrets into the packet protectors. This package does not run the
 // TLS key exchange directly.
-//
-// Status: RFC 8998 transport-level GM QUIC, including Listen/Dial/DialEarly
-// connection layer (interop-verified, Route C).
 package quicgm

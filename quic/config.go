@@ -16,6 +16,20 @@ var (
 
 const defaultIdleTimeout = 30 * time.Second
 
+// resolveIdleTimeout returns the effective idle timeout for a QUIC config,
+// shared by ServerConfig.idleTimeout and ClientConfig.idleTimeout. A zero or
+// negative MaxIdleTimeout falls back to defaultIdleTimeout — the negative case
+// is treated as "unset" (Go's time.Duration is int64, so a negative value
+// almost always indicates an arithmetic overflow or default-zero arithmetic
+// mistake rather than a deliberate "no timeout" intent, which QUIC does not
+// support anyway).
+func resolveIdleTimeout(max time.Duration) time.Duration {
+	if max <= 0 {
+		return defaultIdleTimeout
+	}
+	return max
+}
+
 // ServerConfig holds QUIC server configuration.
 type ServerConfig struct {
 	Addr               string
@@ -67,15 +81,9 @@ func (c *ClientConfig) tlsConfig() (*tls.Config, error) {
 }
 
 func (c *ServerConfig) idleTimeout() time.Duration {
-	if c.MaxIdleTimeout > 0 {
-		return c.MaxIdleTimeout
-	}
-	return defaultIdleTimeout
+	return resolveIdleTimeout(c.MaxIdleTimeout)
 }
 
 func (c *ClientConfig) idleTimeout() time.Duration {
-	if c.MaxIdleTimeout > 0 {
-		return c.MaxIdleTimeout
-	}
-	return defaultIdleTimeout
+	return resolveIdleTimeout(c.MaxIdleTimeout)
 }

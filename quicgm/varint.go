@@ -59,8 +59,9 @@ func AppendVarint(b []byte, v uint64) ([]byte, error) {
 }
 
 // ReadVarint decodes a QUIC varint from the start of b. It returns the value
-// and the number of octets consumed. It errors if b is empty or shorter than
-// the encoded length.
+// and the number of octets consumed. It errors if b is empty, shorter than
+// the encoded length, or the encoding is non-minimal (RFC 9000 §16: receivers
+// MUST reject non-minimal encodings, e.g. a 2-octet encoding of a value ≤ 63).
 func ReadVarint(b []byte) (value uint64, n int, err error) {
 	if len(b) == 0 {
 		return 0, 0, errors.New("quicgm: varint buffer is empty")
@@ -72,6 +73,14 @@ func ReadVarint(b []byte) (value uint64, n int, err error) {
 	v := uint64(b[0] & 0x3f)
 	for i := 1; i < length; i++ {
 		v = v<<8 | uint64(b[i])
+	}
+	// RFC 9000 §16: reject non-minimal encodings. A value that fits in a
+	// shorter encoding MUST be sent in that shorter encoding; accepting a
+	// padded form lets an attacker craft ambiguous wire bytes that bypass
+	// length-based security checks downstream.
+	minLen := VarintLen(v)
+	if minLen < length {
+		return 0, 0, fmt.Errorf("quicgm: non-minimal varint encoding (value %d in %d octets, minimal is %d)", v, length, minLen)
 	}
 	return v, length, nil
 }

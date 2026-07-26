@@ -2,6 +2,17 @@ package tlcp
 
 // TLCP cipher suite IDs (GB/T 38636-2020 Table 2).
 // Values are identical to gotlcp constants such as TLCP_ECDHE_SM4_GCM_SM3.
+//
+// allTLCP suites is the single source of truth for the full suite list.
+// DefaultCipherSuites, LegacyCipherSuites, and IsTLCPCipherSuite all
+// reference it so adding a new suite only needs one edit here.
+var allTLPCSuites = []uint16{
+	SuiteECDHE_SM2_SM4_GCM_SM3,
+	SuiteECDHE_SM2_SM4_CBC_SM3,
+	SuiteECC_SM2_SM4_GCM_SM3,
+	SuiteECC_SM2_SM4_CBC_SM3,
+}
+
 const (
 	SuiteECDHE_SM2_SM4_GCM_SM3 uint16 = 0xE051
 	SuiteECDHE_SM2_SM4_CBC_SM3 uint16 = 0xE011
@@ -9,14 +20,10 @@ const (
 	SuiteECC_SM2_SM4_CBC_SM3   uint16 = 0xE013
 )
 
-// defaultCipherSuites are the default supported cipher suites (GCM-only, ECDHE-only, providing forward secrecy).
-var defaultCipherSuites = []uint16{
-	SuiteECDHE_SM2_SM4_GCM_SM3,
-}
-
 // DefaultCipherSuites returns the default TLCP cipher suites (GCM-only, ECDHE-only, providing forward secrecy).
 // This is the recommended configuration for new connections, providing the best security.
 // For legacy compatibility with non-PFS static ECC suites, use LegacyCipherSuites().
+// A fresh slice is returned on every call so callers may mutate it freely.
 func DefaultCipherSuites() []uint16 {
 	return []uint16{
 		SuiteECDHE_SM2_SM4_GCM_SM3,
@@ -36,11 +43,13 @@ func LegacyCipherSuites() []uint16 {
 }
 
 // IsTLCPCipherSuite reports whether id is a TLCP cipher suite.
+// Uses the allTLPCSuites source-of-truth list so adding a new suite
+// only needs one edit.
 func IsTLCPCipherSuite(id uint16) bool {
-	switch id {
-	case SuiteECC_SM2_SM4_GCM_SM3, SuiteECC_SM2_SM4_CBC_SM3,
-		SuiteECDHE_SM2_SM4_GCM_SM3, SuiteECDHE_SM2_SM4_CBC_SM3:
-		return true
+	for _, s := range allTLPCSuites {
+		if s == id {
+			return true
+		}
 	}
 	return false
 }

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	polluxHTTP "github.com/iuboy/pollux-go/http"
+	polluxHTTP "github.com/iuboy/pollux-go/https"
 )
 
 func TestHybridServerTLSAndTLCP(t *testing.T) {

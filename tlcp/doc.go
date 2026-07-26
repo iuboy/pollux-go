@@ -1,24 +1,33 @@
 // Package tlcp implements the Transport Layer Cryptography Protocol (TLCP),
 // the Chinese national standard for transport-layer security (GB/T 38636-2020).
 //
-// EXPERIMENTAL — this package has not undergone independent third-party security audit.
-// It is not recommended for production use until formally audited.
-// The API may change in future versions.
+// # Status: EXPERIMENTAL
+//
+// This package has NOT undergone independent third-party security audit. It is
+// not recommended for production use until formally audited. The API may
+// change in future versions. (This single declaration replaces the previous
+// duplicate status notes; if the audit status changes, update it here only.)
 //
 // TLCP (Transport Layer Cryptography Protocol) is the Chinese national standard
 // for transport-layer cryptography, standard number: GB/T 38636-2020.
 //
-// This package is a wrapper around gotlcp (gitee.com/Trisia/gotlcp), providing a
-// Go-idiomatic API consistent with the pollux-go ecosystem while isolating consumers
-// from direct dependencies on the underlying implementation library.
+// This package provides a native, self-contained TLCP implementation (no
+// external TLCP library dependency). The protocol engine — handshake state
+// machines, record layer, SM2/SM3/SM4 cipher suites, and session resumption —
+// is implemented in the engine_*.go files, exposed through a Go-idiomatic API
+// consistent with the pollux-go ecosystem.
 //
-// Differences between TLCP and RFC 8998:
-//   - TLCP (GB/T 38636-2020) is a Chinese national standard that defines a TLS protocol
-//     variant based on national cryptographic algorithms
-//   - RFC 8998 is an IETF publication "SM2 Cipher Suites for TLS 1.3", focused on TLS 1.3
-//   - This package implements TLCP 1.1 (based on TLS 1.2), not RFC 8998's TLS 1.3 national
-//     cipher suites
-//   - For RFC 8998 related constants, see the tls13gm package (experimental)
+// # Differences between TLCP and RFC 8998
 //
-// Status: EXPERIMENTAL — pending independent security audit
+//   - TLCP (GB/T 38636-2020) is a Chinese national standard that defines a
+//     TLS protocol variant based on national cryptographic algorithms.
+//   - RFC 8998 is an IETF publication "SM2 Cipher Suites for TLS 1.3",
+//     focused on TLS 1.3.
+//   - This package implements TLCP 1.1 (based on TLS 1.2), not RFC 8998's
+//     TLS 1.3 national cipher suites.
+//   - For RFC 8998 related constants, see the tls13gm package. (Note:
+//     unlike this package, tls13gm does NOT carry an EXPERIMENTAL marker —
+//     its Status section declares it a stable RFC 8998 complement. The
+//     "(experimental)" annotation that appeared here in earlier versions
+//     was inaccurate and has been removed.)
 package tlcp

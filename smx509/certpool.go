@@ -78,6 +78,9 @@ func (p *CertPool) AppendCertsFromPEM(pemData []byte) bool {
 		if err != nil {
 			continue
 		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
 		p.AddCert(cert)
 		ok = true
 	}

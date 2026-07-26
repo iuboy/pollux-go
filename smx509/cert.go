@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"reflect"
 	"strings"
 
 	"github.com/emmansun/gmsm/sm2"
@@ -54,7 +55,15 @@ func IsSM2PublicKey(pub any) bool {
 // crypto/x509 or gmsm/smx509 based on the signer's key type.
 func CreateCertificate(template, parent *x509.Certificate, pub, priv any) ([]byte, error) {
 	if IsSM2Key(priv) {
-		return smx509.CreateCertificate(rand.Reader, template, parent, pub, priv)
+		smTmpl, err := toSMX509Certificate(template)
+		if err != nil {
+			return nil, err
+		}
+		smParent, err := toSMX509Certificate(parent)
+		if err != nil {
+			return nil, err
+		}
+		return smx509.CreateCertificate(rand.Reader, smTmpl, smParent, pub, priv)
 	}
 	return x509.CreateCertificate(rand.Reader, template, parent, pub, priv)
 }
@@ -63,9 +72,104 @@ func CreateCertificate(template, parent *x509.Certificate, pub, priv any) ([]byt
 // crypto/x509 or gmsm/smx509 based on the key type.
 func CreateCertificateRequest(template *x509.CertificateRequest, priv any) ([]byte, error) {
 	if IsSM2Key(priv) {
-		return smx509.CreateCertificateRequest(rand.Reader, template, priv)
+		smTmpl, err := toSMX509CertificateRequest(template)
+		if err != nil {
+			return nil, err
+		}
+		return smx509.CreateCertificateRequest(rand.Reader, smTmpl, priv)
 	}
 	return x509.CreateCertificateRequest(rand.Reader, template, priv)
+}
+
+// toSMX509Certificate converts a stdlib *x509.Certificate to *smx509.Certificate.
+// This is required since gmsm v0.44 made smx509 a clean fork: its Certificate
+// type is no longer struct-assignable from crypto/x509's (the ToX509/FromX509
+// helpers and direct casts were removed).
+//
+// Two cases:
+//   - Signed certificate (Raw populated): round-trip via DER for a faithful,
+//     lossless copy (smx509 parses the same X.509 DER).
+//   - Template (Raw empty, e.g. passed to CreateCertificate before signing):
+//     reflection-based field copy. smx509.Certificate is a superset of the
+//     stdlib layout with the same field names; enum-typed fields
+//     (SignatureAlgorithm, PublicKeyAlgorithm, KeyUsage, ExtKeyUsage) are all
+//     int-backed with identical constant values, so they convert directly.
+//     Fields absent on one side are skipped. This avoids maintaining a brittle
+//     hand-written field list against a moving stdlib/smx509 fork baseline.
+func toSMX509Certificate(cert *x509.Certificate) (*smx509.Certificate, error) {
+	if cert == nil {
+		return nil, nil
+	}
+	if len(cert.Raw) > 0 {
+		return smx509.ParseCertificate(cert.Raw)
+	}
+	sm := &smx509.Certificate{}
+	copyCertFields(reflect.ValueOf(cert).Elem(), reflect.ValueOf(sm).Elem())
+	return sm, nil
+}
+
+// toSMX509CertificateRequest converts a stdlib *x509.CertificateRequest to
+// *smx509.CertificateRequest (see toSMX509Certificate for the two-case approach).
+func toSMX509CertificateRequest(csr *x509.CertificateRequest) (*smx509.CertificateRequest, error) {
+	if csr == nil {
+		return nil, nil
+	}
+	if len(csr.Raw) > 0 {
+		return smx509.ParseCertificateRequest(csr.Raw)
+	}
+	sm := &smx509.CertificateRequest{}
+	copyCertFields(reflect.ValueOf(csr).Elem(), reflect.ValueOf(sm).Elem())
+	return sm, nil
+}
+
+// copyCertFields copies exported fields by name from src to dst using reflection.
+// For each field present on both sides with the same name:
+//   - If the types match exactly, the value is assigned directly.
+//   - If both are the same kind (e.g. two distinct int-backed enum types, or two
+//     slice types whose elements are convertible), the value is converted.
+//
+// Fields present on only one side, or with non-convertible types, are skipped
+// (they keep their zero value). This mirrors how smx509 is a superset fork of
+// stdlib crypto/x509: shared fields carry over, smx509-only fields stay zero.
+func copyCertFields(src, dst reflect.Value) {
+	srcType := src.Type()
+	for i := 0; i < srcType.NumField(); i++ {
+		srcField := srcType.Field(i)
+		if !srcField.IsExported() {
+			continue
+		}
+		dstField := dst.FieldByName(srcField.Name)
+		if !dstField.IsValid() {
+			continue // field absent on destination (smx509-only or stdlib-only)
+		}
+		srcVal := src.Field(i)
+		if srcVal.Type() == dstField.Type() {
+			dstField.Set(srcVal)
+			continue
+		}
+		if srcVal.Type().ConvertibleTo(dstField.Type()) {
+			dstField.Set(srcVal.Convert(dstField.Type()))
+			continue
+		}
+		// Slice/array with element-wise convertible types (e.g. []x509.ExtKeyUsage
+		// <-> []smx509.ExtKeyUsage): Go won't convert the slice types directly,
+		// so rebuild element by element. This is the case that matters for the
+		// enum-typed slices (ExtKeyUsage) shared between stdlib and smx509.
+		// Guard the dst kind + Elem() call: dstField.Type().Elem() panics if the
+		// destination is not Array/Chan/Map/Ptr/Slice (a cross-fork field-type
+		// drift would surface as a panic here without the kind check).
+		if (srcVal.Kind() == reflect.Slice || srcVal.Kind() == reflect.Array) &&
+			(dstField.Kind() == reflect.Slice || dstField.Kind() == reflect.Array) &&
+			srcVal.Type().Elem().ConvertibleTo(dstField.Type().Elem()) {
+			n := srcVal.Len()
+			out := reflect.MakeSlice(dstField.Type(), n, n)
+			for j := 0; j < n; j++ {
+				out.Index(j).Set(srcVal.Index(j).Convert(dstField.Type().Elem()))
+			}
+			dstField.Set(out)
+		}
+		// else: incompatible types (e.g. []OID with different OID structs) — skip.
+	}
 }
 
 // ParseCertificate parses a DER-encoded certificate.
@@ -75,35 +179,89 @@ func CreateCertificateRequest(template *x509.CertificateRequest, priv any) ([]by
 // the gmsm backend avoids relying on crypto/x509's version-dependent behavior
 // for SM2 OIDs and skips a wasted parse attempt. crypto/x509 remains as a
 // fallback for ASN.1 edge cases gmsm may not yet support.
+//
+// The returned certificate is a stdlib *x509.Certificate. Since SM2 certs
+// cannot be parsed by stdlib (unsupported curve), when smx509 succeeds the
+// result is converted to stdlib via field copy (copyCertFields) rather than
+// re-parsing the DER through stdlib. gmsm v0.44 removed the ToX509() bridge,
+// so the conversion is done by reflection.
+//
+// On failure the returned error wraps BOTH the gmsm and stdlib parse errors
+// (joined via errors.Join) so a debugger can see why each backend rejected
+// the input without re-running the parsers manually. The two errors are also
+// distinguishable programmatically via errors.Is/as against the underlying
+// smx509 / x509 error types.
 func ParseCertificate(der []byte) (*x509.Certificate, error) {
-	if smCert, err := smx509.ParseCertificate(der); err == nil {
-		return smCert.ToX509(), nil
+	smCert, smErr := smx509.ParseCertificate(der)
+	if smErr == nil {
+		return smX509ToStdCertificate(smCert)
 	}
-	if cert, err := x509.ParseCertificate(der); err == nil {
-		return cert, nil
+	stdCert, stdErr := x509.ParseCertificate(der)
+	if stdErr == nil {
+		return stdCert, nil
 	}
-	return nil, errors.New("smx509: failed to parse certificate (gmsm and stdlib both rejected input)")
+	// Both parsers failed. Wrap both errors so the caller sees the full
+	// picture — previously only a generic 'both rejected' string was returned,
+	// hiding the underlying ASN.1 / signature / curve errors.
+	return nil, fmt.Errorf("smx509: failed to parse certificate (gmsm/smx509: %v; stdlib crypto/x509: %v)",
+		smErr, stdErr)
+}
+
+// smX509ToStdCertificate converts a gmsm *smx509.Certificate to a stdlib
+// *x509.Certificate via reflection-based field copy (see copyCertFields).
+// This replaces the ToX509() bridge removed in gmsm v0.44. The Raw DER is
+// preserved, so callers that re-marshal (e.g. x509.MarshalX509) get identical
+// bytes. SM2 public keys survive as *ecdsa.PublicKey in the any-typed PublicKey
+// field — stdlib never needs to re-parse the curve.
+func smX509ToStdCertificate(smCert *smx509.Certificate) (*x509.Certificate, error) {
+	if smCert == nil {
+		return nil, nil
+	}
+	std := &x509.Certificate{}
+	copyCertFields(reflect.ValueOf(smCert).Elem(), reflect.ValueOf(std).Elem())
+	return std, nil
 }
 
 // ParseCertificatePEM parses a PEM-encoded certificate.
+//
+// Rejects non-CERTIFICATE PEM block types (e.g. PRIVATE KEY) up front rather
+// than feeding arbitrary block bytes to ParseCertificate and producing a
+// confusing ASN.1 error. Matches the ParseCertificatePEM contract in the
+// pollux cert package.
 func ParseCertificatePEM(pemData []byte) (*x509.Certificate, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
-		return nil, errors.New("pollux/smx509: failed to decode certificate PEM")
+		return nil, errors.New("smx509: failed to decode certificate PEM")
+	}
+	if block.Type != "CERTIFICATE" {
+		return nil, fmt.Errorf("smx509: unexpected PEM block type %q, want CERTIFICATE", block.Type)
 	}
 	return ParseCertificate(block.Bytes)
 }
 
 // ParseCertificateRequest parses a DER-encoded CSR.
 // gmsm/smx509 is tried first (crypto/x509 superset), see ParseCertificate.
+// When smx509 succeeds, the result is field-copied to stdlib (smx509 CSRs with
+// SM2 keys cannot be re-parsed by stdlib); ToX509() bridge gone since gmsm v0.44.
+//
+// On failure the returned error wraps BOTH the gmsm and stdlib parse errors
+// (same pattern as ParseCertificate) so a debugger can see why each backend
+// rejected the input without re-running the parsers manually.
 func ParseCertificateRequest(der []byte) (*x509.CertificateRequest, error) {
-	if smCSR, err := smx509.ParseCertificateRequest(der); err == nil {
-		return smCSR.ToX509(), nil
+	smCSR, smErr := smx509.ParseCertificateRequest(der)
+	if smErr == nil {
+		std := &x509.CertificateRequest{}
+		copyCertFields(reflect.ValueOf(smCSR).Elem(), reflect.ValueOf(std).Elem())
+		return std, nil
 	}
-	if csr, err := x509.ParseCertificateRequest(der); err == nil {
-		return csr, nil
+	stdCSR, stdErr := x509.ParseCertificateRequest(der)
+	if stdErr == nil {
+		return stdCSR, nil
 	}
-	return nil, errors.New("smx509: failed to parse certificate request (gmsm and stdlib both rejected input)")
+	// Both parsers failed. Wrap both errors so the caller sees the full
+	// picture — previously only a generic 'both rejected' string was returned.
+	return nil, fmt.Errorf("smx509: failed to parse certificate request (gmsm/smx509: %v; stdlib crypto/x509: %v)",
+		smErr, stdErr)
 }
 
 // SignatureAlgorithmForPrivateKey returns the appropriate signature algorithm
@@ -173,8 +331,21 @@ func ExtractPublicKey(priv any) (crypto.PublicKey, error) {
 // CheckCertificateRequestSignature verifies a CSR signature, handling SM2 automatically.
 func CheckCertificateRequestSignature(csr *x509.CertificateRequest) error {
 	if err := csr.CheckSignature(); err != nil {
-		smCSR := &smx509.CertificateRequest{}
-		*smCSR = smx509.CertificateRequest(*csr)
+		// stdlib can handle RSA/ECDSA/Ed25519 CSR signatures. It only fails for
+		// SM2 because stdlib does not recognize the SM2 signature OID. Retry via
+		// gmsm/smx509 only in that case — a blanket retry would mask genuine
+		// signature verification failures (e.g. a corrupted in-memory Signature
+		// field would be recovered from the valid DER in Raw, hiding the error).
+		if !errors.Is(err, x509.ErrUnsupportedAlgorithm) {
+			return err
+		}
+		// SM2 OID not recognized by stdlib — retry via smx509 using a DER round-trip.
+		// Since gmsm v0.44 the direct struct cast smx509.CertificateRequest(*csr)
+		// is invalid (smx509 is a clean fork, no longer struct-compatible).
+		smCSR, err := toSMX509CertificateRequest(csr)
+		if err != nil {
+			return err
+		}
 		return smCSR.CheckSignature()
 	}
 	return nil
@@ -264,7 +435,10 @@ func detectKeyType(der []byte) string {
 	if _, err := x509.ParsePKCS1PrivateKey(der); err == nil {
 		return "RSA PRIVATE KEY"
 	}
-	if _, err := x509.ParseECPrivateKey(der); err == nil {
+	// Use the package's own ParseECPrivateKey (which delegates to gmsm/smx509)
+	// so that SM2 curve OIDs are recognized. The stdlib x509.ParseECPrivateKey
+	// does not understand SM2 and would mislabel SEC1 SM2 keys as PKCS#8.
+	if _, err := ParseECPrivateKey(der); err == nil {
 		return "EC PRIVATE KEY"
 	}
 	return "PRIVATE KEY"
@@ -437,8 +611,9 @@ func decryptBlock(es pkix.AlgorithmIdentifier, key, ciphertext []byte) ([]byte, 
 		}
 		plaintext := make([]byte, len(ciphertext))
 		cipher.NewCBCDecrypter(blockCipher, iv).CryptBlocks(plaintext, ciphertext)
-		unpadded, err := pkcs7Unpad(plaintext)
+		unpadded, err := pkcs7Unpad(plaintext, blockCipher.BlockSize())
 		if err != nil {
+			memsecure.ZeroBytes(plaintext)
 			return nil, errDecryptFailed
 		}
 		// CBC has no authenticated encryption: a wrong password can still pass
@@ -491,12 +666,12 @@ func asn1IsSequence(der []byte) bool {
 	return subtle.ConstantTimeByteEq(der[0], 0x30) == 1
 }
 
-func pkcs7Unpad(data []byte) ([]byte, error) {
+func pkcs7Unpad(data []byte, blockSize int) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, errInvalidPadding
 	}
 	padLen := int(data[len(data)-1])
-	if padLen == 0 || padLen > aes.BlockSize || padLen > len(data) {
+	if padLen == 0 || padLen > blockSize || padLen > len(data) {
 		return nil, errInvalidPadding
 	}
 	// Constant-time validation: always iterate all padding bytes regardless of value.
@@ -546,12 +721,13 @@ func decryptLegacyPEM(block *pem.Block, password []byte) ([]byte, error) {
 	}
 
 	if len(block.Bytes)%blockCipher.BlockSize() != 0 {
-		return nil, errors.New("ciphertext is not a multiple of the block size")
+		return nil, errDecryptFailed
 	}
 	plaintext := make([]byte, len(block.Bytes))
 	cipher.NewCBCDecrypter(blockCipher, iv).CryptBlocks(plaintext, block.Bytes)
-	unpadded, err := pkcs7Unpad(plaintext)
+	unpadded, err := pkcs7Unpad(plaintext, blockCipher.BlockSize())
 	if err != nil {
+		memsecure.ZeroBytes(plaintext)
 		return nil, errDecryptFailed
 	}
 	// CBC 没有 authenticated encryption，错误密码可能通过 PKCS7 unpad。

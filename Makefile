@@ -55,9 +55,17 @@ test:
 test-unit:
 	$(GO) test -race ./...
 
-## test-integration: run only the integration suite (files with //go:build
+## test-integration: run the integration suite (files with //go:build
 ## integration). Requires the Tongsuo binary at /opt/local/tongsuo for the
 ## cross-library interop tests; missing deps are reported via t.Skip.
+##
+## NOTE: Go build tags are additive — -tags=integration only ADDS integration
+## files to the build, it does not exclude unit tests. So this target runs the
+## full suite (unit + integration), same as `make test`. To run a single
+## integration test by name, use:
+##   go test -race -tags=integration -run '<TestName>' ./<pkg>/...
+## Convention: integration test functions live in files gated by the build
+## tag, so they only execute under this target (or `make test`).
 test-integration:
 	$(GO) test -race -tags=integration ./...
 

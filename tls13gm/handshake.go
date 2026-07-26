@@ -181,6 +181,12 @@ type ClientHandshaker struct {
 	// earlyDataAccepted is set in HandleEncryptedExtensions when the server
 	// echoed early_data, i.e. it accepted the client's 0-RTT.
 	earlyDataAccepted bool
+	// clientFinishedSent records that ClientFinished has appended the client's
+	// Finished to the transcript. HandleNewSessionTicket refuses to run until
+	// this is true, because the resumption master secret MUST be derived over
+	// the full transcript (CH..client Finished) per RFC 8446 §4.6.1 — deriving
+	// it over an incomplete transcript yields a PSK the server will not accept.
+	clientFinishedSent bool
 }
 
 // PeerTransportParams returns the raw QUIC transport parameters received from
@@ -764,6 +770,7 @@ func (c *ClientHandshaker) ClientFinished() ([]byte, error) {
 		return nil, err
 	}
 	c.transcript.AddMessage(HandshakeTypeFinished, full[4:])
+	c.clientFinishedSent = true
 	return full, nil
 }
 
@@ -780,8 +787,8 @@ func (c *ClientHandshaker) ClientFinished() ([]byte, error) {
 // psk, age) and never treats the ticket bytes as a key. It is what makes a
 // pollux-go client interoperable with any RFC 8446 server's resumption.
 func (c *ClientHandshaker) HandleNewSessionTicket(nstBody []byte) (identity, psk []byte, ageAdd uint32, err error) {
-	if c.masterSecret == nil {
-		return nil, nil, 0, errors.New("tls13gm: HandleNewSessionTicket before handshake complete")
+	if !c.clientFinishedSent {
+		return nil, nil, 0, errors.New("tls13gm: HandleNewSessionTicket before ClientFinished (transcript incomplete; resumption master secret requires CH..client Finished per RFC 8446 §4.6.1)")
 	}
 	msg := &NewSessionTicketMsg{}
 	if err := msg.unmarshalBody(nstBody); err != nil {
@@ -1061,7 +1068,7 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 	// Reconstruct the real ticket age from the obfuscated value the client
 	// reported and the ticket_age_add encoded in the ticket (RFC 8446
 	// §4.2.11.1); forwarded to EarlyDataAcceptor for 0-RTT anti-replay (§8).
-	s.resumptionRealAge = time.Duration(int64(identities[0].ObfuscatedTicketAge-ageAdd)) * time.Second
+	s.resumptionRealAge = time.Duration(int64(identities[0].ObfuscatedTicketAge-ageAdd)) * time.Millisecond
 	// Recompute the binder over the same transcript the client used: the
 	// ClientHello truncated just before the binders field (identities included,
 	// binders excluded, pre_shared_key ext_len kept full) — RFC 8446 §4.2.11.
@@ -1382,4 +1389,43 @@ func containsUint16List(data []byte, lenSize int, want uint16) bool {
 		}
 	}
 	return false
+}
+
+// Zero securely zeroes every secret-bearing []byte field held by the
+// ClientHandshaker: the TLS 1.3 key-derivation intermediates (handshake /
+// master / resumption-master secrets, handshake-traffic secrets), the
+// HandshakeSecrets sub-structure (via ZeroAll), and the resumption PSK /
+// identity copied from ClientConfig.
+//
+// It is intended to be called when the handshaker is no longer needed (e.g.
+// from the QUIC CryptoSetup's Close path) so that long-lived key-derivation
+// intermediates do not linger on the heap. Best-effort, like crypto/tls.
+func (h *ClientHandshaker) Zero() {
+	if h == nil {
+		return
+	}
+	memsecure.ZeroBytes(h.handshakeSecret)
+	memsecure.ZeroBytes(h.masterSecret)
+	memsecure.ZeroBytes(h.resumptionMasterSecret)
+	memsecure.ZeroBytes(h.clientHSTraffic)
+	memsecure.ZeroBytes(h.serverHSTraffic)
+	memsecure.ZeroBytes(h.resumptionPSK)
+	memsecure.ZeroBytes(h.resumptionIdentity)
+	h.secrets.Zero() // Use Zero (not ZeroAll) per docs: traffic secrets owned by transport layer
+}
+
+// Zero is the ServerHandshaker counterpart of ClientHandshaker.Zero. In
+// addition to the common derivation intermediates it clears the
+// resumptionSelectedPSK recovered from a validated client PSK binder.
+func (h *ServerHandshaker) Zero() {
+	if h == nil {
+		return
+	}
+	memsecure.ZeroBytes(h.handshakeSecret)
+	memsecure.ZeroBytes(h.masterSecret)
+	memsecure.ZeroBytes(h.clientHSTraffic)
+	memsecure.ZeroBytes(h.serverHSTraffic)
+	memsecure.ZeroBytes(h.resumptionMasterSecret)
+	memsecure.ZeroBytes(h.resumptionSelectedPSK)
+	h.secrets.Zero() // Use Zero (not ZeroAll) per docs: traffic secrets owned by transport layer
 }

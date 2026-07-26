@@ -3,7 +3,6 @@ package sm2
 import (
 	"crypto/ecdsa"
 	"crypto/rand"
-	"crypto/x509"
 	"errors"
 	"io"
 	"math/big"
@@ -154,9 +153,16 @@ func createTempCertForEnvelope() (*smx509.Certificate, []byte, error) {
 	}
 	// The temporary private key is only needed to self-sign the throwaway
 	// recipient certificate; it is never used to decrypt anything. Zero its
-	// scalar immediately after signing so it does not linger in memory per
-	// the minimal-exposure principle in docs/security/memory-management.md.
-	defer tmpPriv.D.SetInt64(0)
+	// scalar bytes immediately after signing so it does not linger in memory
+	// per the minimal-exposure principle in docs/security/memory-management.md.
+	// FillBytes into a scratch slice then memsecure-zero that slice —
+	// big.Int.SetInt64(0) alone does not overwrite the backing array.
+	defer func() {
+		scratch := make([]byte, 32)
+		tmpPriv.D.FillBytes(scratch)
+		memsecure.ZeroBytes(scratch)
+		tmpPriv.D.SetInt64(0)
+	}()
 
 	sn, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
@@ -167,7 +173,7 @@ func createTempCertForEnvelope() (*smx509.Certificate, []byte, error) {
 		SerialNumber:          sn,
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		KeyUsage:              smx509.KeyUsageKeyEncipherment | smx509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 	}
 

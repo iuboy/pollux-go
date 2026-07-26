@@ -45,12 +45,16 @@ func (t *Transcript) AddMessage(msgType uint8, body []byte) {
 	t.h.Write(body)
 }
 
-// Bytes returns the raw accumulated handshake-message bytes (each framed as
-// type|length(3)|body). Prefer Sum() for cryptographic consumption — Bytes()
-// is retained for inspection/debugging only and must not be passed to
-// DeriveSecret or the Certificate/Finished routines (they expect a hash).
+// Bytes returns a COPY of the raw accumulated handshake-message bytes (each
+// framed as type|length(3)|body). The copy is intentional: returning the
+// internal slice would let callers mutate transcript state. Prefer Sum() for
+// cryptographic consumption — Bytes() is retained for inspection/debugging
+// only and must not be passed to DeriveSecret or the Certificate/Finished
+// routines (they expect a hash).
 func (t *Transcript) Bytes() []byte {
-	return t.buf
+	out := make([]byte, len(t.buf))
+	copy(out, t.buf)
+	return out
 }
 
 // Sum returns the SM3 transcript-hash snapshot without altering the running

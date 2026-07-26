@@ -30,6 +30,12 @@ func SealInitialPacket(dcid, scid, token []byte, pn uint64, payload []byte) ([]b
 	if pn > 0xFFFFFFFF {
 		return nil, fmt.Errorf("quicgm: packet number %d exceeds 32 bits", pn)
 	}
+	// Validate dcid before key derivation: DeriveQUICInitialSecrets also rejects
+	// an empty dcid, but checking here gives a quicgm-level error without
+	// spending HKDF cycles and keeps Seal/Open symmetric.
+	if len(dcid) == 0 {
+		return nil, errors.New("quicgm: dcid must be non-empty (it seeds the Initial secret)")
+	}
 	clientIn, _, err := tls13gm.DeriveQUICInitialSecrets(dcid)
 	if err != nil {
 		return nil, fmt.Errorf("quicgm: derive initial secret: %w", err)
@@ -94,6 +100,9 @@ func SealInitialPacket(dcid, scid, token []byte, pn uint64, payload []byte) ([]b
 // Initial with the same dcid that seeded those keys. It returns the version,
 // scid, token, recovered packet number, and decrypted payload.
 func OpenInitialPacket(dcid, packet []byte) (version uint32, scid, token []byte, pn uint64, payload []byte, err error) {
+	if len(dcid) == 0 {
+		return 0, nil, nil, 0, nil, errors.New("quicgm: dcid must be non-empty (it seeds the Initial secret)")
+	}
 	clientIn, _, err := tls13gm.DeriveQUICInitialSecrets(dcid)
 	if err != nil {
 		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: derive initial secret: %w", err)
@@ -110,11 +119,27 @@ func OpenInitialPacket(dcid, packet []byte) (version uint32, scid, token []byte,
 	if packet[0]&0x80 == 0 {
 		return 0, nil, nil, 0, nil, errors.New("quicgm: not a long-header packet")
 	}
+	// RFC 9000 §17.2: the Fixed Bit in long headers MUST be 1, and bits 5-4
+	// encode the long-header packet type (Initial = 0b00). The high 4 bits are
+	// not header-protection-eligible (RFC 9001 §5.4.1), so these checks are
+	// valid before RemoveHeaderProtection.
+	if packet[0]&0x40 == 0 {
+		return 0, nil, nil, 0, nil, errors.New("quicgm: fixed bit not set in long header")
+	}
+	if packet[0]&0x30 != 0x00 {
+		return 0, nil, nil, 0, nil, errors.New("quicgm: not an Initial packet (type bits set)")
+	}
 
 	pos := 1
 	version, pos, err = readUint32(packet, pos)
 	if err != nil {
 		return 0, nil, nil, 0, nil, err
+	}
+	// The Seal/Open pair and key derivation are specific to QUIC v1
+	// (RFC 9000/9001). Reject other versions early to avoid silent
+	// misparse or cross-protocol confusion.
+	if version != QUICVersion1 {
+		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: unsupported QUIC version 0x%08x", version)
 	}
 	// DCID length + value (advance past the sender's dcid; the caller supplied dcid).
 	pos, err = skipCID(packet, pos, "dcid")
@@ -142,16 +167,26 @@ func OpenInitialPacket(dcid, packet []byte) (version uint32, scid, token []byte,
 		return 0, nil, nil, 0, nil, err
 	}
 	pnLen := int(packet[0]&0x03) + 1
+	// RFC 9001 §5.4.2: Initial packets MUST use a 4-octet packet number.
+	if pnLen != 4 {
+		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: initial packet number length must be 4, got %d", pnLen)
+	}
 
 	// length spans pn + ciphertext.
 	if uint64(pnLen) > length {
 		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: declared length %d smaller than packet number %d", length, pnLen)
 	}
-	ctLen := int(length) - pnLen
-	headerEnd := pnOffset + pnLen
-	if headerEnd+ctLen > len(packet) {
+	// Bounds-check in uint64 space to avoid int truncation on 32-bit platforms.
+	if length > uint64(len(packet)-pnOffset) {
 		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: declared length %d exceeds packet tail %d", length, len(packet)-pnOffset)
 	}
+	// Guard against int overflow on 32-bit platforms (QUIC packet lengths are
+	// practically bounded, but as a library we defend the boundary).
+	if length > uint64(1<<31-1) {
+		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: declared length %d too large", length)
+	}
+	ctLen := int(length) - pnLen
+	headerEnd := pnOffset + pnLen
 	headerAAD := packet[:headerEnd]
 	ciphertext := packet[headerEnd : headerEnd+ctLen]
 

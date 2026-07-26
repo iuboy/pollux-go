@@ -62,7 +62,22 @@ var (
 // CreateCRLReasonExtension builds a CRLReason extension (RFC 5280 §5.3.1).
 // The extension is non-critical.
 func CreateCRLReasonExtension(reason CRLReason) pkix.Extension {
-	value, _ := asn1.Marshal(int(reason))
+	// Validate reason range (RFC 5280 §5.3.1: valid values are 0-10 excluding 7).
+	if reason < 0 || reason > 10 || reason == 7 {
+		return pkix.Extension{
+			Id:       OIDCRLReason,
+			Critical: false,
+		}
+	}
+	// CRLReason is an ENUMERATED type per RFC 5280 §5.3.1 (tag 0x0A, not
+	// INTEGER tag 0x02). Use asn1.Enumerated for spec-conformant encoding.
+	value, err := asn1.Marshal(asn1.Enumerated(reason))
+	if err != nil {
+		return pkix.Extension{
+			Id:       OIDCRLReason,
+			Critical: false,
+		}
+	}
 	return pkix.Extension{
 		Id:       OIDCRLReason,
 		Critical: false,
@@ -74,8 +89,16 @@ func CreateCRLReasonExtension(reason CRLReason) pkix.Extension {
 // (RFC 5280 §5.3.2) encoding the date the certificate is considered invalid.
 // The extension is non-critical.
 func CreateInvalidityDateExtension(date time.Time) pkix.Extension {
-	generalizedTime := date.UTC().Format("20060102150405Z")
-	value, _ := asn1.Marshal(generalizedTime)
+	// InvalidityDate is a GeneralizedTime per RFC 5280 §5.3.2 (tag 0x18).
+	// Marshal the time.Time directly with "generalized" params so the tag is
+	// correct; marshaling a string would produce UTF8String (tag 0x0C).
+	value, err := asn1.MarshalWithParams(date.UTC(), "generalized")
+	if err != nil {
+		return pkix.Extension{
+			Id:       OIDInvalidityDate,
+			Critical: false,
+		}
+	}
 	return pkix.Extension{
 		Id:       OIDInvalidityDate,
 		Critical: false,
@@ -84,13 +107,17 @@ func CreateInvalidityDateExtension(date time.Time) pkix.Extension {
 }
 
 // ParseCRLReason extracts the CRLReason from a CRL entry's extensions.
-// Returns (ReasonUnspecified, false) if the extension is absent.
+// Returns (ReasonUnspecified, false) if the extension is absent or the value
+// is outside the RFC 5280 §5.3.1 valid range (0-10, excluding 7).
 func ParseCRLReason(extensions []pkix.Extension) (CRLReason, bool) {
 	for _, ext := range extensions {
 		if ext.Id.Equal(OIDCRLReason) {
-			var reason int
+			var reason asn1.Enumerated
 			if _, err := asn1.Unmarshal(ext.Value, &reason); err == nil {
-				return CRLReason(reason), true
+				r := CRLReason(reason)
+				if r >= 0 && r <= 10 && r != 7 {
+					return r, true
+				}
 			}
 		}
 	}
@@ -102,11 +129,11 @@ func ParseCRLReason(extensions []pkix.Extension) (CRLReason, bool) {
 func ParseInvalidityDate(extensions []pkix.Extension) (time.Time, bool) {
 	for _, ext := range extensions {
 		if ext.Id.Equal(OIDInvalidityDate) {
-			var dateStr string
-			if _, err := asn1.Unmarshal(ext.Value, &dateStr); err == nil {
-				if date, err := time.Parse("20060102150405Z", dateStr); err == nil {
-					return date, true
-				}
+			// Decode directly into time.Time — Go's asn1 accepts both UTCTime
+			// and GeneralizedTime for time.Time, matching standard tools.
+			var date time.Time
+			if _, err := asn1.Unmarshal(ext.Value, &date); err == nil {
+				return date, true
 			}
 		}
 	}

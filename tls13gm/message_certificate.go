@@ -58,6 +58,9 @@ func (m *CertificateMsg) unmarshalBody(b []byte) error {
 		return errors.New("tls13gm: Certificate truncated at context length")
 	}
 	ctxLen := int(b[0])
+	if ctxLen > 255 {
+		return fmt.Errorf("tls13gm: Certificate context length %d exceeds 255", ctxLen)
+	}
 	if 1+ctxLen > len(b) {
 		return fmt.Errorf("tls13gm: Certificate context length %d out of range", ctxLen)
 	}

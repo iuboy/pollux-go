@@ -28,6 +28,19 @@ func mustGenerateSM2Key(t *testing.T) (*ecdsa.PrivateKey, *sm2.PrivateKey) {
 	return priv, sm2Priv
 }
 
+// smToStdCert converts a gmsm *smx509.Certificate to a stdlib *x509.Certificate
+// via field copy. gmsm v0.44 removed the ToX509() bridge, and SM2 DER cannot be
+// re-parsed by stdlib (unsupported curve), so the package's own
+// smX509ToStdCertificate helper (reflection field copy) is reused.
+func smToStdCert(t *testing.T, cert *gmsmSMX509.Certificate) *x509.Certificate {
+	t.Helper()
+	std, err := smX509ToStdCertificate(cert)
+	if err != nil {
+		t.Fatalf("convert smx509 cert to stdlib: %v", err)
+	}
+	return std
+}
+
 // buildCertChain 创建三级证书链：Root CA → Intermediate CA → Leaf
 // 返回 (root, inter, leaf, rootPool)
 // 证书使用 gmsm/smx509 解析以支持 SM2 CheckSignatureFrom
@@ -70,7 +83,7 @@ func buildCertChain(t *testing.T) (*gmsmSMX509.Certificate, *gmsmSMX509.Certific
 		MaxPathLen:            0,
 		MaxPathLenZero:        true,
 	}
-	interDER, err := CreateCertificate(interTmpl, rootCert.ToX509(), &interPriv.PublicKey, rootSM2Priv)
+	interDER, err := CreateCertificate(interTmpl, smToStdCert(t, rootCert), &interPriv.PublicKey, rootSM2Priv)
 	if err != nil {
 		t.Fatalf("create intermediate cert: %v", err)
 	}
@@ -91,7 +104,7 @@ func buildCertChain(t *testing.T) (*gmsmSMX509.Certificate, *gmsmSMX509.Certific
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		DNSNames:     []string{"leaf.example.com", "www.example.com"},
 	}
-	leafDER, err := CreateCertificate(leafTmpl, interCert.ToX509(), &leafPriv.PublicKey, interSM2Priv)
+	leafDER, err := CreateCertificate(leafTmpl, smToStdCert(t, interCert), &leafPriv.PublicKey, interSM2Priv)
 	if err != nil {
 		t.Fatalf("create leaf cert: %v", err)
 	}
@@ -101,7 +114,7 @@ func buildCertChain(t *testing.T) (*gmsmSMX509.Certificate, *gmsmSMX509.Certific
 	}
 
 	rootPool := NewCertPool()
-	rootPool.AddCert(rootCert.ToX509())
+	rootPool.AddCert(smToStdCert(t, rootCert))
 
 	return rootCert, interCert, leafCert, rootPool
 }
@@ -140,7 +153,7 @@ func buildDualCertChain(t *testing.T) (*gmsmSMX509.Certificate, *gmsmSMX509.Cert
 		MaxPathLen:            0,
 		MaxPathLenZero:        true,
 	}
-	interDER, _ := CreateCertificate(interTmpl, rootCert.ToX509(), &interPriv.PublicKey, rootSM2Priv)
+	interDER, _ := CreateCertificate(interTmpl, smToStdCert(t, rootCert), &interPriv.PublicKey, rootSM2Priv)
 	interCert, _ := gmsmSMX509.ParseCertificate(interDER)
 
 	// 签名叶子证书
@@ -154,7 +167,7 @@ func buildDualCertChain(t *testing.T) (*gmsmSMX509.Certificate, *gmsmSMX509.Cert
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		DNSNames:     []string{"tlcp-sign.example.com"},
 	}
-	signDER, _ := CreateCertificate(signTmpl, interCert.ToX509(), &signPriv.PublicKey, interSM2Priv)
+	signDER, _ := CreateCertificate(signTmpl, smToStdCert(t, interCert), &signPriv.PublicKey, interSM2Priv)
 	signCert, _ := gmsmSMX509.ParseCertificate(signDER)
 
 	// 加密叶子证书
@@ -168,11 +181,11 @@ func buildDualCertChain(t *testing.T) (*gmsmSMX509.Certificate, *gmsmSMX509.Cert
 		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDataEncipherment,
 		DNSNames:     []string{"tlcp-enc.example.com"},
 	}
-	encDER, _ := CreateCertificate(encTmpl, interCert.ToX509(), &encPriv.PublicKey, interSM2Priv)
+	encDER, _ := CreateCertificate(encTmpl, smToStdCert(t, interCert), &encPriv.PublicKey, interSM2Priv)
 	encCert, _ := gmsmSMX509.ParseCertificate(encDER)
 
 	rootPool := NewCertPool()
-	rootPool.AddCert(rootCert.ToX509())
+	rootPool.AddCert(smToStdCert(t, rootCert))
 
 	return signCert, encCert, rootCert, rootPool
 }
@@ -231,7 +244,7 @@ func TestCertChain_IssuerChain(t *testing.T) {
 func TestCertChain_VerifyWithRootPool(t *testing.T) {
 	_, _, leafCert, rootPool := buildCertChain(t)
 
-	err := Verify(leafCert.ToX509(), VerifyOptions{
+	err := Verify(smToStdCert(t, leafCert), VerifyOptions{
 		DNSName: "leaf.example.com",
 		Roots:   rootPool,
 	})
@@ -243,7 +256,7 @@ func TestCertChain_VerifyWithRootPool(t *testing.T) {
 func TestCertChain_VerifyRootSelfSigned(t *testing.T) {
 	rootCert, _, _, rootPool := buildCertChain(t)
 
-	err := Verify(rootCert.ToX509(), VerifyOptions{Roots: rootPool})
+	err := Verify(smToStdCert(t, rootCert), VerifyOptions{Roots: rootPool})
 	if err != nil {
 		t.Logf("Verify root self-signed: %v", err)
 	}
@@ -252,7 +265,7 @@ func TestCertChain_VerifyRootSelfSigned(t *testing.T) {
 func TestCertChain_VerifyIntermediate_NoRootPool(t *testing.T) {
 	_, interCert, _, _ := buildCertChain(t)
 
-	err := Verify(interCert.ToX509(), VerifyOptions{Roots: nil})
+	err := Verify(smToStdCert(t, interCert), VerifyOptions{Roots: nil})
 	if err == nil {
 		t.Log("Verify intermediate without root pool: passed (unexpected)")
 	}
@@ -310,7 +323,7 @@ func TestCertChain_CSRFlow(t *testing.T) {
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		DNSNames:     csr.DNSNames,
 	}
-	leafDER, err := CreateCertificate(leafTmpl, rootCert.ToX509(), &applicantPriv.PublicKey, rootSM2Priv)
+	leafDER, err := CreateCertificate(leafTmpl, smToStdCert(t, rootCert), &applicantPriv.PublicKey, rootSM2Priv)
 	if err != nil {
 		t.Fatalf("CreateCertificate from CSR: %v", err)
 	}
@@ -339,7 +352,7 @@ func TestCertChain_DualCerts_SameCA(t *testing.T) {
 		t.Errorf("sign issuer %q != enc issuer %q", signCert.Issuer.CommonName, encCert.Issuer.CommonName)
 	}
 
-	err := VerifyDualCerts(signCert.ToX509(), encCert.ToX509())
+	err := VerifyDualCerts(smToStdCert(t, signCert), smToStdCert(t, encCert))
 	if err != nil {
 		t.Logf("VerifyDualCerts: %v", err)
 	}
@@ -348,12 +361,12 @@ func TestCertChain_DualCerts_SameCA(t *testing.T) {
 func TestCertChain_DualCerts_SignAndEncKeyUsage(t *testing.T) {
 	signCert, encCert, _, _ := buildDualCertChain(t)
 
-	if signCert.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+	if signCert.KeyUsage&gmsmSMX509.KeyUsageDigitalSignature == 0 {
 		t.Error("sign cert should have DigitalSignature")
 	}
 
-	hasEnc := (encCert.KeyUsage&x509.KeyUsageKeyEncipherment != 0) ||
-		(encCert.KeyUsage&x509.KeyUsageDataEncipherment != 0)
+	hasEnc := (encCert.KeyUsage&gmsmSMX509.KeyUsageKeyEncipherment != 0) ||
+		(encCert.KeyUsage&gmsmSMX509.KeyUsageDataEncipherment != 0)
 	if !hasEnc {
 		t.Error("enc cert should have KeyEncipherment or DataEncipherment")
 	}
@@ -402,7 +415,7 @@ func TestCertChain_ExpiredLeaf(t *testing.T) {
 		NotAfter:     time.Now().Add(-time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 	}
-	leafDER, _ := CreateCertificate(leafTmpl, rootCert.ToX509(), &leafPriv.PublicKey, rootSM2Priv)
+	leafDER, _ := CreateCertificate(leafTmpl, smToStdCert(t, rootCert), &leafPriv.PublicKey, rootSM2Priv)
 	leafCert, err := gmsmSMX509.ParseCertificate(leafDER)
 	if err != nil {
 		t.Fatalf("parse leaf: %v", err)
@@ -450,7 +463,7 @@ func TestCertChain_NotYetValid(t *testing.T) {
 		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 	}
-	leafDER, _ := CreateCertificate(leafTmpl, rootCert.ToX509(), &leafPriv.PublicKey, rootSM2Priv)
+	leafDER, _ := CreateCertificate(leafTmpl, smToStdCert(t, rootCert), &leafPriv.PublicKey, rootSM2Priv)
 	leafCert, err := gmsmSMX509.ParseCertificate(leafDER)
 	if err != nil {
 		t.Fatalf("parse leaf: %v", err)
@@ -526,7 +539,7 @@ func TestCertChain_IntermediateCannotIssueSubCA(t *testing.T) {
 		MaxPathLen:            0,
 		MaxPathLenZero:        true,
 	}
-	interDER, _ := CreateCertificate(interTmpl, rootCert.ToX509(), &interPriv.PublicKey, rootSM2Priv)
+	interDER, _ := CreateCertificate(interTmpl, smToStdCert(t, rootCert), &interPriv.PublicKey, rootSM2Priv)
 	interCert, _ := gmsmSMX509.ParseCertificate(interDER)
 
 	// 尝试用 Intermediate 签发一个子 CA（违反 MaxPathLen=0 约束）
@@ -543,7 +556,7 @@ func TestCertChain_IntermediateCannotIssueSubCA(t *testing.T) {
 	}
 
 	// 用 Intermediate 的私钥签发子 CA（签名者是 Intermediate）
-	subCADER, err := CreateCertificate(subCATmpl, interCert.ToX509(), &subCAPriv.PublicKey, interSM2Priv)
+	subCADER, err := CreateCertificate(subCATmpl, smToStdCert(t, interCert), &subCAPriv.PublicKey, interSM2Priv)
 	if err != nil {
 		t.Fatalf("CreateCertificate sub-CA: %v", err)
 	}
@@ -560,9 +573,9 @@ func TestCertChain_IntermediateCannotIssueSubCA(t *testing.T) {
 	// Verify 应检测到路径长度违规
 	// 注意：pollux Verify 对 SM2 证书链有已知限制，此处记录行为
 	rootPool := NewCertPool()
-	rootPool.AddCert(rootCert.ToX509())
+	rootPool.AddCert(smToStdCert(t, rootCert))
 
-	err = Verify(subCACert.ToX509(), VerifyOptions{Roots: rootPool})
+	err = Verify(smToStdCert(t, subCACert), VerifyOptions{Roots: rootPool})
 	if err != nil {
 		t.Logf("Verify sub-CA (path length violation): %v (expected failure)", err)
 	} else {

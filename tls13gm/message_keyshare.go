@@ -7,8 +7,15 @@ import (
 
 // marshalClientKeyShare builds the ClientHello key_share extension data: a
 // 2-byte-prefixed list of (group | key_exchange) entries (RFC 8446 §4.2.8).
+// Returns nil if key is empty or exceeds the maximum representable length.
 func marshalClientKeyShare(group uint16, key []byte) []byte {
+	if len(key) == 0 || len(key) > 0xFFFF {
+		return nil
+	}
 	entryLen := 4 + len(key)
+	if entryLen > 0xFFFF {
+		return nil
+	}
 	out := make([]byte, 2+entryLen)
 	out[0] = byte(entryLen >> 8)
 	out[1] = byte(entryLen)
@@ -22,7 +29,11 @@ func marshalClientKeyShare(group uint16, key []byte) []byte {
 
 // marshalServerKeyShare builds the ServerHello key_share extension data: a
 // single (group | key_exchange) entry with no list prefix.
+// Returns nil if key is empty or exceeds the maximum representable length.
 func marshalServerKeyShare(group uint16, key []byte) []byte {
+	if len(key) == 0 || len(key) > 0xFFFF {
+		return nil
+	}
 	out := make([]byte, 4+len(key))
 	out[0] = byte(group >> 8)
 	out[1] = byte(group)

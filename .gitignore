@@ -1,12 +1,18 @@
-.claude
-
-# AI agent / assistant configs — local only, not tracked
+# AI agent / assistant configs — local only, not tracked.
+# Trailing slash on .claude/ ensures only the directory is matched, not
+# any file named ".claude" that might appear in a subdirectory.
+.claude/
 AGENTS.md
 CLAUDE.md
 GEMINI.md
 .cursorrules
 .cursor/
+# copilot-instructions.md: intentionally ignored — pollux-go uses AGENTS.md
+# as the canonical AI-agent instruction file (cross-tool compatible).
+# Teams wanting GitHub Copilot support should un-comment this line and
+# maintain the file via a separate tracked path if desired.
 .github/copilot-instructions.md
+.zcode/
 
 # Test coverage artifacts
 coverage.out

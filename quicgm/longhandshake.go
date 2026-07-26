@@ -87,6 +87,10 @@ func OpenHandshakePacket(keys *tls13gm.QUICPacketKeys, expectedDCID, packet []by
 	if packet[0]&0x80 == 0 {
 		return 0, nil, 0, nil, errors.New("quicgm: not a long-header packet")
 	}
+	// RFC 9000 §17.2: the Fixed Bit in long headers MUST be 1.
+	if packet[0]&0x40 == 0 {
+		return 0, nil, 0, nil, errors.New("quicgm: fixed bit not set in long header")
+	}
 	if (packet[0]>>4)&0x03 != 0b10 {
 		return 0, nil, 0, nil, fmt.Errorf("quicgm: not a Handshake packet (type %02b)", (packet[0]>>4)&0x03)
 	}
@@ -96,12 +100,19 @@ func OpenHandshakePacket(keys *tls13gm.QUICPacketKeys, expectedDCID, packet []by
 	if err != nil {
 		return 0, nil, 0, nil, err
 	}
+	// The Handshake-level packet-protection keys are specific to QUIC v1.
+	if version != QUICVersion1 {
+		return 0, nil, 0, nil, fmt.Errorf("quicgm: unsupported QUIC version 0x%08x", version)
+	}
 	gotDCID, pos, err := readCID(packet, pos, "dcid")
 	if err != nil {
 		return 0, nil, 0, nil, err
 	}
 	if !bytes.Equal(gotDCID, expectedDCID) {
-		return 0, nil, 0, nil, fmt.Errorf("quicgm: dcid mismatch (got %d bytes, expected %d bytes)", len(gotDCID), len(expectedDCID))
+		// Include both length AND a hex preview of the actual bytes so a
+		// debugger can tell a length mismatch from a content mismatch without
+		// having to wire up a packet capture.
+		return 0, nil, 0, nil, fmt.Errorf("quicgm: dcid mismatch (got %d bytes %x, expected %d bytes)", len(gotDCID), previewHex(gotDCID), len(expectedDCID))
 	}
 	scid, pos, err = readCID(packet, pos, "scid")
 	if err != nil {
@@ -119,15 +130,32 @@ func OpenHandshakePacket(keys *tls13gm.QUICPacketKeys, expectedDCID, packet []by
 		return 0, nil, 0, nil, err
 	}
 	pnLen := int(packet[0]&0x03) + 1
+	// RFC 9001 §5.4.2: Initial and Handshake packets MUST use a 4-octet packet
+	// number encoding. A shorter encoding is a protocol violation and would
+	// yield a truncated packet-number field.
+	if pnLen != 4 {
+		return 0, nil, 0, nil, fmt.Errorf("quicgm: handshake packet number length must be 4, got %d", pnLen)
+	}
 
 	if uint64(pnLen) > length {
 		return 0, nil, 0, nil, fmt.Errorf("quicgm: declared length %d smaller than packet number %d", length, pnLen)
 	}
-	ctLen := int(length) - pnLen
-	headerEnd := pnOffset + pnLen
-	if headerEnd+ctLen > len(packet) {
+	// Bounds-check in uint64 space to avoid int truncation on 32-bit platforms.
+	if length > uint64(len(packet)-pnOffset) {
 		return 0, nil, 0, nil, fmt.Errorf("quicgm: declared length %d exceeds packet tail %d", length, len(packet)-pnOffset)
 	}
+	// Guard against int overflow on 32-bit platforms before the int(length)
+	// narrowing below. QUIC packet lengths are practically bounded well below
+	// 2^31, but as a library we defend the boundary explicitly.
+	if length > 1<<31-1 {
+		return 0, nil, 0, nil, fmt.Errorf("quicgm: declared length %d too large", length)
+	}
+	ctLen := int(length) - pnLen
+	headerEnd := pnOffset + pnLen
+	// Note: the redundant 'headerEnd+ctLen > len(packet)' check that appeared
+	// here in earlier versions is subsumed by the uint64 bounds check above —
+	// length <= len(packet)-pnOffset and ctLen = length-pnLen implies
+	// headerEnd+ctLen = pnOffset+pnLen+(length-pnLen) = pnOffset+length <= len(packet).
 	headerAAD := packet[:headerEnd]
 	ciphertext := packet[headerEnd : headerEnd+ctLen]
 
@@ -136,4 +164,14 @@ func OpenHandshakePacket(keys *tls13gm.QUICPacketKeys, expectedDCID, packet []by
 		return 0, nil, 0, nil, err
 	}
 	return version, scid, pn, payload, nil
+}
+
+// previewHex returns up to 8 bytes of b as hex, for diagnostic error messages
+// where dumping the entire CID would be noisy. Returns the full hex form when
+// len(b) <= 8.
+func previewHex(b []byte) []byte {
+	if len(b) > 8 {
+		return b[:8]
+	}
+	return b
 }

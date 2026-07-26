@@ -8,6 +8,13 @@ import (
 
 // CMAC implements the Cipher-based Message Authentication Code (CMAC)
 // algorithm per NIST SP 800-38B, using SM4 as the underlying block cipher.
+//
+// Concurrency: CMAC is NOT safe for concurrent use. The Write/Sum/Reset
+// methods mutate internal buffer and state fields without synchronization,
+// matching the contract of the standard library's hash.Hash (which also does
+// not require concurrency safety). Callers sharing a CMAC across goroutines
+// must serialize access externally; for parallel MAC computation, construct
+// one CMAC per goroutine.
 type CMAC struct {
 	k1, k2    []byte
 	buffer    []byte // accumulates incoming data (partial block)
@@ -65,6 +72,13 @@ func leftShift(data []byte) {
 }
 
 // Write absorbs data into the CMAC state.
+//
+// Per NIST SP 800-38B, the final block (whether complete or incomplete)
+// must be XORed with subkey K1 or K2 *before* encryption. To ensure the
+// final block is available for this treatment in Sum(), Write defers
+// processing by one block: when a full block accumulates, it is only
+// processed if *more* data follows — otherwise it stays in the buffer as
+// the pending final block.
 func (c *CMAC) Write(p []byte) (int, error) {
 	written := len(p)
 	for len(p) > 0 {
@@ -76,7 +90,8 @@ func (c *CMAC) Write(p []byte) (int, error) {
 		c.bufSize += todo
 		p = p[todo:]
 
-		if c.bufSize == BlockSize {
+		if c.bufSize == BlockSize && len(p) > 0 {
+			// Not the final block — process it now.
 			c.processBlock(c.buffer)
 			c.bufSize = 0
 		}
@@ -96,10 +111,19 @@ func (c *CMAC) processBlock(data []byte) {
 // Sum returns the CMAC tag, appending it to b.
 // It does not change the underlying state.
 //
-// The implementation uses constant-time operations to avoid timing
-// side channels that could reveal whether the last block is complete.
+// Per NIST SP 800-38B, the final block is XORed with K1 (if complete)
+// or padded with 10* and XORed with K2 (if incomplete), then encrypted.
+//
+// The complete/incomplete decision and 10* padding are performed in constant
+// time (crypto/subtle) to avoid timing side channels that could reveal whether
+// the last block is complete — relevant since CMAC feeds into TLCP key
+// derivation and authentication.
 func (c *CMAC) Sum(b []byte) []byte {
 	// Work on a copy of state + partial buffer to preserve internal state.
+	// Write() defers the final block: state holds the CBC-MAC chain over all
+	// prior complete blocks (X_{n-1}); buffer holds the final block bytes
+	// (0..BlockSize). Sum assembles M_n* = M_n || 10* around X_{n-1}, then XORs
+	// subkey K1 (final block complete) or K2 (incomplete) and encrypts.
 	lastBlock := make([]byte, BlockSize)
 	copy(lastBlock, c.state[:])
 	for i := 0; i < c.bufSize; i++ {
@@ -110,16 +134,16 @@ func (c *CMAC) Sum(b []byte) []byte {
 	// isComplete is 1 when bufSize == BlockSize, 0 otherwise.
 	isComplete := subtle.ConstantTimeEq(int32(c.bufSize), int32(BlockSize))
 
-	// Apply 10* padding for incomplete blocks (constant-time).
+	// Apply 10* padding for incomplete blocks (constant-time). Only the single
+	// pad position (i == bufSize) receives an extra ⊕0x80, and only when the
+	// final block is incomplete. Positions beyond bufSize are NOT zeroed: they
+	// still carry the X_{n-1} chain value, and the pad's implicit trailing
+	// zeros combine with it as XOR-with-0.
 	for i := 0; i < BlockSize; i++ {
 		atPadPos := subtle.ConstantTimeEq(int32(i), int32(c.bufSize))
-		pastPadPos := subtle.ConstantTimeLessOrEq(int(c.bufSize), int(i))
-		// When complete: keep lastBlock[i] unchanged.
-		// When incomplete at pad position: XOR with 0x80.
-		// When incomplete past pad position: zero out.
-		lastBlock[i] = byte(subtle.ConstantTimeSelect(isComplete, int(lastBlock[i]),
-			subtle.ConstantTimeSelect(atPadPos, int(lastBlock[i])^0x80,
-				subtle.ConstantTimeSelect(pastPadPos, 0, int(lastBlock[i])))))
+		// padMask = 1 only when incomplete AND at the pad position; else 0.
+		padMask := subtle.ConstantTimeSelect(isComplete, 0, atPadPos)
+		lastBlock[i] ^= byte(padMask) * 0x80
 	}
 
 	// XOR with subkey: K1 for complete blocks, K2 for incomplete blocks.

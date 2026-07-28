@@ -7,12 +7,13 @@ package tls13gm
 type ProtocolVersion uint16
 
 const (
-	// VersionTLS13 is the TLS 1.3 wire version (RFC 8446). It appears in the
-	// ClientHello/ServerHello legacy_version field and the supported_versions
-	// extension.
-	VersionTLS13 ProtocolVersion = 0x0303
+	// VersionTLS13 is the TLS 1.3 wire version (RFC 8446 §4.2.1), carried in the
+	// supported_versions extension (0x0304). It MUST NOT be used for the
+	// ClientHello/ServerHello legacy_version field, which TLS 1.3 fixes at
+	// VersionTLS12 (0x0303) for backward compatibility.
+	VersionTLS13 ProtocolVersion = 0x0304
 	// VersionTLS12 is the legacy_version value TLS 1.3 clients/servers put in
-	// the ClientHello/ServerHello for backward compatibility.
+	// the ClientHello/ServerHello record (always 0x0303, per RFC 8446 §4.1.2/4.1.3).
 	VersionTLS12 ProtocolVersion = 0x0303
 )
 
@@ -40,7 +41,7 @@ const (
 	ExtensionTypeSupportedGroups     uint16 = 10
 	ExtensionTypeSignatureAlgorithms uint16 = 13
 	ExtensionTypeALPN                uint16 = 16
-	ExtensionTypeKeyShare            uint16 = 40
+	ExtensionTypeKeyShare            uint16 = 51 // RFC 8446 §4.2.8 (0x0033)
 	ExtensionTypePreSharedKey        uint16 = 41
 	// ExtensionTypeEarlyData (RFC 8446 §4.2.10) marks 0-RTT data in a ClientHello
 	// and a ticket eligible for 0-RTT in a NewSessionTicket. P2 carries it in

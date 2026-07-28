@@ -1219,6 +1219,13 @@ func (c *ClientHandshaker) EarlyDataAccepted() bool { return c.earlyDataAccepted
 // HandleNewSessionTicket (nil before). Diagnostic / interop debugging aid.
 func (c *ClientHandshaker) ResumptionMasterSecret() []byte { return c.resumptionMasterSecret }
 
+// TranscriptBytes returns the raw accumulated handshake transcript bytes
+// (every message as type|length|body). Diagnostic / interop debugging aid.
+func (c *ClientHandshaker) TranscriptBytes() []byte { return c.transcript.Bytes() }
+
+// MasterSecret returns the TLS 1.3 master secret. Diagnostic aid.
+func (c *ClientHandshaker) MasterSecret() []byte { return c.masterSecret }
+
 // NewSessionTicket produces a NewSessionTicket handshake message carrying a
 // fresh resumption PSK, for the server to send post-handshake under the 1-RTT
 // keys. HandleClientFinished must have completed. ticketLifetime is the PSK

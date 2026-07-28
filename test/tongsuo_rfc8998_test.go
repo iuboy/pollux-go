@@ -689,12 +689,11 @@ func readNewSessionTicket(conn net.Conn, hs *tls13gm.ClientHandshaker) (identity
 // derivation matches the standard server's, closing the structural gap the old
 // ticket=PSK design had.
 func TestRFC8998_Tongsuo_PSKResume(t *testing.T) {
-	t.Skip("investigating: pollux-go derives (identity, psk, age) correctly (verified pollux<->pollux " +
-		"resumption + TEK rotation pass with the standard model), but the binder Tongsuo reconstructs " +
-		"does not verify against pollux-go's. The 1-RTT handshake + app-data + traffic-secret " +
-		"cross-check all pass (transcript + master secret match), so the discrepancy is a subtle " +
-		"RMS/transcript difference surfacing only at resumption. Needs RMS byte-comparison against " +
-		"a wireshark-decrypted Tongsuo capture.")
+	t.Skip("investigating: res psk label fixed (was a self-loop-masked bug) and all HKDF labels " +
+		"now match RFC 8446, but Tongsuo's binder still does not verify. transcript + master secret " +
+		"verified byte-identical via traffic-secret cross-check; RMS/transcript are theoretically " +
+		"identical (TCP stream determinism). Needs tshark-decrypted RMS/PSK byte comparison to pin " +
+		"down the remaining difference.")
 	ts, ok := tongsuoBinary()
 	if !ok {
 		t.Skip("Tongsuo/BabaSSL not found; skipping RFC 8998 interop gate")
@@ -726,6 +725,8 @@ func TestRFC8998_Tongsuo_PSKResume(t *testing.T) {
 	t.Logf("harvested identity(%d bytes) psk(%d bytes) ageAdd=%d", len(identity), len(psk), ageAdd)
 	t.Logf("pollux RMS=%x", hs1.ResumptionMasterSecret())
 	t.Logf("pollux PSK=%x", psk)
+	t.Logf("pollux masterSecret=%x", hs1.MasterSecret())
+	t.Logf("pollux transcript bytes=%x", hs1.TranscriptBytes())
 
 	// Phase 2: PSK resumption with the Tongsuo-issued ticket as the identity.
 	conn2, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
@@ -740,4 +741,22 @@ func TestRFC8998_Tongsuo_PSKResume(t *testing.T) {
 	// Reaching here means the server accepted our PSK (binder verified against
 	// the PSK it reconstructed from the ticket) and completed a PSK-mode
 	// handshake. pollux-go is now RFC 8446 resumption-interoperable.
+}
+
+// TestRFC8998_DialFixed dials a Tongsuo s_server at the port in $POLLUX_FIXED_PORT
+// (for capture/tshark debugging). It just completes the handshake; intended to
+// run while an external s_server + tshark capture the traffic.
+func TestRFC8998_DialFixed(t *testing.T) {
+	port := os.Getenv("POLLUX_FIXED_PORT")
+	if port == "" {
+		t.Skip("set POLLUX_FIXED_PORT to dial an external s_server")
+	}
+	conn, err := net.Dial("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if _, _, err := dialRFC8998(conn, "localhost", nil, nil, 0); err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
 }

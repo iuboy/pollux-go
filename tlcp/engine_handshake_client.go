@@ -210,24 +210,39 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	if !config.insecureSkipVerify {
 		roots := polluxsmx509.NewCertPool()
 		for _, raw := range config.rootCAs {
-			if rc, err := polluxsmx509.ParseCertificate(raw); err == nil {
-				roots.AddCert(rc)
+			rc, err := polluxsmx509.ParseCertificate(raw)
+			if err != nil {
+				return fmt.Errorf("tlcp: failed to parse root CA: %w", err)
+			}
+			roots.AddCert(rc)
+		}
+		if roots.Len() == 0 {
+			return errors.New("tlcp: no root CAs configured for verification")
+		}
+		// Build an intermediates pool from the extra certs in the chain
+		// (certMsg.certificates[2:] are intermediate CA certs).
+		intermediates := polluxsmx509.NewCertPool()
+		for _, raw := range certMsg.certificates[2:] {
+			if ic, err := polluxsmx509.ParseCertificate(raw); err == nil {
+				intermediates.AddCert(ic)
 			}
 		}
 		// Verify the signing certificate chain (used for ServerKeyExchange/
 		// CertificateVerify signatures) against the root pool.
 		if err := polluxsmx509.Verify(signCert, polluxsmx509.VerifyOptions{
-			Roots:     roots,
-			DNSName:   config.serverName,
-			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			Roots:         roots,
+			Intermediates: intermediates,
+			DNSName:       config.serverName,
+			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		}); err != nil {
 			return fmt.Errorf("tlcp: server certificate verification failed: %w", err)
 		}
 		// Verify the encryption certificate chain as well.
 		if err := polluxsmx509.Verify(encCert, polluxsmx509.VerifyOptions{
-			Roots:     roots,
-			DNSName:   config.serverName,
-			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			Roots:         roots,
+			Intermediates: intermediates,
+			DNSName:       config.serverName,
+			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		}); err != nil {
 			return fmt.Errorf("tlcp: server encryption certificate verification failed: %w", err)
 		}

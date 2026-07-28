@@ -27,8 +27,9 @@ var (
 	tlcpServerFinishedLabel = []byte("server finished")
 )
 
-// tlcpPHash implements P_hash from RFC 4346 §5: a sequence of HMAC blocks that
-// are XOR-copied... actually concatenated into the result.
+// tlcpPHash implements P_hash from RFC 5246 §5: HMAC output blocks are
+// concatenated to fill the result buffer. (TLCP uses a single-hash PRF
+// with no secret-splitting XOR step, unlike TLS 1.0/1.1.)
 func tlcpPHash(result, secret, seed []byte, newHash func() hash.Hash) {
 	h := hmac.New(newHash, secret)
 	h.Write(seed)

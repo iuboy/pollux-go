@@ -93,6 +93,9 @@ type tlcpCBCStream struct {
 }
 
 func newTLCPCBCEncrypter(key, iv []byte) (*tlcpCBCStream, error) {
+	if len(key) != 16 {
+		return nil, fmt.Errorf("tlcp: SM4 key length %d, want 16", len(key))
+	}
 	mode, err := polluxSM4.NewCBCEncrypter(key, iv)
 	if err != nil {
 		return nil, err
@@ -101,6 +104,9 @@ func newTLCPCBCEncrypter(key, iv []byte) (*tlcpCBCStream, error) {
 }
 
 func newTLCPCBCDecrypter(key, iv []byte) (*tlcpCBCStream, error) {
+	if len(key) != 16 {
+		return nil, fmt.Errorf("tlcp: SM4 key length %d, want 16", len(key))
+	}
 	mode, err := polluxSM4.NewCBCDecrypter(key, iv)
 	if err != nil {
 		return nil, err
@@ -134,9 +140,14 @@ func tlcpRecordMAC(h hash.Hash, out, seq, header, payload []byte) []byte {
 // nonce carried in the record. The full nonce is implicit || explicit (12 bytes).
 // This matches RFC 5116 / GB/T 38636-2020 §6.4.5.6, and differs from the
 // TLS 1.3 XOR-nonce in tls13gm.AEAD.
+//
+// Only the immutable implicit prefix is stored; the full nonce is assembled in
+// a local variable per Seal/Open call, making the type safe for concurrent use.
+// (A shared mutable nonce field would risk GCM nonce reuse across goroutines,
+// catastrophically revealing the authentication subkey.)
 type tlcpPrefixNonceAEAD struct {
-	nonce [tlcpAEADNonceLength]byte // [0:4] implicit, [4:12] filled per call
-	aead  cipher.AEAD
+	implicitPrefix [tlcpNoncePrefixLength]byte
+	aead           cipher.AEAD
 }
 
 // newTLCPAEADSM4GCM builds an SM4-GCM AEAD with the given key and 4-byte
@@ -144,6 +155,9 @@ type tlcpPrefixNonceAEAD struct {
 func newTLCPAEADSM4GCM(key, implicitNonce []byte) (*tlcpPrefixNonceAEAD, error) {
 	if len(implicitNonce) != tlcpNoncePrefixLength {
 		return nil, fmt.Errorf("tlcp: implicit nonce length %d, want %d", len(implicitNonce), tlcpNoncePrefixLength)
+	}
+	if len(key) != 16 {
+		return nil, fmt.Errorf("tlcp: SM4 key length %d, want 16", len(key))
 	}
 	block, err := polluxSM4.NewCipher(key)
 	if err != nil {
@@ -154,7 +168,7 @@ func newTLCPAEADSM4GCM(key, implicitNonce []byte) (*tlcpPrefixNonceAEAD, error) 
 		return nil, err
 	}
 	ret := &tlcpPrefixNonceAEAD{aead: aead}
-	copy(ret.nonce[:tlcpNoncePrefixLength], implicitNonce)
+	copy(ret.implicitPrefix[:], implicitNonce)
 	return ret, nil
 }
 
@@ -166,14 +180,19 @@ func (f *tlcpPrefixNonceAEAD) ExplicitNonceSize() int { return tlcpAEADNonceLeng
 func (f *tlcpPrefixNonceAEAD) Overhead() int { return f.aead.Overhead() }
 
 // Seal encrypts plaintext under the implicit prefix + the per-record explicit
-// nonce. additionalData is the TLCP record header.
+// nonce. additionalData is the TLCP record header. The full nonce is built in a
+// local variable — no shared state is mutated.
 func (f *tlcpPrefixNonceAEAD) Seal(out, explicitNonce, plaintext, additionalData []byte) []byte {
-	copy(f.nonce[tlcpNoncePrefixLength:], explicitNonce)
-	return f.aead.Seal(out, f.nonce[:], plaintext, additionalData)
+	var nonce [tlcpAEADNonceLength]byte
+	copy(nonce[:], f.implicitPrefix[:])
+	copy(nonce[tlcpNoncePrefixLength:], explicitNonce)
+	return f.aead.Seal(out, nonce[:], plaintext, additionalData)
 }
 
 // Open decrypts. explicitNonce is the 8 bytes read from the record.
 func (f *tlcpPrefixNonceAEAD) Open(out, explicitNonce, ciphertext, additionalData []byte) ([]byte, error) {
-	copy(f.nonce[tlcpNoncePrefixLength:], explicitNonce)
-	return f.aead.Open(out, f.nonce[:], ciphertext, additionalData)
+	var nonce [tlcpAEADNonceLength]byte
+	copy(nonce[:], f.implicitPrefix[:])
+	copy(nonce[tlcpNoncePrefixLength:], explicitNonce)
+	return f.aead.Open(out, nonce[:], ciphertext, additionalData)
 }

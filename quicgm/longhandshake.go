@@ -127,6 +127,12 @@ func OpenHandshakePacket(keys *tls13gm.QUICPacketKeys, expectedDCID, packet []by
 		return 0, nil, 0, nil, err
 	}
 	pnLen := int(packet[0]&0x03) + 1
+	// RFC 9001 §5.4.2: Initial and Handshake packets MUST use a 4-octet packet
+	// number encoding. A shorter encoding is a protocol violation and would
+	// yield a truncated packet-number field.
+	if pnLen != 4 {
+		return 0, nil, 0, nil, fmt.Errorf("quicgm: handshake packet number length must be 4, got %d", pnLen)
+	}
 
 	if uint64(pnLen) > length {
 		return 0, nil, 0, nil, fmt.Errorf("quicgm: declared length %d smaller than packet number %d", length, pnLen)

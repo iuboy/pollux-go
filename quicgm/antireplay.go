@@ -28,13 +28,13 @@ func (rejectingAntiReplayCache) Check([]byte, time.Duration) bool { return false
 // remembers each digest for `window`; attempts older than `maxAge` (typically
 // the ticket lifetime) are rejected as expired.
 type memoryAntiReplayCache struct {
-	mu          sync.Mutex
-	entries     map[string]time.Time // digest -> expiry
-	window      time.Duration
-	maxAge      time.Duration
-	now         func() time.Time
-	lastSweep   time.Time
-	sweepEvery  time.Duration
+	mu         sync.Mutex
+	entries    map[string]time.Time // digest -> expiry
+	window     time.Duration
+	maxAge     time.Duration
+	now        func() time.Time
+	lastSweep  time.Time
+	sweepEvery time.Duration
 }
 
 // NewAntiReplayCache returns a process-local anti-replay cache. window is how
@@ -53,6 +53,14 @@ func NewAntiReplayCache(window, maxAge time.Duration) AntiReplayCache {
 func (c *memoryAntiReplayCache) Check(digest []byte, age time.Duration) bool {
 	if age < 0 || age > c.maxAge {
 		return false // future or expired ticket
+	}
+	// An empty digest maps to the map key "" — every empty-digest attempt
+	// would collide on that single key, so the first would be accepted and all
+	// later ones (even from distinct legitimate connections) rejected as
+	// replays. Reject empty digests outright: a valid 0-RTT attempt always
+	// carries a non-empty (PSK-derived) digest.
+	if len(digest) == 0 {
+		return false
 	}
 	key := string(digest)
 	c.mu.Lock()

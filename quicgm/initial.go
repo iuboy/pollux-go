@@ -113,6 +113,17 @@ func OpenInitialPacket(dcid, packet []byte) (version uint32, scid, token []byte,
 	if packet[0]&0x80 == 0 {
 		return 0, nil, nil, 0, nil, errors.New("quicgm: not a long-header packet")
 	}
+	// RFC 9000 §17.2: the Fixed Bit in long headers MUST be 1, and bits 5-4
+	// encode the long-header packet type (Initial = 0b00). Validate before key
+	// derivation / AEAD to reject Retry (0b10) or 0-RTT-style packets early.
+	// The high 4 bits are not header-protection-eligible (RFC 9001 §5.4.1), so
+	// these checks are valid before RemoveHeaderProtection.
+	if packet[0]&0x40 == 0 {
+		return 0, nil, nil, 0, nil, errors.New("quicgm: fixed bit not set in long header")
+	}
+	if packet[0]&0x30 != 0x00 {
+		return 0, nil, nil, 0, nil, errors.New("quicgm: not an Initial packet (type bits set)")
+	}
 
 	pos := 1
 	version, pos, err = readUint32(packet, pos)
@@ -151,6 +162,10 @@ func OpenInitialPacket(dcid, packet []byte) (version uint32, scid, token []byte,
 		return 0, nil, nil, 0, nil, err
 	}
 	pnLen := int(packet[0]&0x03) + 1
+	// RFC 9001 §5.4.2: Initial packets MUST use a 4-octet packet number.
+	if pnLen != 4 {
+		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: initial packet number length must be 4, got %d", pnLen)
+	}
 
 	// length spans pn + ciphertext.
 	if uint64(pnLen) > length {

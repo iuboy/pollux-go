@@ -36,3 +36,21 @@ func TestRejectingAntiReplayCache(t *testing.T) {
 		t.Fatal("rejecting cache accepted 0-RTT")
 	}
 }
+
+// TestAntiReplayCache_RejectsEmptyDigest guards against the empty-digest
+// collision: an empty (nil or zero-length) digest maps to the map key "" and
+// would let the first empty-digest 0-RTT through while rejecting every later
+// one as a replay. Empty digests must be rejected outright.
+func TestAntiReplayCache_RejectsEmptyDigest(t *testing.T) {
+	c := NewAntiReplayCache(time.Minute, time.Hour)
+	if c.Check(nil, time.Second) {
+		t.Fatal("nil digest should be rejected")
+	}
+	if c.Check([]byte{}, time.Second) {
+		t.Fatal("empty digest should be rejected")
+	}
+	// A real (non-empty) digest after the rejected empty ones still works.
+	if !c.Check([]byte("real-digest"), time.Second) {
+		t.Fatal("non-empty digest rejected after empty ones")
+	}
+}

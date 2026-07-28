@@ -78,3 +78,25 @@ func TestInitialPacket_ShortHeaderRejected(t *testing.T) {
 		t.Error("short-header packet should be rejected")
 	}
 }
+
+// TestInitialPacket_RejectsMissingFixedBit confirms OpenInitialPacket rejects a
+// long-header byte whose Fixed Bit (0x40) is clear, per RFC 9000 §17.2.
+func TestInitialPacket_RejectsMissingFixedBit(t *testing.T) {
+	// 0x80 = long header, but Fixed Bit (0x40) NOT set. Fill the rest with
+	// enough bytes so the version read doesn't trip first.
+	noFixed := append([]byte{0x80}, bytes.Repeat([]byte{0}, 32)...)
+	if _, _, _, _, _, err := OpenInitialPacket([]byte{1, 2, 3, 4}, noFixed); err == nil {
+		t.Error("packet without Fixed Bit set should be rejected")
+	}
+}
+
+// TestInitialPacket_RejectsNonInitialType confirms OpenInitialPacket rejects a
+// long-header byte whose type bits (5-4) are not 0b00 (Initial). 0x90 encodes
+// type=0b01 (0-RTT-style), which is not an Initial packet.
+func TestInitialPacket_RejectsNonInitialType(t *testing.T) {
+	// 0xC0 = long header + Fixed Bit; 0x10 sets type bits to 0b01 (not Initial).
+	notInitial := append([]byte{0xD0}, bytes.Repeat([]byte{0}, 32)...)
+	if _, _, _, _, _, err := OpenInitialPacket([]byte{1, 2, 3, 4}, notInitial); err == nil {
+		t.Error("non-Initial long-header packet should be rejected")
+	}
+}

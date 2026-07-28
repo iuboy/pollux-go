@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+
+	"github.com/iuboy/pollux-go/sm3"
 )
 
 // driveFullHandshake runs a complete client/server GM handshake. The processStepwise
@@ -315,6 +317,87 @@ func TestClientHandshake_HelloRetryRequest(t *testing.T) {
 	// recognizes the same HRR) rather than erroring on the phase guard.
 	if err := client.HandleServerHello(hrr); !errors.Is(err, ErrHelloRetryRequest) {
 		t.Fatalf("post-HRR HandleServerHello = %v, want ErrHelloRetryRequest (phase not reset)", err)
+	}
+}
+
+// TestClientHello_PreSharedKey verifies the client emits a PSK-resumption
+// ClientHello: pre_shared_key (last extension, identity = PSK, binder) and
+// psk_key_exchange_modes (psk_dhe_ke). The binder is recomputed independently
+// over the reconstructed truncated ClientHello and must match.
+func TestClientHello_PreSharedKey(t *testing.T) {
+	dcid := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	psk := bytes.Repeat([]byte{0xEE}, sm3.Size)
+	const obfAge uint32 = 0x12345678
+
+	client, err := NewClientHandshakerWithConfig(ClientConfig{
+		DCID:                          dcid,
+		InsecureSkipVerify:            true,
+		ResumptionPSK:                 psk,
+		ResumptionObfuscatedTicketAge: obfAge,
+	})
+	if err != nil {
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
+	}
+	ch, err := client.ClientHello()
+	if err != nil {
+		t.Fatalf("ClientHello: %v", err)
+	}
+	_, body, _, err := ReadHandshakeMessage(ch)
+	if err != nil {
+		t.Fatalf("read ClientHello: %v", err)
+	}
+	var chMsg ClientHelloMsg
+	if err := chMsg.unmarshalBody(body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// pre_shared_key must be the last extension.
+	if got := chMsg.Extensions[len(chMsg.Extensions)-1].Type; got != ExtensionTypePreSharedKey {
+		t.Fatalf("last extension type %d, want pre_shared_key (%d)", got, ExtensionTypePreSharedKey)
+	}
+	pskExt := findExtension(chMsg.Extensions, ExtensionTypePreSharedKey)
+	identities, binders, err := parsePreSharedKeyExtension(pskExt)
+	if err != nil {
+		t.Fatalf("parse pre_shared_key: %v", err)
+	}
+	if len(identities) != 1 || !bytes.Equal(identities[0].Identity, psk) || identities[0].ObfuscatedTicketAge != obfAge {
+		t.Fatalf("identity mismatch: %+v", identities)
+	}
+	if len(binders) != 1 || len(binders[0]) != sm3.Size {
+		t.Fatalf("binder count/len mismatch: %d binders, first len %d", len(binders), len(binders))
+	}
+
+	// psk_key_exchange_modes must advertise psk_dhe_ke.
+	kemExt := findExtension(chMsg.Extensions, ExtensionTypePSKKeyExchangeModes)
+	if kemExt == nil || len(kemExt) != 2 || kemExt[0] != 1 || kemExt[1] != PSKKeyExchangeModeDHEKE {
+		t.Fatalf("psk_key_exchange_modes = %x, want [01 01]", kemExt)
+	}
+
+	// Reconstruct the truncated ClientHello (pre_shared_key binders list empty)
+	// and verify the binder matches an independent computation.
+	truncExts := make([]Extension, len(chMsg.Extensions))
+	copy(truncExts, chMsg.Extensions)
+	for i, e := range truncExts {
+		if e.Type == ExtensionTypePreSharedKey {
+			trunc, err := marshalPreSharedKeyExtension(identities, nil)
+			if err != nil {
+				t.Fatalf("marshal truncated: %v", err)
+			}
+			truncExts[i] = Extension{Type: ExtensionTypePreSharedKey, Data: trunc}
+		}
+	}
+	truncChMsg := chMsg
+	truncChMsg.Extensions = truncExts
+	truncFull, err := MarshalHandshakeMessage(&truncChMsg)
+	if err != nil {
+		t.Fatalf("marshal truncated CH: %v", err)
+	}
+	expected, err := computeResumptionBinder(psk, truncFull)
+	if err != nil {
+		t.Fatalf("recompute binder: %v", err)
+	}
+	if !bytes.Equal(binders[0], expected) {
+		t.Fatalf("binder mismatch:\n client %x\n recomputed %x", binders[0], expected)
 	}
 }
 

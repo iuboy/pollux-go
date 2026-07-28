@@ -116,6 +116,11 @@ type ClientHandshaker struct {
 	// only between ClientHello() and a potential HelloRetryRequest so the
 	// transcript can be reset per RFC 8446 §4.4.1. Cleared after use.
 	clientHello1Full []byte
+
+	// resumptionPSK / resumptionObfAge, when set, drive a PSK resumption
+	// ClientHello (pre_shared_key + binder). Copied from ClientConfig.
+	resumptionPSK    []byte
+	resumptionObfAge uint32
 }
 
 // PeerTransportParams returns the raw QUIC transport parameters received from
@@ -161,6 +166,18 @@ type ClientConfig struct {
 	// consumer; a QUIC transport layer supplies it so the peer can configure the
 	// connection. tls13gm carries the bytes verbatim.
 	TransportParameters []byte
+
+	// ResumptionPSK, if set, makes the client attempt a PSK resumption: the
+	// ClientHello carries a pre_shared_key extension with this PSK as the
+	// identity plus a binder, and psk_key_exchange_modes (psk_dhe_ke). The PSK
+	// is the Ticket field from a server NewSessionTicket. Pair with
+	// ResumptionObfuscatedTicketAge. When nil, a full (certificate) handshake
+	// is performed.
+	ResumptionPSK []byte
+	// ResumptionObfuscatedTicketAge is the obfuscated_ticket_age for the PSK
+	// identity: (ticket_age + ticket_age_add) mod 2^32, computed by the caller
+	// from the original NewSessionTicket's TicketAgeAdd and the elapsed time.
+	ResumptionObfuscatedTicketAge uint32
 }
 
 // NewClientHandshaker prepares a client handshaker from an explicit, fail-closed
@@ -199,6 +216,8 @@ func NewClientHandshakerWithConfig(cfg ClientConfig) (*ClientHandshaker, error) 
 		verifyPeerCert:     cfg.VerifyPeerCertificate,
 		secrets:            HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
 		localTransportParams: cfg.TransportParameters,
+		resumptionPSK:       cfg.ResumptionPSK,
+		resumptionObfAge:    cfg.ResumptionObfuscatedTicketAge,
 	}, nil
 }
 
@@ -262,6 +281,42 @@ func (c *ClientHandshaker) buildClientHello(cookie []byte) ([]byte, error) {
 	if c.localTransportParams != nil {
 		ch.Extensions = append(ch.Extensions, Extension{Type: ExtensionTypeQUICTransportParams, Data: c.localTransportParams})
 	}
+	if c.resumptionPSK != nil {
+		// PSK resumption: append psk_key_exchange_modes + pre_shared_key (which
+		// must be the last extension) and compute the binder over the truncated
+		// ClientHello (empty binders list).
+		return c.appendPreSharedKey(ch)
+	}
+	return MarshalHandshakeMessage(ch)
+}
+
+// appendPreSharedKey adds psk_key_exchange_modes (psk_dhe_ke) and the
+// pre_shared_key extension to a ClientHello and returns the marshalled full
+// message. The binder is computed over the truncated form (binders list empty)
+// per RFC 8446 §4.2.11; pre_shared_key must be the last extension.
+func (c *ClientHandshaker) appendPreSharedKey(ch *ClientHelloMsg) ([]byte, error) {
+	identities := []PskIdentity{{Identity: c.resumptionPSK, ObfuscatedTicketAge: c.resumptionObfAge}}
+	truncExt, err := marshalPreSharedKeyExtension(identities, nil)
+	if err != nil {
+		return nil, fmt.Errorf("tls13gm: marshal truncated pre_shared_key: %w", err)
+	}
+	ch.Extensions = append(ch.Extensions,
+		Extension{Type: ExtensionTypePSKKeyExchangeModes, Data: marshalPSKKeyExchangeModesExtension([]uint8{PSKKeyExchangeModeDHEKE})},
+		Extension{Type: ExtensionTypePreSharedKey, Data: truncExt},
+	)
+	truncFull, err := MarshalHandshakeMessage(ch)
+	if err != nil {
+		return nil, err
+	}
+	binder, err := computeResumptionBinder(c.resumptionPSK, truncFull)
+	if err != nil {
+		return nil, fmt.Errorf("tls13gm: compute binder: %w", err)
+	}
+	fullExt, err := marshalPreSharedKeyExtension(identities, [][]byte{binder})
+	if err != nil {
+		return nil, err
+	}
+	ch.Extensions[len(ch.Extensions)-1] = Extension{Type: ExtensionTypePreSharedKey, Data: fullExt}
 	return MarshalHandshakeMessage(ch)
 }
 

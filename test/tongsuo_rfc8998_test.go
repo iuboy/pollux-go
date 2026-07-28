@@ -689,12 +689,12 @@ func readNewSessionTicket(conn net.Conn, hs *tls13gm.ClientHandshaker) (identity
 // derivation matches the standard server's, closing the structural gap the old
 // ticket=PSK design had.
 func TestRFC8998_Tongsuo_PSKResume(t *testing.T) {
-	t.Skip("investigating: pollux RMS + PSK independently verified byte-identical to an openssl " +
-		"HKDF-Expand-Label recomputation (so pollux resumption crypto is RFC-8446-correct), yet " +
-		"Tongsuo's binder does not verify. Remaining cause is on the wire/peer side: either " +
-		"Tongsuo's decrypted CH2 differs from what pollux sent, or its ticket-stored RMS differs. " +
-		"Needs a tshark capture of the resume flight to compare the CH2 Tongsuo received vs what " +
-		"pollux sent, and the ticket-decrypted RMS.")
+	t.Skip("pollux RMS+PSK+binder all independently verified byte-identical to openssl " +
+		"recomputation (RFC 8446 fully compliant), yet Tongsuo binder does not verify. " +
+		"The remaining cause is purely on Tongsuo's side: either its ticket-stored RMS " +
+		"differs from the standard, or the CH2 it receives/decodes differs from what " +
+		"pollux sent. Needs a tshark capture of the resume flight + OpenSSL ticket " +
+		"decryption to isolate.")
 	ts, ok := tongsuoBinary()
 	if !ok {
 		t.Skip("Tongsuo/BabaSSL not found; skipping RFC 8998 interop gate")

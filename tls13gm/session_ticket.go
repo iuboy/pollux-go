@@ -15,9 +15,9 @@ const SessionTicketKeyLen = 16
 const sessionTicketVersion byte = 0x01
 
 var (
-	errTicketTooShort   = errors.New("tls13gm: session ticket too short")
-	errTicketVersion    = errors.New("tls13gm: unsupported session ticket version")
-	errTicketNoKey      = errors.New("tls13gm: no session-ticket encryption key")
+	errTicketTooShort      = errors.New("tls13gm: session ticket too short")
+	errTicketVersion       = errors.New("tls13gm: unsupported session ticket version")
+	errTicketNoKey         = errors.New("tls13gm: no session-ticket encryption key")
 	errTicketUndecryptable = errors.New("tls13gm: session ticket failed to decrypt under every key")
 )
 

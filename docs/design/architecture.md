@@ -80,8 +80,7 @@ TLS_SM4_GCM_SM3 + SM3 transcript + HKDF-SM3 + SM2-SM3 签名 + curveSM2 + SM4-GC
 算法原语（封装 gmsm）
   sm2        SM2 签名 / 加密 / 密钥交换
   sm3        SM3 哈希 / HMAC / KDF / HKDF
-  sm4        SM4 分组密码（GCM/CBC/CTR/CFB）
-  sm4gcm     安全的 SM4-GCM AEAD 辅助（推荐 API）
+  sm4        SM4 分组密码（GCM/CBC/CTR/CFB）+ GCM 高级封装（SealRandomNonce + 密钥清零）
   sm9        SM9 基于身份加密
   zuc        ZUC 序列密码
 
@@ -172,7 +171,7 @@ TLS_SM4_GCM_SM3 + SM3 transcript + HKDF-SM3 + SM2-SM3 签名 + curveSM2 + SM4-GC
 |--------|------|----------|
 | M0–M1 | 基线恢复 + 安全回归 | SM9 语义修复；TLCP/SMX509/SM4 全部 CRITICAL 修复 |
 | M2–M3 | 标准 TLS 1.3 / QUIC（路线 A） | `tls13`、`cert` 门面、`quic` 包 + 黑盒测试 |
-| M4 | 应用层国密（路线 B 基础） | `sm4gcm`、`quicgm` 包 |
+| M4 | 应用层国密（路线 B 基础） | `sm4` GCM 高级封装、`quicgm` 包 |
 | M5–M7 | 证书/TLCP 收敛 + 审计收尾 | smx509 CertPool raw DER、GCM-only 默认、fuzz、内存清零 |
 | M8–M9 | 黑盒测试补全 + 文档收尾 | 279 黑盒测试、quicgm nonce registry |
 | M6 → M10 | RFC 8998 从模型包演进到完整握手引擎 | `tls13gm` ClientHandshaker/ServerHandshaker、fail-closed PKI |

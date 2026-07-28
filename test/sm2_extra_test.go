@@ -16,9 +16,15 @@ func TestBlackBox_SM2_ByteRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	privBytes := polluxSM2.PrivateKeyToBytes(priv)
+	// PrivateKeyToBytes（已移除）的替代是 PrivateKeyToBytesSecure，Destroy 清零敏感内存。
+	skb, err := polluxSM2.PrivateKeyToBytesSecure(priv)
+	if err != nil {
+		t.Fatalf("PrivateKeyToBytesSecure: %v", err)
+	}
+	defer skb.Destroy()
+	privBytes := skb.Data()
 	if len(privBytes) == 0 {
-		t.Fatal("PrivateKeyToBytes returned empty")
+		t.Fatal("PrivateKeyToBytesSecure returned empty")
 	}
 
 	parsed, err := polluxSM2.BytesToPrivateKey(privBytes)
@@ -29,14 +35,16 @@ func TestBlackBox_SM2_ByteRoundTrip(t *testing.T) {
 		t.Error("private key roundtrip mismatch")
 	}
 
-	pubBytes := polluxSM2.PublicKeyToBytes(&priv.PublicKey)
+	// PublicKeyToBytes（已移除）的替代是 MarshalUncompressed。
+	pubBytes := polluxSM2.MarshalUncompressed(&priv.PublicKey)
 	if len(pubBytes) == 0 {
-		t.Fatal("PublicKeyToBytes returned empty")
+		t.Fatal("MarshalUncompressed returned empty")
 	}
 
-	parsedPub, err := polluxSM2.BytesToPublicKey(pubBytes)
+	// BytesToPublicKey（已移除）的替代是 UnmarshalUncompressed。
+	parsedPub, err := polluxSM2.UnmarshalUncompressed(pubBytes)
 	if err != nil {
-		t.Fatalf("BytesToPublicKey: %v", err)
+		t.Fatalf("UnmarshalUncompressed: %v", err)
 	}
 	if !parsedPub.Equal(&priv.PublicKey) {
 		t.Error("public key roundtrip mismatch")
@@ -62,7 +70,13 @@ func TestBlackBox_SM2_MarshalUncompressed(t *testing.T) {
 
 func TestBlackBox_SM2_NewPrivateKey(t *testing.T) {
 	priv, _ := polluxSM2.GenerateKey(rand.Reader)
-	raw := polluxSM2.PrivateKeyToBytes(priv)
+	// PrivateKeyToBytes（已移除）的替代是 PrivateKeyToBytesSecure，Destroy 清零敏感内存。
+	skb, err := polluxSM2.PrivateKeyToBytesSecure(priv)
+	if err != nil {
+		t.Fatalf("PrivateKeyToBytesSecure: %v", err)
+	}
+	defer skb.Destroy()
+	raw := skb.Data()
 
 	parsed, err := polluxSM2.NewPrivateKey(raw)
 	if err != nil {
@@ -82,7 +96,8 @@ func TestBlackBox_SM2_NewPrivateKey_Invalid(t *testing.T) {
 
 func TestBlackBox_SM2_NewPublicKey(t *testing.T) {
 	priv, _ := polluxSM2.GenerateKey(rand.Reader)
-	pubDER := polluxSM2.PublicKeyToBytes(&priv.PublicKey)
+	// PublicKeyToBytes（已移除）的替代是 MarshalUncompressed。
+	pubDER := polluxSM2.MarshalUncompressed(&priv.PublicKey)
 
 	parsed, err := polluxSM2.NewPublicKey(pubDER)
 	if err != nil {

@@ -17,7 +17,7 @@ const defaultTicketKeyRotation = time.Hour
 
 // Listener wraps a QUIC listener running the RFC 8998 GM stack (Route C).
 type Listener struct {
-	inner     *quic.Listener
+	inner      *quic.Listener
 	ticketKeys *ticketKeyRotator
 }
 

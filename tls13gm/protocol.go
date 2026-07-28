@@ -31,7 +31,7 @@ const (
 	HandshakeTypeKeyUpdate           uint8 = 24
 	// HandshakeTypeMessageHash (254) is the synthetic message placed first in
 	// the transcript when a HelloRetryRequest occurs (RFC 8446 §4.4.1).
-	HandshakeTypeMessageHash         uint8 = 254
+	HandshakeTypeMessageHash uint8 = 254
 )
 
 // TLS extension types (RFC 8446 §4.2). Only the subset needed by the RFC 8998
@@ -46,8 +46,8 @@ const (
 	// ExtensionTypeEarlyData (RFC 8446 §4.2.10) marks 0-RTT data in a ClientHello
 	// and a ticket eligible for 0-RTT in a NewSessionTicket. P2 carries it in
 	// NewSessionTicket; P3 wires the ClientHello side.
-	ExtensionTypeEarlyData           uint16 = 42
-	ExtensionTypeSupportedVersions   uint16 = 43
+	ExtensionTypeEarlyData         uint16 = 42
+	ExtensionTypeSupportedVersions uint16 = 43
 	// ExtensionTypeCookie (RFC 8446 §4.2.2) carries the server's stateless
 	// cookie in a HelloRetryRequest and the client's echo in ClientHello2.
 	ExtensionTypeCookie              uint16 = 44

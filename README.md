@@ -27,7 +27,7 @@ pollux-go 是**集成工具包，不是密码学实现**。它把 gmsm 的原语
 ## 包结构
 
 ```
-sm2 sm3 sm4 sm4gcm sm9 zuc   # 国密算法封装
+sm2 sm3 sm4 sm9 zuc           # 国密算法封装
 smx509 cert                   # SM2 感知 X.509
 gmstd                         # GM/T 标准辅助函数
 tlcp                          # TLCP 1.1（GB/T 38636-2020）
@@ -44,17 +44,19 @@ internal/panicsafe            # panic 安全辅助
 go get github.com/iuboy/pollux-go@latest
 ```
 
-SM4-GCM 加解密：
+SM4-GCM 加解密（高级便捷封装，含一次性随机 nonce 与密钥清零）：
 
 ```go
-import "github.com/iuboy/pollux-go/sm4gcm"
+import "github.com/iuboy/pollux-go/sm4"
 
-key := make([]byte, 16)   // 实际使用 crypto/rand 生成
-nonce := make([]byte, 12)
-cipher, _ := sm4gcm.NewCipher(key)
-ct := cipher.Seal(nil, nonce, plaintext, additionalData)
-pt, _ := cipher.Open(nil, nonce, ct, additionalData)
+key, _ := sm4.GenerateKey()
+defer sm4.ZeroKey(key)
+// SealRandomNonce 自动生成随机 nonce 并随密文返回
+sealed, _ := sm4.SealRandomNonce(key, plaintext, additionalData)
+pt, _ := sm4.OpenWithNonce(key, sealed, additionalData)
 ```
+
+底层等价写法：`sm4.NewCipher(key)` + `cipher.NewGCM(block)`，再配合 `sm4.GenerateNonce()` 逐次生成 nonce。
 
 标准 TLS 1.3 HTTP 服务（路线 A）：
 

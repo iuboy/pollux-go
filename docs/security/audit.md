@@ -101,7 +101,7 @@
 | X-H4 | smx509 | `internal/memsecure` + TLCP 自动清零 |
 | S2-H2 | sm2 | 清零辅助函数 + 安全文档 |
 | S2-H3 | sm2 | 内存管理文档提供最佳实践 |
-| S4-H5 | sm4 | `sm4gcm.ZeroKey` / `ZeroNonce` API |
+| S4-H5 | sm4 | `sm4.ZeroKey` / `ZeroNonce` API（GCM 高级封装，原 sm4gcm 已合并） |
 | Z-H3 | zuc | `memsecure.ZeroBytes` 适用所有密钥类型 |
 
 详见 [`memory-management.md`](memory-management.md)。

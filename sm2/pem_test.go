@@ -48,8 +48,14 @@ func TestParsePrivateKeyFromPEMEncrypted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create encrypted PEM
-	privBytes := PrivateKeyToBytes(priv)
+	// Create encrypted PEM.
+	// 用 PrivateKeyToBytesSecure（替代已移除的 PrivateKeyToBytes），Destroy 清零敏感内存。
+	skb, err := PrivateKeyToBytesSecure(priv)
+	if err != nil {
+		t.Fatalf("PrivateKeyToBytesSecure: %v", err)
+	}
+	defer skb.Destroy()
+	privBytes := skb.Data()
 	block := &pem.Block{
 		Type:  "EC PRIVATE KEY",
 		Bytes: privBytes,

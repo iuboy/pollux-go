@@ -20,9 +20,10 @@
 //   - CTR: reuse produces a two-time pad, leaking plaintext via XOR.
 //   - CBC: reuse enables block-wise correlation attacks.
 //
-// For GCM encryption, use GenerateNonce to create a cryptographically random
-// 12-byte nonce for each encryption, or use the sm4gcm package which provides
-// a higher-level API with SealRandomNonce.
+// For GCM encryption, generate a cryptographically random 12-byte nonce for
+// each encryption. The package provides SealRandomNonce (which binds nonce
+// generation to the encrypt call) and GenerateNonce for callers that reuse a
+// cipher.AEAD across many messages. See gcm.go.
 //
 // ECB mode (NewECBEncrypter/NewECBDecrypter) is provided for compatibility only
 // and should not be used in new protocols — it does not provide semantic security.

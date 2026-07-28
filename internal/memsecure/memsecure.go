@@ -37,16 +37,9 @@ func ZeroBytes(data []byte) {
 	runtime.KeepAlive(data)
 }
 
-// SliceFromBytes creates a slice that aliases the given bytes without copying.
-//
-// Deprecated: this function provides no real security benefit and can cause
-// unexpected aliasing bugs. Do not use in new code.
-func SliceFromBytes(data []byte) []byte {
-	if len(data) == 0 {
-		return nil
-	}
-	return unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), len(data)) // #nosec G103 -- intentional aliasing for legacy callers
-}
+// SliceFromBytes has been removed: it provided no real security benefit
+// (just unsafe.Slice aliasing) and could cause unexpected aliasing bugs.
+// Callers should pass the original slice directly.
 
 // ZeroUint32 securely zeroes a uint32 slice using the same multi-layer
 // defense as ZeroBytes: XOR + direct write + KeepAlive.

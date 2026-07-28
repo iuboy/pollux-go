@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	polluxSM4GCM "github.com/iuboy/pollux-go/sm4gcm"
+	polluxSM4 "github.com/iuboy/pollux-go/sm4"
 	polluxTLS13GM "github.com/iuboy/pollux-go/tls13gm"
 )
 
@@ -68,7 +68,7 @@ func TestBlackBox_TLS13GM_DeriveSecret(t *testing.T) {
 }
 
 func TestBlackBox_TLS13GM_SM4GCM_AEAD_RoundTrip(t *testing.T) {
-	key, _ := polluxSM4GCM.GenerateKey(rand.Reader)
+	key, _ := polluxSM4.GenerateKey()
 	fixedNonce := make([]byte, 12)
 	_, _ = rand.Read(fixedNonce)
 
@@ -94,7 +94,7 @@ func TestBlackBox_TLS13GM_SM4GCM_AEAD_RoundTrip(t *testing.T) {
 }
 
 func TestBlackBox_TLS13GM_SM4GCM_TamperRejected(t *testing.T) {
-	key, _ := polluxSM4GCM.GenerateKey(rand.Reader)
+	key, _ := polluxSM4.GenerateKey()
 	fixedNonce := make([]byte, 12)
 	_, _ = rand.Read(fixedNonce)
 
@@ -112,7 +112,7 @@ func TestBlackBox_TLS13GM_SM4GCM_TamperRejected(t *testing.T) {
 }
 
 func TestBlackBox_TLS13GM_SM4GCM_DifferentSeqNum(t *testing.T) {
-	key, _ := polluxSM4GCM.GenerateKey(rand.Reader)
+	key, _ := polluxSM4.GenerateKey()
 	fixedNonce := make([]byte, 12)
 	_, _ = rand.Read(fixedNonce)
 

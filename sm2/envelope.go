@@ -3,7 +3,6 @@ package sm2
 import (
 	"crypto/ecdsa"
 	"crypto/rand"
-	"crypto/x509"
 	"errors"
 	"io"
 	"math/big"
@@ -167,7 +166,7 @@ func createTempCertForEnvelope() (*smx509.Certificate, []byte, error) {
 		SerialNumber:          sn,
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		KeyUsage:              smx509.KeyUsageKeyEncipherment | smx509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 	}
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/emmansun/gmsm/sm2"
 	smx509 "github.com/emmansun/gmsm/smx509"
+	polluxsmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 // generateTestCertPair 生成一对自签名 SM2 证书（签名 + 加密）。
@@ -43,17 +44,17 @@ func generateTestCertPair(t *testing.T) (signCert, encCert *tls.Certificate) {
 
 	serialNumber, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 
-	template := &x509.Certificate{
+	template := &smx509.Certificate{
 		SerialNumber: serialNumber,
 		Subject:      pkix.Name{CommonName: "test"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour * 24),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageDataEncipherment,
+		KeyUsage:     smx509.KeyUsageDigitalSignature | smx509.KeyUsageKeyEncipherment | smx509.KeyUsageDataEncipherment,
 	}
 
 	// 签名证书
 	signTemplate := *template
-	signTemplate.KeyUsage = x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign
+	signTemplate.KeyUsage = smx509.KeyUsageDigitalSignature | smx509.KeyUsageCertSign
 	signDER, err := smx509.CreateCertificate(rand.Reader, &signTemplate, &signTemplate, &signPriv.PublicKey, sm2SignPriv)
 	if err != nil {
 		t.Fatalf("create sign cert: %v", err)
@@ -61,7 +62,7 @@ func generateTestCertPair(t *testing.T) (signCert, encCert *tls.Certificate) {
 
 	// 加密证书
 	encTemplate := *template
-	encTemplate.KeyUsage = x509.KeyUsageKeyEncipherment | x509.KeyUsageDataEncipherment
+	encTemplate.KeyUsage = smx509.KeyUsageKeyEncipherment | smx509.KeyUsageDataEncipherment
 	encDER, err := smx509.CreateCertificate(rand.Reader, &encTemplate, &encTemplate, &encPriv.PublicKey, sm2EncPriv)
 	if err != nil {
 		t.Fatalf("create enc cert: %v", err)
@@ -76,6 +77,17 @@ func generateTestCertPair(t *testing.T) (signCert, encCert *tls.Certificate) {
 		PrivateKey:  sm2EncPriv,
 	}
 	return
+}
+
+// stdCertFromSM converts a gmsm *smx509.Certificate to a stdlib *x509.Certificate
+// via pollux's ParseCertificate path (field copy; gmsm v0.44 removed ToX509()).
+func stdCertFromSM(t *testing.T, smCert *smx509.Certificate) *x509.Certificate {
+	t.Helper()
+	std, err := polluxsmx509.ParseCertificate(smCert.Raw)
+	if err != nil {
+		t.Fatalf("convert smx509 cert to stdlib: %v", err)
+	}
+	return std
 }
 
 // testConfig 创建测试用 TLCP 配置。
@@ -263,14 +275,14 @@ func TestCertificateVerify_SelfSigned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse sign cert: %v", err)
 	}
-	signPool.AddCert(smSignCert.ToX509())
+	signPool.AddCert(stdCertFromSM(t, smSignCert))
 
 	encPool := x509.NewCertPool()
 	smEncCert, err := smx509.ParseCertificate(encCert.Certificate[0])
 	if err != nil {
 		t.Fatalf("parse enc cert: %v", err)
 	}
-	encPool.AddCert(smEncCert.ToX509())
+	encPool.AddCert(stdCertFromSM(t, smEncCert))
 
 	serverConfig := &Config{
 		Version:         Version11,
@@ -287,8 +299,8 @@ func TestCertificateVerify_SelfSigned(t *testing.T) {
 		InsecureSkipVerify:   false,
 		SignRootCAs:          signPool,
 		EncRootCAs:           encPool,
-		SignRootCertificates: []*x509.Certificate{smSignCert.ToX509()},
-		EncRootCertificates:  []*x509.Certificate{smEncCert.ToX509()},
+		SignRootCertificates: []*x509.Certificate{stdCertFromSM(t, smSignCert)},
+		EncRootCertificates:  []*x509.Certificate{stdCertFromSM(t, smEncCert)},
 	}
 
 	client, server := handshakeOverPipe(t, serverConfig, clientConfig)
@@ -308,14 +320,14 @@ func TestCertificateVerify_WithRootCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse sign cert: %v", err)
 	}
-	signPool.AddCert(smSignCert.ToX509())
+	signPool.AddCert(stdCertFromSM(t, smSignCert))
 
 	encPool := x509.NewCertPool()
 	smEncCert, err := smx509.ParseCertificate(encCert.Certificate[0])
 	if err != nil {
 		t.Fatalf("parse enc cert: %v", err)
 	}
-	encPool.AddCert(smEncCert.ToX509())
+	encPool.AddCert(stdCertFromSM(t, smEncCert))
 
 	serverConfig := &Config{
 		Version:         Version11,
@@ -332,8 +344,8 @@ func TestCertificateVerify_WithRootCA(t *testing.T) {
 		InsecureSkipVerify:   false,
 		SignRootCAs:          signPool,
 		EncRootCAs:           encPool,
-		SignRootCertificates: []*x509.Certificate{smSignCert.ToX509()},
-		EncRootCertificates:  []*x509.Certificate{smEncCert.ToX509()},
+		SignRootCertificates: []*x509.Certificate{stdCertFromSM(t, smSignCert)},
+		EncRootCertificates:  []*x509.Certificate{stdCertFromSM(t, smEncCert)},
 	}
 
 	client, server := handshakeOverPipe(t, serverConfig, clientConfig)
@@ -350,10 +362,10 @@ func TestClientAuth_ECDHE(t *testing.T) {
 	// 构建 CA 池（客户端验证服务端）
 	signPool := x509.NewCertPool()
 	smSignCert, _ := smx509.ParseCertificate(signCert.Certificate[0])
-	signPool.AddCert(smSignCert.ToX509())
+	signPool.AddCert(stdCertFromSM(t, smSignCert))
 	encPool := x509.NewCertPool()
 	smEncCert, _ := smx509.ParseCertificate(encCert.Certificate[0])
-	encPool.AddCert(smEncCert.ToX509())
+	encPool.AddCert(stdCertFromSM(t, smEncCert))
 
 	serverConfig := &Config{
 		Version:              Version11,
@@ -361,7 +373,7 @@ func TestClientAuth_ECDHE(t *testing.T) {
 		EncCertificate:       encCert,
 		CipherSuites:         []uint16{SuiteECDHE_SM2_SM4_GCM_SM3},
 		ClientAuth:           RequireAndVerifyClientCert,
-		ClientCACertificates: []*x509.Certificate{smSignCert.ToX509(), smEncCert.ToX509()},
+		ClientCACertificates: []*x509.Certificate{stdCertFromSM(t, smSignCert), stdCertFromSM(t, smEncCert)},
 		InsecureSkipVerify:   true,
 	}
 
@@ -373,8 +385,8 @@ func TestClientAuth_ECDHE(t *testing.T) {
 		InsecureSkipVerify:   false,
 		SignRootCAs:          signPool,
 		EncRootCAs:           encPool,
-		SignRootCertificates: []*x509.Certificate{smSignCert.ToX509()},
-		EncRootCertificates:  []*x509.Certificate{smEncCert.ToX509()},
+		SignRootCertificates: []*x509.Certificate{stdCertFromSM(t, smSignCert)},
+		EncRootCertificates:  []*x509.Certificate{stdCertFromSM(t, smEncCert)},
 	}
 
 	client, server := handshakeOverPipe(t, serverConfig, clientConfig)
@@ -390,10 +402,10 @@ func TestClientAuth_ECC(t *testing.T) {
 
 	signPool := x509.NewCertPool()
 	smSignCert, _ := smx509.ParseCertificate(signCert.Certificate[0])
-	signPool.AddCert(smSignCert.ToX509())
+	signPool.AddCert(stdCertFromSM(t, smSignCert))
 	encPool := x509.NewCertPool()
 	smEncCert, _ := smx509.ParseCertificate(encCert.Certificate[0])
-	encPool.AddCert(smEncCert.ToX509())
+	encPool.AddCert(stdCertFromSM(t, smEncCert))
 
 	serverConfig := &Config{
 		Version:              Version11,
@@ -401,7 +413,7 @@ func TestClientAuth_ECC(t *testing.T) {
 		EncCertificate:       encCert,
 		CipherSuites:         []uint16{SuiteECC_SM2_SM4_GCM_SM3},
 		ClientAuth:           RequireAndVerifyClientCert,
-		ClientCACertificates: []*x509.Certificate{smSignCert.ToX509()},
+		ClientCACertificates: []*x509.Certificate{stdCertFromSM(t, smSignCert)},
 		InsecureSkipVerify:   true,
 	}
 
@@ -413,8 +425,8 @@ func TestClientAuth_ECC(t *testing.T) {
 		InsecureSkipVerify:   false,
 		SignRootCAs:          signPool,
 		EncRootCAs:           encPool,
-		SignRootCertificates: []*x509.Certificate{smSignCert.ToX509()},
-		EncRootCertificates:  []*x509.Certificate{smEncCert.ToX509()},
+		SignRootCertificates: []*x509.Certificate{stdCertFromSM(t, smSignCert)},
+		EncRootCertificates:  []*x509.Certificate{stdCertFromSM(t, smEncCert)},
 	}
 
 	client, server := handshakeOverPipe(t, serverConfig, clientConfig)
@@ -429,10 +441,10 @@ func TestClientAuth_RequireVerifyWithoutClientCAsFails(t *testing.T) {
 
 	signPool := x509.NewCertPool()
 	smSignCert, _ := smx509.ParseCertificate(signCert.Certificate[0])
-	signPool.AddCert(smSignCert.ToX509())
+	signPool.AddCert(stdCertFromSM(t, smSignCert))
 	encPool := x509.NewCertPool()
 	smEncCert, _ := smx509.ParseCertificate(encCert.Certificate[0])
-	encPool.AddCert(smEncCert.ToX509())
+	encPool.AddCert(stdCertFromSM(t, smEncCert))
 
 	serverConfig := &Config{
 		Version:            Version11,
@@ -451,8 +463,8 @@ func TestClientAuth_RequireVerifyWithoutClientCAsFails(t *testing.T) {
 		InsecureSkipVerify:   false,
 		SignRootCAs:          signPool,
 		EncRootCAs:           encPool,
-		SignRootCertificates: []*x509.Certificate{smSignCert.ToX509()},
-		EncRootCertificates:  []*x509.Certificate{smEncCert.ToX509()},
+		SignRootCertificates: []*x509.Certificate{stdCertFromSM(t, smSignCert)},
+		EncRootCertificates:  []*x509.Certificate{stdCertFromSM(t, smEncCert)},
 	}
 
 	clientConn, serverConn := net.Pipe()

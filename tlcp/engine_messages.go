@@ -339,16 +339,16 @@ func (m *tlcpClientHelloMsg) unmarshalExtensions(extensions cryptobyte.String) b
 // =====================================================================
 
 type tlcpServerHelloMsg struct {
-	raw             []byte
-	version         uint16
-	random          []byte // 32 bytes
-	sessionID       []byte
-	cipherSuite     uint16
+	raw               []byte
+	version           uint16
+	random            []byte // 32 bytes
+	sessionID         []byte
+	cipherSuite       uint16
 	compressionMethod uint8
-	ocspStapling    bool
-	ocspResponse    []byte
-	alpnProtocol    string
-	serverNameAck   bool
+	ocspStapling      bool
+	ocspResponse      []byte
+	alpnProtocol      string
+	serverNameAck     bool
 }
 
 func (m *tlcpServerHelloMsg) tlcpMsgType() uint8 { return tlcpTypeServerHello }
@@ -654,7 +654,7 @@ func (m *tlcpCertificateVerifyMsg) unmarshal(data []byte) bool {
 // =====================================================================
 
 type tlcpClientKeyExchangeMsg struct {
-	raw       []byte
+	raw        []byte
 	ciphertext []byte
 }
 

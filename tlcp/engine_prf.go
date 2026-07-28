@@ -21,8 +21,8 @@ const (
 
 // TLS 1.2 PRF labels (identical to RFC 5246; TLCP reuses them verbatim).
 var (
-	tlcpMasterSecretLabel  = []byte("master secret")
-	tlcpKeyExpansionLabel  = []byte("key expansion")
+	tlcpMasterSecretLabel   = []byte("master secret")
+	tlcpKeyExpansionLabel   = []byte("key expansion")
 	tlcpClientFinishedLabel = []byte("client finished")
 	tlcpServerFinishedLabel = []byte("server finished")
 )

@@ -35,8 +35,8 @@ const tlcpNoncePrefixLength = 4
 type tlcpCipherFlags uint8
 
 const (
-	tlcpFlagECDHE tlcpCipherFlags = 1 << iota // suite uses ECDHE key exchange
-	tlcpFlagECSign                            // suite involves an ECDSA/SM2 signature cert
+	tlcpFlagECDHE  tlcpCipherFlags = 1 << iota // suite uses ECDHE key exchange
+	tlcpFlagECSign                             // suite involves an ECDSA/SM2 signature cert
 )
 
 // tlcpCipherSuite describes a negotiated TLCP cipher suite: its key-exchange
@@ -174,7 +174,9 @@ func newTLCPAEADSM4GCM(key, implicitNonce []byte) (*tlcpPrefixNonceAEAD, error) 
 
 // ExplicitNonceSize returns the number of explicit nonce bytes carried in each
 // record (8). Callers transmit these and feed them back to Open.
-func (f *tlcpPrefixNonceAEAD) ExplicitNonceSize() int { return tlcpAEADNonceLength - tlcpNoncePrefixLength }
+func (f *tlcpPrefixNonceAEAD) ExplicitNonceSize() int {
+	return tlcpAEADNonceLength - tlcpNoncePrefixLength
+}
 
 // Overhead is the AEAD tag length appended to each sealed record.
 func (f *tlcpPrefixNonceAEAD) Overhead() int { return f.aead.Overhead() }

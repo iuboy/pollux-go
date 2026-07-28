@@ -105,10 +105,10 @@ type tlcpHalfConn struct {
 	// Current encryption state. Exactly one of cbcKey/aead is non-nil once keys
 	// are established; both are nil during the initial plaintext phase. For CBC,
 	// the key+IV are re-applied per record (TLCP carries a fresh IV each record).
-	cbcKey     []byte          // SM4 key for CBC suites
-	aead       *tlcpPrefixNonceAEAD
-	mac        tlcpMAC         // HMAC-SM3 size interface (nil for AEAD)
-	macKeyBytes []byte         // HMAC-SM3 key (CBC suites)
+	cbcKey      []byte // SM4 key for CBC suites
+	aead        *tlcpPrefixNonceAEAD
+	mac         tlcpMAC // HMAC-SM3 size interface (nil for AEAD)
+	macKeyBytes []byte  // HMAC-SM3 key (CBC suites)
 
 	seq [8]byte // 64-bit sequence number, big-endian; part of MAC/AAD, reset on CCS
 
@@ -340,12 +340,12 @@ type tlcpConn struct {
 	in, out tlcpHalfConn
 
 	// Decrypted handshake bytes awaiting parse, and decrypted app data awaiting Read.
-	hand       bytes.Buffer
-	input      bytes.Buffer
-	rawInput   bytes.Buffer // pending raw record bytes (incomplete reads)
-	buffering  bool         // coalesce handshake writes
-	sendBuf    bytes.Buffer
-	rawConn    net.Conn // net.Conn accessor
+	hand      bytes.Buffer
+	input     bytes.Buffer
+	rawInput  bytes.Buffer // pending raw record bytes (incomplete reads)
+	buffering bool         // coalesce handshake writes
+	sendBuf   bytes.Buffer
+	rawConn   net.Conn // net.Conn accessor
 
 	// Result of the handshake, exposed via ConnectionState().
 	cipherSuite      uint16
@@ -369,13 +369,13 @@ type tlcpEngineConfig struct {
 	cipherSuites       []uint16
 	serverName         string
 	insecureSkipVerify bool
-	rootCAs            [][]byte          // DER certs for verification (Phase 4)
-	serverCerts        *tlcpServerCerts  // server dual certificates (server mode only)
-	sessionCache       tlcpSessionCache  // optional session-resumption store (Phase 5)
-	clientCerts        *tlcpServerCerts  // client dual certificates (mutual auth / ECDHE)
-	requestClientCert  bool              // server: send CertificateRequest
+	rootCAs            [][]byte               // DER certs for verification (Phase 4)
+	serverCerts        *tlcpServerCerts       // server dual certificates (server mode only)
+	sessionCache       tlcpSessionCache       // optional session-resumption store (Phase 5)
+	clientCerts        *tlcpServerCerts       // client dual certificates (mutual auth / ECDHE)
+	requestClientCert  bool                   // server: send CertificateRequest
 	clientRoots        *polluxsmx509.CertPool // 客户端证书验证根池（服务端 mTLS，nil=不验）
-	clientAuth         ClientAuthType    // 客户端证书校验级别（精确区分 Require/VerifyIfGiven）
+	clientAuth         ClientAuthType         // 客户端证书校验级别（精确区分 Require/VerifyIfGiven）
 }
 
 // newTLCPConn wraps a transport connection.

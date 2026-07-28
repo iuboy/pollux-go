@@ -330,12 +330,12 @@ func (c *tlcpConn) createNewClientSession(serverHello *tlcpServerHelloMsg, maste
 	peerCertsCopy := make([][]byte, len(c.peerCertificates))
 	copy(peerCertsCopy, c.peerCertificates)
 	sess := &tlcpSessionState{
-		sessionID:       serverHello.sessionID,
-		version:         c.vers,
-		cipherSuite:     c.cipherSuite,
-		masterSecret:    msCopy,
+		sessionID:        serverHello.sessionID,
+		version:          c.vers,
+		cipherSuite:      c.cipherSuite,
+		masterSecret:     msCopy,
 		peerCertificates: peerCertsCopy,
-		createdAt:       time.Now(),
+		createdAt:        time.Now(),
 	}
 	key := tlcpSessionKeyHex(sess.sessionID)
 	c.config.sessionCache.Put(key, sess)

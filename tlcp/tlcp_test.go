@@ -668,3 +668,59 @@ func TestClientAuth_TrustedCertAccepted(t *testing.T) {
 
 	transferData(t, client, server, []byte("trusted client auth ok"))
 }
+
+// TestClientAuth_VerifyIfGivenAcceptsNoClientCert 验证 ECC 模式下
+// ClientAuth = VerifyClientCertIfGiven 时，客户端不发证书，服务器应正常
+// 完成握手（证书是可选的）。
+//
+// 回归背景：pollux-go 的 ClientAuthType iota 顺序与 stdlib crypto/tls 不同
+// （此处 VerifyClientCertIfGiven=3 > RequireAnyClientCert=2）。若用
+// `clientAuth >= RequireAnyClientCert` 判断"是否强制要求证书"，会把
+// VerifyClientCertIfGiven 误当作强制模式，导致客户端未发证书时握手被误拒。
+// 此测试守护精确匹配修复（仅 RequireAnyClientCert/RequireAndVerifyClientCert
+// 才强制要求证书）。
+func TestClientAuth_VerifyIfGivenAcceptsNoClientCert(t *testing.T) {
+	serverSign, serverEnc := generateTestCertPair(t)
+	smServerSign, _ := smx509.ParseCertificate(serverSign.Certificate[0])
+	smServerEnc, _ := smx509.ParseCertificate(serverEnc.Certificate[0])
+
+	signPool := x509.NewCertPool()
+	signPool.AddCert(stdCertFromSM(t, smServerSign))
+	encPool := x509.NewCertPool()
+	encPool.AddCert(stdCertFromSM(t, smServerEnc))
+
+	// 服务器：ECC 模式 + VerifyClientCertIfGiven（证书可选，给了才验）。
+	// ClientCACertificates 必须配置（>= VerifyClientCertIfGiven 时 tlcp.go 强制要求）。
+	serverConfig := &Config{
+		Version:              Version11,
+		SignCertificate:      serverSign,
+		EncCertificate:       serverEnc,
+		CipherSuites:         []uint16{SuiteECC_SM2_SM4_GCM_SM3},
+		ClientAuth:           VerifyClientCertIfGiven,
+		ClientCACertificates: []*x509.Certificate{stdCertFromSM(t, smServerSign)},
+		InsecureSkipVerify:   true,
+	}
+
+	// 客户端：不设 SignCertificate/EncCertificate → clientCerts=nil → 收到
+	// CertificateRequest 时发送空 Certificate。仍需配置 server root CA 以验证
+	// 服务端双证书链。
+	clientConfig := &Config{
+		Version:            Version11,
+		CipherSuites:       []uint16{SuiteECC_SM2_SM4_GCM_SM3},
+		InsecureSkipVerify: false,
+		SignRootCAs:        signPool,
+		EncRootCAs:         encPool,
+		SignRootCertificates: []*x509.Certificate{
+			stdCertFromSM(t, smServerSign),
+		},
+		EncRootCertificates: []*x509.Certificate{
+			stdCertFromSM(t, smServerEnc),
+		},
+	}
+
+	client, server := handshakeOverPipe(t, serverConfig, clientConfig)
+	defer client.Close()
+	defer server.Close()
+
+	transferData(t, client, server, []byte("verify-if-given no client cert ok"))
+}

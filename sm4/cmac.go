@@ -106,25 +106,42 @@ func (c *CMAC) processBlock(data []byte) {
 //
 // Per NIST SP 800-38B, the final block is XORed with K1 (if complete)
 // or padded with 10* and XORed with K2 (if incomplete), then encrypted.
+//
+// The complete/incomplete decision and 10* padding are performed in constant
+// time (crypto/subtle) to avoid timing side channels that could reveal whether
+// the last block is complete — relevant since CMAC feeds into TLCP key
+// derivation and authentication.
 func (c *CMAC) Sum(b []byte) []byte {
-	// Work on a copy of state + buffer to preserve internal state.
+	// Work on a copy of state + partial buffer to preserve internal state.
+	// Write() defers the final block: state holds the CBC-MAC chain over all
+	// prior complete blocks (X_{n-1}); buffer holds the final block bytes
+	// (0..BlockSize). Sum assembles M_n* = M_n || 10* around X_{n-1}, then XORs
+	// subkey K1 (final block complete) or K2 (incomplete) and encrypts.
 	lastBlock := make([]byte, BlockSize)
 	copy(lastBlock, c.state[:])
+	for i := 0; i < c.bufSize; i++ {
+		lastBlock[i] ^= c.buffer[i]
+	}
 
-	if c.bufSize == BlockSize {
-		// Final block is complete → XOR with K1.
-		for i := 0; i < BlockSize; i++ {
-			lastBlock[i] ^= c.buffer[i] ^ c.k1[i]
-		}
-	} else {
-		// Final block is incomplete → pad with 10* and XOR with K2.
-		for i := 0; i < c.bufSize; i++ {
-			lastBlock[i] ^= c.buffer[i]
-		}
-		lastBlock[c.bufSize] ^= 0x80
-		for i := 0; i < BlockSize; i++ {
-			lastBlock[i] ^= c.k2[i]
-		}
+	// Constant-time path: avoid branching on bufSize.
+	// isComplete is 1 when bufSize == BlockSize, 0 otherwise.
+	isComplete := subtle.ConstantTimeEq(int32(c.bufSize), int32(BlockSize))
+
+	// Apply 10* padding for incomplete blocks (constant-time). Only the single
+	// pad position (i == bufSize) receives an extra ⊕0x80, and only when the
+	// final block is incomplete. Positions beyond bufSize are NOT zeroed: they
+	// still carry the X_{n-1} chain value, and the pad's implicit trailing
+	// zeros combine with it as XOR-with-0.
+	for i := 0; i < BlockSize; i++ {
+		atPadPos := subtle.ConstantTimeEq(int32(i), int32(c.bufSize))
+		// padMask = 1 only when incomplete AND at the pad position; else 0.
+		padMask := subtle.ConstantTimeSelect(isComplete, 0, atPadPos)
+		lastBlock[i] ^= byte(padMask) * 0x80
+	}
+
+	// XOR with subkey: K1 for complete blocks, K2 for incomplete blocks.
+	for i := 0; i < BlockSize; i++ {
+		lastBlock[i] ^= byte(subtle.ConstantTimeSelect(isComplete, int(c.k1[i]), int(c.k2[i])))
 	}
 
 	// Encrypt the final block.

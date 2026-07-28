@@ -220,12 +220,17 @@ func (c *tlcpConn) clientHandshakeReal() error {
 			return errors.New("tlcp: no root CAs configured for verification")
 		}
 		// Build an intermediates pool from the extra certs in the chain
-		// (certMsg.certificates[2:] are intermediate CA certs).
+		// (certMsg.certificates[2:] are intermediate CA certs). A malformed
+		// intermediate is a handshake failure, not silently skipped: chain
+		// verification would then run with a missing intermediate and produce a
+		// confusing "unknown authority" error that hides the real parse failure.
 		intermediates := polluxsmx509.NewCertPool()
 		for _, raw := range certMsg.certificates[2:] {
-			if ic, err := polluxsmx509.ParseCertificate(raw); err == nil {
-				intermediates.AddCert(ic)
+			ic, err := polluxsmx509.ParseCertificate(raw)
+			if err != nil {
+				return fmt.Errorf("tlcp: failed to parse intermediate certificate: %w", err)
 			}
+			intermediates.AddCert(ic)
 		}
 		// Verify the signing certificate chain (used for ServerKeyExchange/
 		// CertificateVerify signatures) against the root pool.

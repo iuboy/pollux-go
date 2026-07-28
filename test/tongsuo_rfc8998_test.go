@@ -785,10 +785,6 @@ func TestRFC8998_Tongsuo_PSKResume(t *testing.T) {
 	}
 	conn1.Close()
 	t.Logf("harvested identity(%d bytes) psk(%d bytes) ageAdd=%d", len(identity), len(psk), ageAdd)
-	t.Logf("pollux RMS=%x", hs1.ResumptionMasterSecret())
-	t.Logf("pollux PSK=%x", psk)
-	t.Logf("pollux masterSecret=%x", hs1.MasterSecret())
-	t.Logf("pollux transcript bytes=%x", hs1.TranscriptBytes())
 
 	// Phase 2: PSK resumption with the Tongsuo-issued ticket as the identity.
 	conn2, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
@@ -901,11 +897,6 @@ func TestRFC8998_DialFixedResume(t *testing.T) {
 		t.Fatalf("read NST: %v", err)
 	}
 	conn1.Close()
-	t1sm3 := sm3.Sum(hs1.TranscriptBytes())
-	t.Logf("PDBG t1_SM3=%x", t1sm3)
-	rms, _ := tls13gm.DeriveResumptionMasterSecret(hs1.MasterSecret(), t1sm3[:])
-	t.Logf("PDBG RMS=%x", rms)
-	t.Logf("PDBG PSK=%x", psk)
 	t.Logf("harvested identity(%d) psk(%d) age=%d", len(identity), len(psk), ageAdd)
 	// Phase 2: PSK resume.
 	conn2, err := net.Dial("tcp", "127.0.0.1:"+port)

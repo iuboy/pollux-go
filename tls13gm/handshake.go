@@ -181,6 +181,12 @@ type ClientHandshaker struct {
 	// earlyDataAccepted is set in HandleEncryptedExtensions when the server
 	// echoed early_data, i.e. it accepted the client's 0-RTT.
 	earlyDataAccepted bool
+	// clientFinishedSent records that ClientFinished has appended the client's
+	// Finished to the transcript. HandleNewSessionTicket refuses to run until
+	// this is true, because the resumption master secret MUST be derived over
+	// the full transcript (CH..client Finished) per RFC 8446 §4.6.1 — deriving
+	// it over an incomplete transcript yields a PSK the server will not accept.
+	clientFinishedSent bool
 }
 
 // PeerTransportParams returns the raw QUIC transport parameters received from
@@ -764,6 +770,7 @@ func (c *ClientHandshaker) ClientFinished() ([]byte, error) {
 		return nil, err
 	}
 	c.transcript.AddMessage(HandshakeTypeFinished, full[4:])
+	c.clientFinishedSent = true
 	return full, nil
 }
 
@@ -780,8 +787,8 @@ func (c *ClientHandshaker) ClientFinished() ([]byte, error) {
 // psk, age) and never treats the ticket bytes as a key. It is what makes a
 // pollux-go client interoperable with any RFC 8446 server's resumption.
 func (c *ClientHandshaker) HandleNewSessionTicket(nstBody []byte) (identity, psk []byte, ageAdd uint32, err error) {
-	if c.masterSecret == nil {
-		return nil, nil, 0, errors.New("tls13gm: HandleNewSessionTicket before handshake complete")
+	if !c.clientFinishedSent {
+		return nil, nil, 0, errors.New("tls13gm: HandleNewSessionTicket before ClientFinished (transcript incomplete; resumption master secret requires CH..client Finished per RFC 8446 §4.6.1)")
 	}
 	msg := &NewSessionTicketMsg{}
 	if err := msg.unmarshalBody(nstBody); err != nil {

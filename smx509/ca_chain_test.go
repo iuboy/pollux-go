@@ -1,6 +1,7 @@
 package smx509
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/x509"
@@ -361,7 +362,7 @@ func TestCertChain_DualCerts_SignAndEncKeyUsage(t *testing.T) {
 func TestCertChain_DualCerts_SignatureChain(t *testing.T) {
 	signCert, encCert, rootCert, _ := buildDualCertChain(t)
 
-	if !bytesEqual(signCert.RawIssuer, encCert.RawIssuer) {
+	if !bytes.Equal(signCert.RawIssuer, encCert.RawIssuer) {
 		t.Errorf("sign and enc cert issuers don't match:\n  sign=%x\n  enc =%x",
 			signCert.RawIssuer, encCert.RawIssuer)
 	}
@@ -603,16 +604,4 @@ func TestCertChain_UniqueSerialNumbers(t *testing.T) {
 	if len(serials) != 3 {
 		t.Errorf("expected 3 unique serial numbers, got %d", len(serials))
 	}
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

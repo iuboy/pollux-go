@@ -4,12 +4,11 @@
 // Pollux is a GM security integration toolkit — not a cryptography implementation.
 // All core algorithms are provided by github.com/emmansun/gmsm; pollux adds:
 //   - Protocol integration (TLCP 1.1 handshake, HTTP helpers, QUIC-GM)
+//   - SM2-aware X.509 certificate handling (smx509)
+//   - Ergonomic Go-idiomatic APIs wrapping gmsm primitives
+//   - Secure memory operations for key material (internal/memsecure)
 //
-// - SM2-aware X.509 certificate handling (smx509)
-// - Ergonomic Go-idiomatic APIs wrapping gmsm primitives
-// - Secure memory operations for key material (internal/memsecure)
-//
-// Sub-packages:
+// # Sub-packages
 //
 //   - sm2: SM2 digital signatures and key exchange (wraps gmsm/sm2)
 //   - sm3: SM3 hash function (wraps gmsm/sm3)
@@ -25,7 +24,9 @@
 //   - http: HTTP server/client helpers for TLS, TLCP, and hybrid
 //   - quicgm: QUIC with GM cipher suites
 //
-// Status: TLCP and protocol integration layers are EXPERIMENTAL.
+// # Status
+//
+// TLCP and protocol integration layers are EXPERIMENTAL.
 // The primitive wrappers (sm2/sm3/sm4/sm9/zuc) delegate to gmsm
 // and inherit its audit status.
 package pollux

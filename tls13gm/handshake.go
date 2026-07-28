@@ -852,7 +852,7 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 		// 0-RTT: derive the early traffic keys (over the ClientHello transcript)
 		// so the server can decrypt any 0-RTT data the client sends. Whether the
 		// server actually accepts the 0-RTT is a transport-layer policy decision.
-		if findExtension(chMsg.Extensions, ExtensionTypeEarlyData) != nil {
+		if hasExtension(chMsg.Extensions, ExtensionTypeEarlyData) {
 			s.secrets.ClientEarlyKeys, err = DeriveEarlyTrafficKeys(s.resumptionSelectedPSK, s.transcript.Sum())
 			if err != nil {
 				return fmt.Errorf("tls13gm: derive 0-RTT keys: %w", err)

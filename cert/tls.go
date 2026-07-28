@@ -3,7 +3,7 @@ package cert
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"fmt"
+	"errors"
 )
 
 // TLSClientOptions holds parameters for building a standard TLS client config.
@@ -29,7 +29,7 @@ type TLSProxyServerOptions struct {
 // If MinVersion is zero it defaults to TLS 1.2.
 func BuildClientTLSConfig(opts TLSClientOptions) (*tls.Config, error) {
 	if len(opts.Certificates) == 0 && opts.Roots == nil && !opts.InsecureSkipVerify {
-		return nil, fmt.Errorf("cert: at least one certificate, root pool, or InsecureSkipVerify is required")
+		return nil, errors.New("cert: at least one certificate, root pool, or InsecureSkipVerify is required")
 	}
 
 	cfg := &tls.Config{

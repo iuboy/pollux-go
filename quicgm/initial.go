@@ -1,6 +1,7 @@
 package quicgm
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/iuboy/pollux-go/tls13gm"
@@ -104,10 +105,10 @@ func OpenInitialPacket(dcid, packet []byte) (version uint32, scid, token []byte,
 	defer protector.Zero()
 
 	if len(packet) < 1 {
-		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: initial packet too short")
+		return 0, nil, nil, 0, nil, errors.New("quicgm: initial packet too short")
 	}
 	if packet[0]&0x80 == 0 {
-		return 0, nil, nil, 0, nil, fmt.Errorf("quicgm: not a long-header packet")
+		return 0, nil, nil, 0, nil, errors.New("quicgm: not a long-header packet")
 	}
 
 	pos := 1

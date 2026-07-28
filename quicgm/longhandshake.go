@@ -2,6 +2,7 @@ package quicgm
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"github.com/iuboy/pollux-go/tls13gm"
@@ -81,10 +82,10 @@ func OpenHandshakePacket(keys *tls13gm.QUICPacketKeys, expectedDCID, packet []by
 	// keys are caller-owned; not zeroed here.
 
 	if len(packet) < 1 {
-		return 0, nil, 0, nil, fmt.Errorf("quicgm: handshake packet too short")
+		return 0, nil, 0, nil, errors.New("quicgm: handshake packet too short")
 	}
 	if packet[0]&0x80 == 0 {
-		return 0, nil, 0, nil, fmt.Errorf("quicgm: not a long-header packet")
+		return 0, nil, 0, nil, errors.New("quicgm: not a long-header packet")
 	}
 	if (packet[0]>>4)&0x03 != 0b10 {
 		return 0, nil, 0, nil, fmt.Errorf("quicgm: not a Handshake packet (type %02b)", (packet[0]>>4)&0x03)

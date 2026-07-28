@@ -304,7 +304,7 @@ func createCertPoolAndCertsFromFile(certFile string) (*x509.CertPool, []*x509.Ce
 
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(pemData) {
-		return nil, nil, fmt.Errorf("tlcp: parse certificate file")
+		return nil, nil, errors.New("tlcp: parse certificate file")
 	}
 
 	certs := parsePEMCertificates(pemData)
@@ -315,7 +315,7 @@ func createCertPoolAndCertsFromFile(certFile string) (*x509.CertPool, []*x509.Ce
 func createCertPoolAndCertsFromPEM(pemData []byte) (*x509.CertPool, []*x509.Certificate, error) {
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(pemData) {
-		return nil, nil, fmt.Errorf("tlcp: parse PEM certificate")
+		return nil, nil, errors.New("tlcp: parse PEM certificate")
 	}
 
 	certs := parsePEMCertificates(pemData)
@@ -361,7 +361,7 @@ func (c *Config) Validate() error {
 	}
 
 	if len(c.CipherSuites) == 0 {
-		return fmt.Errorf("tlcp: no cipher suites configured")
+		return errors.New("tlcp: no cipher suites configured")
 	}
 
 	for _, suite := range c.CipherSuites {

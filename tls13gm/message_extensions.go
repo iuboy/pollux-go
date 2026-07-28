@@ -1,6 +1,9 @@
 package tls13gm
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // Extension is a single TLS extension: its 2-byte type and raw data. Parsed
 // extensions carry their data verbatim so each message can interpret it.
@@ -97,7 +100,7 @@ func marshalCookieExtension(cookie []byte) []byte {
 // and returns the cookie bytes.
 func parseCookieExtension(data []byte) ([]byte, error) {
 	if len(data) < 2 {
-		return nil, fmt.Errorf("tls13gm: cookie extension truncated (length)")
+		return nil, errors.New("tls13gm: cookie extension truncated (length)")
 	}
 	l := int(data[0])<<8 | int(data[1])
 	if len(data) < 2+l {

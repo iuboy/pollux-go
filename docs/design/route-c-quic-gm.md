@@ -290,7 +290,24 @@ next_keys   = DeriveQUICPacketKeys(next_secret)
 
 2. **Header Protection**: 必须使用独立的 `hp` 密钥，不可复用 AEAD key。
 
-3. **密钥更新**: QUIC 的 Key Phase 变更必须正确更新所有密钥（AEAD key + IV + HP key）。
+3. **密钥更新（Key Update）**: QUIC 的 Key Phase 变更必须正确更新所有密钥
+   （AEAD key + IV + HP key）。
+
+   > **职责边界**：pollux **不强制**密钥更新阈值。`tls13gm.QUICKeyUpdate` /
+   > `tls13gm.AEAD.Seal` 仅提供更新原语与文档约定，**由传输层（quic-go）负责
+   > 在阈值临近时主动发起更新**。AEAD nonce 是 `IV XOR packet_number`，在单一
+   > 密钥代内只要 PN 单调不回绕就不会重复；但单一密钥代不得保护无上限数量的包，
+   > 否则 nonce 空间或计数器将面临碰撞风险。
+   >
+   > 参考阈值：
+   > - **TLS 1.3 记录层**：~2^24.5 条记录后必须更新（RFC 8446 §5.5，
+   >   通过 `"traffic upd"` label）。
+   > - **QUIC 数据包**：遵循 RFC 9001 §6（通过 `tls13gm.QUICKeyUpdate` +
+   >   `"quic ku"` label 重建 protector），具体阈值由 quic-go 的 AEAD 限制驱动。
+   >
+   > 集成方若直接使用 `tls13gm` / `quicgm` 而不经 quic-go，**必须自行实现**
+   > 阈值监控并在到达时调用 `QUICKeyUpdate` + 重建 `QUICPacketProtector`，
+   > 否则长连接存在 nonce 复用（→ SM4-GCM 密钥恢复）风险。
 
 4. **连接 ID 隐私**: Short Header 的 Connection ID 不加密，应避免在 Header Protection 中泄露信息。
 

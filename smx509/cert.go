@@ -18,7 +18,6 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
@@ -359,6 +358,14 @@ func decryptPKCS8(encryptedDER, password []byte) ([]byte, error) {
 		return nil, fmt.Errorf("PBKDF2 iterations %d below minimum 10000", kdfParams.IterationCount)
 	}
 	prf := newPRF(kdfParams.PRF.Algorithm)
+	if prf == nil {
+		// Fail-closed: PBKDF2 PRFs outside the allowlist (SHA-256/384/512, SM3)
+		// are rejected rather than silently falling back to HMAC-SHA1. SHA1 is
+		// cryptographically broken; accepting it would weaken offline brute-force
+		// resistance of an attacker-supplied encrypted key. This mirrors the
+		// strict strategy used by encKeySize() (returns 0 → reject) below.
+		return nil, fmt.Errorf("smx509: unsupported PBKDF2 PRF: %v (allowed: HMAC-SHA256/384/512, HMAC-SM3)", kdfParams.PRF.Algorithm)
+	}
 	keyLen := encKeySize(params.ES.Algorithm)
 	if keyLen == 0 {
 		return nil, fmt.Errorf("smx509: unsupported encryption scheme: %v", params.ES.Algorithm)
@@ -369,6 +376,9 @@ func decryptPKCS8(encryptedDER, password []byte) ([]byte, error) {
 	return decryptBlock(params.ES, derivedKey, encInfo.EncryptedData)
 }
 
+// newPRF returns the HMAC-PRF hash constructor for the given PBKDF2 PRF OID, or
+// nil if the OID is not on the allowlist. Callers MUST treat nil as "reject"
+// rather than falling back to a weaker default (see decryptPKCS8).
 func newPRF(oid asn1.ObjectIdentifier) func() hash.Hash {
 	switch {
 	case oid.Equal(oidHMACWithSHA256):
@@ -380,7 +390,7 @@ func newPRF(oid asn1.ObjectIdentifier) func() hash.Hash {
 	case oid.Equal(oidHMACWithSM3):
 		return gmsmSM3.New
 	default:
-		return sha1.New
+		return nil
 	}
 }
 

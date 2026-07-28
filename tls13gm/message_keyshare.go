@@ -1,6 +1,9 @@
 package tls13gm
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // marshalClientKeyShare builds the ClientHello key_share extension data: a
 // 2-byte-prefixed list of (group | key_exchange) entries (RFC 8446 §4.2.8).
@@ -47,7 +50,7 @@ func parseKeyShareEntry(b []byte) (group uint16, key []byte, n int, err error) {
 // exchange bytes for the requested group, or an error if that group is absent.
 func parseClientKeyShare(data []byte, wantGroup uint16) ([]byte, error) {
 	if len(data) < 2 {
-		return nil, fmt.Errorf("tls13gm: ClientHello key_share truncated at list length")
+		return nil, errors.New("tls13gm: ClientHello key_share truncated at list length")
 	}
 	listLen := int(data[0])<<8 | int(data[1])
 	if 2+listLen > len(data) {

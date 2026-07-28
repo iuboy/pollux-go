@@ -2,6 +2,7 @@ package cert
 
 import (
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"time"
 
@@ -82,7 +83,7 @@ func validateKeyUsages(cert *x509.Certificate, required []x509.ExtKeyUsage) erro
 			}
 		}
 	}
-	return fmt.Errorf("cert: certificate does not have required ExtendedKeyUsage")
+	return errors.New("cert: certificate does not have required ExtendedKeyUsage")
 }
 
 func verifyStandard(cert *x509.Certificate, opts VerifyOptions) error {
@@ -105,17 +106,17 @@ func verifyStandard(cert *x509.Certificate, opts VerifyOptions) error {
 func VerifyDualCertificate(signCert, encCert *x509.Certificate, signRoots, encRoots *Pool) error {
 	return panicsafe.Do(func() error {
 		if signCert == nil || encCert == nil {
-			return fmt.Errorf("cert: both sign and enc certificates are required")
+			return errors.New("cert: both sign and enc certificates are required")
 		}
 
 		signKeyUsage := signCert.KeyUsage
 		if signKeyUsage&x509.KeyUsageDigitalSignature == 0 {
-			return fmt.Errorf("cert: sign certificate must have KeyUsageDigitalSignature")
+			return errors.New("cert: sign certificate must have KeyUsageDigitalSignature")
 		}
 
 		encKeyUsage := encCert.KeyUsage
 		if encKeyUsage&x509.KeyUsageKeyEncipherment == 0 && encKeyUsage&x509.KeyUsageDataEncipherment == 0 {
-			return fmt.Errorf("cert: enc certificate must have KeyUsageKeyEncipherment or KeyUsageDataEncipherment")
+			return errors.New("cert: enc certificate must have KeyUsageKeyEncipherment or KeyUsageDataEncipherment")
 		}
 
 		if err := VerifyCertificate(signCert, VerifyOptions{Roots: signRoots}); err != nil {

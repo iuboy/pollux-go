@@ -160,3 +160,59 @@ func TestHandshake_RejectsTamperedServerFinished(t *testing.T) {
 		t.Fatal("client accepted corrupted server Finished")
 	}
 }
+
+// TestHandshakeSecrets_ZeroAll verifies that ZeroAll clears both the
+// packet-protection key sets AND the raw traffic secrets, while Zero leaves the
+// traffic secrets intact (they are transport-owned for key rotation).
+func TestHandshakeSecrets_ZeroAll(t *testing.T) {
+	build := func() *HandshakeSecrets {
+		// Populate enough fields to exercise both code paths.
+		hsKeys, err := DeriveQUICPacketKeys(bytes.Repeat([]byte{0xAB}, 32))
+		if err != nil {
+			t.Fatalf("DeriveQUICPacketKeys: %v", err)
+		}
+		return &HandshakeSecrets{
+			ClientHandshakeKeys:            hsKeys,
+			ClientHandshakeTrafficSecret:   bytes.Repeat([]byte{0x01}, 32),
+			ServerApplicationTrafficSecret: bytes.Repeat([]byte{0x02}, 32),
+		}
+	}
+
+	// Zero() must leave traffic secrets untouched (transport still owns them).
+	h := build()
+	origClientHS := append([]byte(nil), h.ClientHandshakeTrafficSecret...)
+	origServerAP := append([]byte(nil), h.ServerApplicationTrafficSecret...)
+	h.Zero()
+	if !bytes.Equal(h.ClientHandshakeTrafficSecret, origClientHS) {
+		t.Error("Zero() must not clear ClientHandshakeTrafficSecret")
+	}
+	if !bytes.Equal(h.ServerApplicationTrafficSecret, origServerAP) {
+		t.Error("Zero() must not clear ServerApplicationTrafficSecret")
+	}
+	// Packet keys ARE zeroed by Zero().
+	if h.ClientHandshakeKeys.AEADKey != nil {
+		t.Error("Zero() should have zeroed ClientHandshakeKeys.AEADKey")
+	}
+
+	// ZeroAll() must clear everything, including traffic secrets.
+	h2 := build()
+	h2.ZeroAll()
+	for i, b := range h2.ClientHandshakeTrafficSecret {
+		if b != 0 {
+			t.Errorf("ZeroAll left nonzero byte at ClientHandshakeTrafficSecret[%d]", i)
+		}
+	}
+	for i, b := range h2.ServerApplicationTrafficSecret {
+		if b != 0 {
+			t.Errorf("ZeroAll left nonzero byte at ServerApplicationTrafficSecret[%d]", i)
+		}
+	}
+	if h2.ClientHandshakeKeys.AEADKey != nil {
+		t.Error("ZeroAll should have zeroed ClientHandshakeKeys.AEADKey")
+	}
+
+	// Nil receivers and empty secrets must not panic.
+	var nilH *HandshakeSecrets
+	nilH.ZeroAll()
+	(&HandshakeSecrets{}).ZeroAll()
+}

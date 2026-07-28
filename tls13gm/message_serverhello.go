@@ -1,6 +1,9 @@
 package tls13gm
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // ServerHelloMsg is the TLS 1.3 ServerHello (RFC 8446 §4.1.3).
 type ServerHelloMsg struct {
@@ -40,7 +43,7 @@ func (m *ServerHelloMsg) marshalBody() ([]byte, error) {
 func (m *ServerHelloMsg) unmarshalBody(b []byte) error {
 	p := 0
 	if len(b) < p+2+32 {
-		return fmt.Errorf("tls13gm: ServerHello truncated before session id")
+		return errors.New("tls13gm: ServerHello truncated before session id")
 	}
 	m.LegacyVersion = uint16(b[p])<<8 | uint16(b[p+1])
 	p += 2
@@ -48,7 +51,7 @@ func (m *ServerHelloMsg) unmarshalBody(b []byte) error {
 	p += 32
 
 	if p >= len(b) {
-		return fmt.Errorf("tls13gm: ServerHello truncated at session id length")
+		return errors.New("tls13gm: ServerHello truncated at session id length")
 	}
 	sidLen := int(b[p])
 	p++
@@ -59,7 +62,7 @@ func (m *ServerHelloMsg) unmarshalBody(b []byte) error {
 	p += sidLen
 
 	if p+2+1 > len(b) {
-		return fmt.Errorf("tls13gm: ServerHello truncated at cipher suite / compression")
+		return errors.New("tls13gm: ServerHello truncated at cipher suite / compression")
 	}
 	m.CipherSuite = uint16(b[p])<<8 | uint16(b[p+1])
 	p += 2

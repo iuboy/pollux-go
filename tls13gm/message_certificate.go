@@ -1,6 +1,9 @@
 package tls13gm
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // CertificateEntry is one entry in a TLS 1.3 Certificate message: a DER-encoded
 // certificate followed by its per-entry extensions (RFC 8446 §4.4.2).
@@ -52,7 +55,7 @@ func (m *CertificateMsg) marshalBody() ([]byte, error) {
 
 func (m *CertificateMsg) unmarshalBody(b []byte) error {
 	if len(b) < 1 {
-		return fmt.Errorf("tls13gm: Certificate truncated at context length")
+		return errors.New("tls13gm: Certificate truncated at context length")
 	}
 	ctxLen := int(b[0])
 	if 1+ctxLen > len(b) {
@@ -62,7 +65,7 @@ func (m *CertificateMsg) unmarshalBody(b []byte) error {
 	p := 1 + ctxLen
 
 	if p+3 > len(b) {
-		return fmt.Errorf("tls13gm: Certificate truncated at list length")
+		return errors.New("tls13gm: Certificate truncated at list length")
 	}
 	listLen := int(b[p])<<16 | int(b[p+1])<<8 | int(b[p+2])
 	p += 3
@@ -72,7 +75,7 @@ func (m *CertificateMsg) unmarshalBody(b []byte) error {
 	listEnd := p + listLen
 	for p < listEnd {
 		if p+3 > listEnd {
-			return fmt.Errorf("tls13gm: Certificate entry truncated at cert length")
+			return errors.New("tls13gm: Certificate entry truncated at cert length")
 		}
 		certLen := int(b[p])<<16 | int(b[p+1])<<8 | int(b[p+2])
 		p += 3

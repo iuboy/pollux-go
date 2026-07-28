@@ -4,7 +4,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rand"
-	"fmt"
+	"errors"
 
 	"github.com/iuboy/pollux-go/sm2"
 	"github.com/iuboy/pollux-go/sm3"
@@ -59,7 +59,7 @@ func BuildCertificateVerifyInput(context string, transcriptHash []byte) []byte {
 //     as required by RFC 8998 §3.2.1 (ZA computation is performed internally).
 func SignCertificateVerify(privateKey *sm2.PrivateKey, context string, transcript []byte) ([]byte, error) {
 	if privateKey == nil {
-		return nil, fmt.Errorf("tls13gm: privateKey is nil")
+		return nil, errors.New("tls13gm: privateKey is nil")
 	}
 
 	message := BuildCertificateVerifyInput(context, transcript)
@@ -85,7 +85,7 @@ func VerifyCertificateVerify(publicKey *ecdsa.PublicKey, context string, transcr
 // It uses the SM2 identifier "TLSv1.3+GM+Cipher+Suite" per RFC 8998 §3.2.1.
 func SignSM2SM3(privateKey *sm2.PrivateKey, message []byte) ([]byte, error) {
 	if privateKey == nil {
-		return nil, fmt.Errorf("tls13gm: privateKey is nil")
+		return nil, errors.New("tls13gm: privateKey is nil")
 	}
 	opts := sm2.NewSM2SignerOption(true, []byte(SM2IDTLS13KeyExchange))
 	return sm2.SignASN1(rand.Reader, privateKey, message, opts)

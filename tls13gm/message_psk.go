@@ -1,6 +1,7 @@
 package tls13gm
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/iuboy/pollux-go/sm3"
@@ -61,22 +62,22 @@ func marshalPreSharedKeyExtension(identities []PskIdentity, binders [][]byte) ([
 // identities and binders.
 func parsePreSharedKeyExtension(data []byte) (identities []PskIdentity, binders [][]byte, err error) {
 	if len(data) < 2 {
-		return nil, nil, fmt.Errorf("tls13gm: pre_shared_key identities length truncated")
+		return nil, nil, errors.New("tls13gm: pre_shared_key identities length truncated")
 	}
 	idLen := int(data[0])<<8 | int(data[1])
 	p := 2
 	if p+idLen > len(data) {
-		return nil, nil, fmt.Errorf("tls13gm: pre_shared_key identities vector truncated")
+		return nil, nil, errors.New("tls13gm: pre_shared_key identities vector truncated")
 	}
 	idEnd := p + idLen
 	for p < idEnd {
 		if p+2 > idEnd {
-			return nil, nil, fmt.Errorf("tls13gm: psk identity length truncated")
+			return nil, nil, errors.New("tls13gm: psk identity length truncated")
 		}
 		l := int(data[p])<<8 | int(data[p+1])
 		p += 2
 		if p+l+4 > idEnd {
-			return nil, nil, fmt.Errorf("tls13gm: psk identity body truncated")
+			return nil, nil, errors.New("tls13gm: psk identity body truncated")
 		}
 		id := PskIdentity{Identity: append([]byte(nil), data[p:p+l]...)}
 		p += l
@@ -85,22 +86,22 @@ func parsePreSharedKeyExtension(data []byte) (identities []PskIdentity, binders 
 		identities = append(identities, id)
 	}
 	if p+2 > len(data) {
-		return nil, nil, fmt.Errorf("tls13gm: pre_shared_key binders length truncated")
+		return nil, nil, errors.New("tls13gm: pre_shared_key binders length truncated")
 	}
 	binderLen := int(data[p])<<8 | int(data[p+1])
 	p += 2
 	if p+binderLen > len(data) {
-		return nil, nil, fmt.Errorf("tls13gm: pre_shared_key binders vector truncated")
+		return nil, nil, errors.New("tls13gm: pre_shared_key binders vector truncated")
 	}
 	bEnd := p + binderLen
 	for p < bEnd {
 		if p+1 > bEnd {
-			return nil, nil, fmt.Errorf("tls13gm: psk binder length truncated")
+			return nil, nil, errors.New("tls13gm: psk binder length truncated")
 		}
 		l := int(data[p])
 		p++
 		if p+l > bEnd {
-			return nil, nil, fmt.Errorf("tls13gm: psk binder body truncated")
+			return nil, nil, errors.New("tls13gm: psk binder body truncated")
 		}
 		binders = append(binders, append([]byte(nil), data[p:p+l]...))
 		p += l

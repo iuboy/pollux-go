@@ -376,24 +376,12 @@ func TestClientHello_PreSharedKey(t *testing.T) {
 		t.Fatalf("psk_key_exchange_modes = %x, want [01 01]", kemExt)
 	}
 
-	// Reconstruct the truncated ClientHello (pre_shared_key binders list empty)
-	// and verify the binder matches an independent computation.
-	truncExts := make([]Extension, len(chMsg.Extensions))
-	copy(truncExts, chMsg.Extensions)
-	for i, e := range truncExts {
-		if e.Type == ExtensionTypePreSharedKey {
-			trunc, err := marshalPreSharedKeyExtension(identities, [][]byte{make([]byte, sm3.Size)})
-			if err != nil {
-				t.Fatalf("marshal truncated: %v", err)
-			}
-			truncExts[i] = Extension{Type: ExtensionTypePreSharedKey, Data: trunc}
-		}
-	}
-	truncChMsg := chMsg
-	truncChMsg.Extensions = truncExts
-	truncFull, err := MarshalHandshakeMessage(&truncChMsg)
+	// Reconstruct the binder transcript (ClientHello truncated just before the
+	// binders field; pre_shared_key ext_len kept full) and verify the binder
+	// matches an independent computation (RFC 8446 §4.2.11).
+	truncFull, err := pskBinderTranscript(&chMsg, identities)
 	if err != nil {
-		t.Fatalf("marshal truncated CH: %v", err)
+		t.Fatalf("binder transcript: %v", err)
 	}
 	expected, err := computeResumptionBinder(psk, truncFull)
 	if err != nil {

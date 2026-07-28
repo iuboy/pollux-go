@@ -697,7 +697,7 @@ func TestRFC8998_Tongsuo_PSKResume(t *testing.T) {
 	cert, key := tongsuoGenSM2Cert(t, ts)
 	// -naccept 2: accept two connections on one s_server instance so the ticket
 	// issued to the first is resumable on the second (in-memory ticket store).
-	cmd, port, srvLog, _ := startTongsuoServerN(t, ts, cert, key, 2)
+	cmd, port, srvLog, keylogPath := startTongsuoServerN(t, ts, cert, key, 2)
 	defer func() {
 		cmd.Process.Kill()
 		cmd.Wait()
@@ -708,11 +708,24 @@ func TestRFC8998_Tongsuo_PSKResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial1: %v", err)
 	}
-	hs1, _, err := dialRFC8998(conn1, "localhost", nil, nil, 0)
+	hs1, rawCR, err := dialRFC8998(conn1, "localhost", nil, nil, 0)
 	if err != nil {
 		dumpServerLog(t, srvLog)
 		t.Fatalf("handshake1: %v", err)
 	}
+	// Verify phase-1 traffic secrets against Tongsuo's keylog — this confirms
+	// pollux's first-handshake transcript (CH1..SF) is byte-identical to
+	// Tongsuo's, which is a prerequisite for RMS agreement.
+	time.Sleep(150 * time.Millisecond)
+	keylog, _ := os.ReadFile(keylogPath)
+	cr1 := hexEncode(rawCR)
+	if !strings.Contains(string(keylog), "CLIENT_HANDSHAKE_TRAFFIC_SECRET "+cr1+" "+hexEncode(hs1.Secrets().ClientHandshakeTrafficSecret)) {
+		t.Fatalf("phase1 ClientHandshakeTrafficSecret mismatch vs keylog.\nkeylog:\n%s", keylog)
+	}
+	if !strings.Contains(string(keylog), "CLIENT_TRAFFIC_SECRET_0 "+cr1+" "+hexEncode(hs1.Secrets().ClientApplicationTrafficSecret)) {
+		t.Fatalf("phase1 ClientApplicationTrafficSecret mismatch vs keylog.\nkeylog:\n%s", keylog)
+	}
+	t.Logf("phase1 traffic secrets verified against Tongsuo keylog (transcript CH1..SF agrees)")
 	identity, psk, ageAdd, err := readNewSessionTicket(conn1, hs1)
 	if err != nil {
 		t.Fatalf("read NST: %v", err)

@@ -108,6 +108,50 @@ func parsePreSharedKeyExtension(data []byte) (identities []PskIdentity, binders 
 	return identities, binders, nil
 }
 
+// pskBinderTranscript returns the binder transcript bytes for a ClientHello
+// carrying a pre_shared_key extension (RFC 8446 §4.2.11): the full
+// handshake-message bytes truncated just before the binders field — up to and
+// INCLUDING the identities vector, EXCLUDING the 2-byte binders_len prefix and
+// the binders themselves.
+//
+// Crucially the pre_shared_key extension's ext_len keeps its FULL value
+// (covering identities + binders); only the trailing binders field is cut. This
+// matches OpenSSL's binderoffset (EVP_DigestUpdate(init_buf->data, binderoffset)
+// where binderoffset points AT the binders_len field) and Go crypto/tls
+// bindersOffset. Re-encoding a shorter "identities-only" extension is WRONG: it
+// rewrites the ext_len byte and desyncs the transcript from the server.
+func pskBinderTranscript(ch *ClientHelloMsg, identities []PskIdentity) ([]byte, error) {
+	placeholder, err := marshalPreSharedKeyExtension(identities, [][]byte{make([]byte, sm3.Size)})
+	if err != nil {
+		return nil, err
+	}
+	var exts []Extension
+	hasPSK := false
+	for _, e := range ch.Extensions {
+		if e.Type == ExtensionTypePreSharedKey {
+			exts = append(exts, Extension{Type: ExtensionTypePreSharedKey, Data: placeholder})
+			hasPSK = true
+		} else {
+			exts = append(exts, e)
+		}
+	}
+	if !hasPSK {
+		exts = append(exts, Extension{Type: ExtensionTypePreSharedKey, Data: placeholder})
+	}
+	tmp := *ch
+	tmp.Extensions = exts
+	full, err := MarshalHandshakeMessage(&tmp)
+	if err != nil {
+		return nil, err
+	}
+	// binders field = binders_len(2) + binder_len(1) + binder(Hash.length)
+	const bindersField = 2 + 1 + sm3.Size
+	if len(full) < bindersField {
+		return nil, fmt.Errorf("tls13gm: ClientHello too short (%d) for binder transcript", len(full))
+	}
+	return full[:len(full)-bindersField], nil
+}
+
 // marshalPSKKeyExchangeModesExtension encodes the psk_key_exchange_modes
 // extension value: a 1-byte list length followed by the selected modes.
 func marshalPSKKeyExchangeModesExtension(modes []uint8) []byte {
@@ -126,8 +170,10 @@ func marshalPSKKeyExchangeModesExtension(modes []uint8) []byte {
 //	binder          = HMAC(finished_key, Transcript-Hash(ClientHello_truncated))
 //
 // truncatedClientHello is the full handshake-message bytes (4-byte header +
-// body) of the ClientHello carrying the pre_shared_key extension with an empty
-// binders list.
+// body) of the ClientHello whose pre_shared_key extension carries ONLY the
+// identities (no binders_len prefix, no binders). The transcript hash therefore
+// ends at the identities vector — i.e. up to but not including the binders
+// field, per RFC 8446 §4.2.11 and the OpenSSL/Go crypto/tls wire convention.
 func computeResumptionBinder(psk, truncatedClientHello []byte) ([]byte, error) {
 	earlySecret := DeriveEarlySecret(psk)
 	emptyHash := sm3.Sum(nil)

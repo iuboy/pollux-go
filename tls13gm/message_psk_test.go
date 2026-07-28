@@ -28,23 +28,20 @@ func TestPreSharedKeyExtension_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestPreSharedKeyExtension_TruncatedForm verifies that a nil/empty binders
-// slice yields the truncated extension (binders list length 0) used to compute
-// the binder over the ClientHello.
-func TestPreSharedKeyExtension_TruncatedForm(t *testing.T) {
+// TestPreSharedKeyExtension_EmptyBinders verifies that a nil binders slice
+// yields the on-wire extension with an empty binders vector (length 0).
+func TestPreSharedKeyExtension_EmptyBinders(t *testing.T) {
 	identities := []PskIdentity{{Identity: []byte("psk"), ObfuscatedTicketAge: 1}}
 	trunc, err := marshalPreSharedKeyExtension(identities, nil)
 	if err != nil {
-		t.Fatalf("marshal truncated: %v", err)
+		t.Fatalf("marshal empty-binders: %v", err)
 	}
-	// The binders vector length is the last 2 bytes before an empty tail; with
-	// no binders the encoded binders-vector length field must be 0.
 	_, binders, err := parsePreSharedKeyExtension(trunc)
 	if err != nil {
-		t.Fatalf("parse truncated: %v", err)
+		t.Fatalf("parse empty-binders: %v", err)
 	}
 	if len(binders) != 0 {
-		t.Fatalf("truncated form has %d binders, want 0", len(binders))
+		t.Fatalf("empty-binders form has %d binders, want 0", len(binders))
 	}
 }
 

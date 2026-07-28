@@ -74,6 +74,17 @@ func (c *tlcpConn) serverHandshakeReal() error {
 	}
 	c.cipherSuite = suite.id
 
+	// 2b. Resume check: if the client offered a sessionId that hits our cache,
+	// perform an abbreviated handshake (no Certificate/SKE/SHD), reusing the
+	// cached master secret. The server sends Finished first in a resume.
+	if sess := c.lookupResumedSession(&clientHello, suite); sess != nil {
+		if err := c.serverResumeHandshake(suite, &clientHello, chData, sess); err != nil {
+			return err
+		}
+		c.didResume = true
+		return nil
+	}
+
 	// 3. Build ServerHello.
 	serverRandom := make([]byte, 32)
 	binary.BigEndian.PutUint32(serverRandom, uint32(time.Now().Unix()))
@@ -172,8 +183,108 @@ func (c *tlcpConn) serverHandshakeReal() error {
 		return err
 	}
 
+	// 12. Cache the session for future resumption (full handshake only).
+	c.createNewServerSession(serverHello, masterSecret)
+
 	zeroBytes(masterSecret)
 	return nil
+}
+
+// lookupResumedSession checks the session cache for the client's offered
+// sessionId. Returns the cached session if it matches the negotiated version
+// and cipher suite, else nil.
+func (c *tlcpConn) lookupResumedSession(clientHello *tlcpClientHelloMsg, suite *tlcpCipherSuite) *tlcpSessionState {
+	if c.config == nil || c.config.sessionCache == nil || len(clientHello.sessionID) == 0 {
+		return nil
+	}
+	sess, ok := c.config.sessionCache.Get(tlcpSessionKeyHex(clientHello.sessionID))
+	if !ok || sess == nil {
+		return nil
+	}
+	if sess.version != c.vers || sess.cipherSuite != suite.id {
+		return nil
+	}
+	return sess
+}
+
+// serverResumeHandshake drives the server-side abbreviated (resume) handshake.
+// Resume ordering (opposite of full): send ServerHello (echoed sessionId) →
+// establishKeys → send server CCS+Finished → read client CCS+Finished. The
+// transcript covers only ClientHello + ServerHello. masterSecret comes from
+// the cached session.
+func (c *tlcpConn) serverResumeHandshake(suite *tlcpCipherSuite, clientHello *tlcpClientHelloMsg, chData []byte, sess *tlcpSessionState) error {
+	serverRandom := make([]byte, 32)
+	binary.BigEndian.PutUint32(serverRandom, uint32(time.Now().Unix()))
+	if _, err := io.ReadFull(c.config.rand, serverRandom[4:]); err != nil {
+		return err
+	}
+	serverHello := &tlcpServerHelloMsg{
+		version:           tlcpVersionTLCP,
+		random:            serverRandom,
+		sessionID:         clientHello.sessionID, // echo the same sessionId
+		cipherSuite:       suite.id,
+		compressionMethod: 0,
+	}
+
+	transcript := newTLCPFinishedHash()
+	transcript.Write(chData)
+
+	c.buffering = true
+	if err := c.writeHandshakeRecord(serverHello, transcript); err != nil {
+		return err
+	}
+	if err := c.flush(); err != nil {
+		return err
+	}
+
+	c.peerCertificates = sess.peerCertificates
+	masterSecret := make([]byte, len(sess.masterSecret))
+	copy(masterSecret, sess.masterSecret)
+
+	if err := c.establishKeys(suite, masterSecret, clientHello.random, serverHello.random); err != nil {
+		return err
+	}
+
+	// Resume: server sends Finished first, then reads the client's.
+	if err := c.writeRecord(tlcpRecordChangeCipherSpec, []byte{1}); err != nil {
+		return err
+	}
+	finished := &tlcpFinishedMsg{verifyData: transcript.serverSum(masterSecret)}
+	if err := c.writeHandshakeRecord(finished, transcript); err != nil {
+		return err
+	}
+	if err := c.flush(); err != nil {
+		return err
+	}
+
+	if err := c.readClientCCSAndFinished(transcript, masterSecret); err != nil {
+		return err
+	}
+
+	zeroBytes(masterSecret)
+	return nil
+}
+
+// createNewServerSession stores the freshly negotiated session so a later
+// connection offering the same sessionId can resume. Only called after a
+// successful full handshake.
+func (c *tlcpConn) createNewServerSession(serverHello *tlcpServerHelloMsg, masterSecret []byte) {
+	if c.config == nil || c.config.sessionCache == nil {
+		return
+	}
+	msCopy := make([]byte, len(masterSecret))
+	copy(msCopy, masterSecret)
+	peerCertsCopy := make([][]byte, len(c.peerCertificates))
+	copy(peerCertsCopy, c.peerCertificates)
+	sess := &tlcpSessionState{
+		sessionID:       serverHello.sessionID,
+		version:         c.vers,
+		cipherSuite:     c.cipherSuite,
+		masterSecret:    msCopy,
+		peerCertificates: peerCertsCopy,
+		createdAt:       time.Now(),
+	}
+	c.config.sessionCache.Put(tlcpSessionKeyHex(sess.sessionID), sess)
 }
 
 // readClientCCSAndFinished reads the client's CCS (switching c.in to client

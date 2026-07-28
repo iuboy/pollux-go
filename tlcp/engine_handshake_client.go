@@ -68,10 +68,21 @@ func (c *tlcpConn) clientHandshakeReal() error {
 		return errors.New("tlcp: nil config")
 	}
 
+	// 0. Load a cached session (by remote address) so we can offer to resume.
+	if config.sessionCache != nil && c.isClient {
+		if sess, ok := config.sessionCache.Get(c.conn.RemoteAddr().String()); ok && sess != nil {
+			c.session = sess
+		}
+	}
+
 	// 1. Build and send ClientHello (not yet in transcript — written after SH).
 	hello, err := tlcpMakeClientHello(config)
 	if err != nil {
 		return err
+	}
+	// If we have a cached session, advertise its sessionId to offer resumption.
+	if c.session != nil {
+		hello.sessionID = c.session.sessionID
 	}
 	if err := c.writeRecord(tlcpRecordHandshake, mustMarshal(hello)); err != nil {
 		return err
@@ -105,6 +116,20 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	}
 	c.serverName = config.serverName
 	c.clientProtocol = serverHello.alpnProtocol
+
+	// 2b. Resume branch: server echoed our sessionId and we have a matching
+	// cached session. Skip the full handshake and reuse the cached master secret.
+	if c.serverResumedSession(&serverHello) {
+		if err := c.clientResumeHandshake(suite, hello, &serverHello, shData); err != nil {
+			c.discardSession()
+			return err
+		}
+		c.didResume = true
+		return nil
+	}
+	// If we offered a session but the server declined (different/empty sessionId),
+	// drop the cached reference — a fresh full handshake follows.
+	c.session = nil
 
 	// 3. Initialize transcript and feed ClientHello + ServerHello.
 	transcript := newTLCPFinishedHash()
@@ -209,6 +234,96 @@ func (c *tlcpConn) clientHandshakeReal() error {
 
 	// 11. Read server CCS + Finished.
 	if err := c.readServerCCSAndFinished(transcript, masterSecret); err != nil {
+		return err
+	}
+
+	// 12. Cache the session for future resumption (full handshake only).
+	c.createNewClientSession(&serverHello, masterSecret)
+
+	zeroBytes(masterSecret)
+	return nil
+}
+
+// serverResumedSession reports whether the server agreed to resume the session
+// the client offered. Requires a cached session, a non-empty echoed sessionId
+// in ServerHello, and that the two sessionIds match (GB/T 38636-2020 §6.4.5.3).
+func (c *tlcpConn) serverResumedSession(serverHello *tlcpServerHelloMsg) bool {
+	return c.session != nil &&
+		len(c.session.sessionID) > 0 &&
+		len(serverHello.sessionID) > 0 &&
+		bytes.Equal(serverHello.sessionID, c.session.sessionID) &&
+		serverHello.version == c.session.version &&
+		serverHello.cipherSuite == c.session.cipherSuite
+}
+
+// discardSession removes the offered session from the cache after a failed
+// resume attempt (GB/T 38636-2020 §6.4.5.2.1: a session is invalidated on
+// handshake error).
+func (c *tlcpConn) discardSession() {
+	if c.config == nil || c.config.sessionCache == nil || c.session == nil {
+		return
+	}
+	key := tlcpSessionKeyHex(c.session.sessionID)
+	c.config.sessionCache.Put(key, nil)
+	c.config.sessionCache.Put(c.conn.RemoteAddr().String(), nil)
+	c.session = nil
+}
+
+// createNewClientSession stores the freshly negotiated session so a subsequent
+// connection to the same peer can resume. Only called after a successful full
+// handshake (resume does not refresh the cache).
+func (c *tlcpConn) createNewClientSession(serverHello *tlcpServerHelloMsg, masterSecret []byte) {
+	if c.config == nil || c.config.sessionCache == nil {
+		return
+	}
+	msCopy := make([]byte, len(masterSecret))
+	copy(msCopy, masterSecret)
+	peerCertsCopy := make([][]byte, len(c.peerCertificates))
+	copy(peerCertsCopy, c.peerCertificates)
+	sess := &tlcpSessionState{
+		sessionID:       serverHello.sessionID,
+		version:         c.vers,
+		cipherSuite:     c.cipherSuite,
+		masterSecret:    msCopy,
+		peerCertificates: peerCertsCopy,
+		createdAt:       time.Now(),
+	}
+	key := tlcpSessionKeyHex(sess.sessionID)
+	c.config.sessionCache.Put(key, sess)
+	c.config.sessionCache.Put(c.conn.RemoteAddr().String(), sess)
+}
+
+// clientResumeHandshake drives the client-side abbreviated (resume) handshake.
+// Resume ordering (opposite of full): establishKeys → read server CCS+Finished
+// → send client CCS+Finished. The transcript covers only ClientHello +
+// ServerHello. masterSecret comes from the cached session (no re-derivation).
+func (c *tlcpConn) clientResumeHandshake(suite *tlcpCipherSuite, hello *tlcpClientHelloMsg, serverHello *tlcpServerHelloMsg, shData []byte) error {
+	transcript := newTLCPFinishedHash()
+	transcript.Write(mustMarshal(hello))
+	transcript.Write(shData)
+
+	masterSecret := make([]byte, len(c.session.masterSecret))
+	copy(masterSecret, c.session.masterSecret)
+	c.peerCertificates = c.session.peerCertificates
+
+	if err := c.establishKeys(suite, masterSecret, hello.random, serverHello.random); err != nil {
+		return err
+	}
+
+	// Resume: server sends its Finished first, client reads then sends its own.
+	if err := c.readServerCCSAndFinished(transcript, masterSecret); err != nil {
+		return err
+	}
+
+	c.buffering = true
+	if err := c.writeRecord(tlcpRecordChangeCipherSpec, []byte{1}); err != nil {
+		return err
+	}
+	finished := &tlcpFinishedMsg{verifyData: transcript.clientSum(masterSecret)}
+	if err := c.writeHandshakeRecord(finished, transcript); err != nil {
+		return err
+	}
+	if err := c.flush(); err != nil {
 		return err
 	}
 

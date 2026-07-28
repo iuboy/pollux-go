@@ -541,3 +541,75 @@ func hexEncode(b []byte) string {
 	}
 	return string(out)
 }
+
+// TestRFC8998_Tongsuo_NSTTicket inspects the NewSessionTicket Tongsuo sends,
+// to determine whether PSK resumption interoperability is structurally possible.
+// pollux-go's design puts the resumption PSK verbatim in NewSessionTicket.Ticket;
+// a standard RFC 8446 stateless server puts an opaque (typically long, encrypted)
+// session-state handle there and reconstructs the PSK server-side. If Tongsuo's
+// ticket is not a bare 32-byte PSK, the two models cannot interoperate on PSK
+// resumption (the binder, keyed by the PSK, would never match).
+func TestRFC8998_Tongsuo_NSTTicket(t *testing.T) {
+	ts, ok := tongsuoBinary()
+	if !ok {
+		t.Skip("Tongsuo/BabaSSL not found")
+	}
+	cert, key := tongsuoGenSM2Cert(t, ts)
+	cmd, port, srvLog, _ := startTongsuoServer(t, ts, cert, key, false)
+	defer func() {
+		cmd.Process.Kill()
+		cmd.Wait()
+	}()
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	hs, _, err := dialRFC8998(conn, "localhost")
+	if err != nil {
+		dumpServerLog(t, srvLog)
+		t.Fatalf("handshake: %v", err)
+	}
+	srvAppRead, _ := trafficAEAD(hs.Secrets().ServerApplicationTrafficSecret)
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Read records until a NewSessionTicket (handshake type 4) appears.
+	var seq uint64
+	for i := 0; i < 8; i++ {
+		rtype, frag, err := readRecord(conn)
+		if err != nil {
+			t.Fatalf("read NST: %v", err)
+		}
+		pt, err := openRecord(srvAppRead, seq, rtype, frag)
+		seq++
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		body := pt[:len(pt)-1] // strip trailing ContentType
+		if len(body) < 4 || body[0] != 4 {
+			continue // not a NewSessionTicket
+		}
+		// NST body (after 4-byte handshake header): lifetime(4) age_add(4)
+		// nonce_len(1) nonce ticket_len(2) ticket ...
+		p := 4 + 4 + 4 // header + lifetime + age_add
+		if len(body) < p+1 {
+			t.Fatalf("NST truncated at nonce: %x", body)
+		}
+		nonceLen := int(body[p])
+		p += 1 + nonceLen
+		if len(body) < p+2 {
+			t.Fatalf("NST truncated at ticket len: %x", body)
+		}
+		ticketLen := int(body[p])<<8 | int(body[p+1])
+		t.Logf("Tongsuo NewSessionTicket.Ticket length = %d bytes", ticketLen)
+		if ticketLen == 32 {
+			t.Logf("ticket is 32 bytes (SM3 size) — could be a bare PSK (pollux-compatible)")
+		} else {
+			t.Logf("ticket is %d bytes — an opaque stateless session-state handle, NOT a bare PSK", ticketLen)
+		}
+		return
+	}
+	t.Fatal("no NewSessionTicket received")
+}

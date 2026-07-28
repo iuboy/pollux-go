@@ -1,42 +1,82 @@
 package quicgm
 
-import "sync"
+import (
+	"crypto/rand"
+	"errors"
+	"sync"
+	"time"
 
-// pskStore is a process-local registry of resumption PSKs a server has issued.
-// It lets a stateful server accept PSK resumption (and 0-RTT) on a connection
-// other than the one that issued the ticket: each GMCryptoSetup is per-
-// connection, so the issued-PSK memory must outlive any single connection and
-// be shared across them via the Listener.
+	"github.com/iuboy/pollux-go/tls13gm"
+)
+
+// ticketKeyRotator is a process-local manager for the stateless session-ticket
+// encryption keys (TEKs). It keeps the current and previous TEK and rotates the
+// current one on a fixed cadence (RFC 8446 §4.6.1 recommends rotating at
+// ticket_lifetime/2). Tickets are encrypted under the current key and decrypt
+// tries current then previous, so a ticket issued just before a rotation stays
+// valid across the rotation window.
 //
-// Single-process only. Multi-replica deployments must back this with a shared
-// store (Redis, etc.), exactly like AntiReplayCache.
-type pskStore struct {
-	mu   sync.RWMutex
-	seen map[string]struct{}
+// Single-process: the keys live in memory. Multi-replica deployments must share
+// the seed (ServerConfig.SessionTicketKey) and synchronize rotation externally.
+type ticketKeyRotator struct {
+	mu             sync.Mutex
+	current        []byte
+	previous       []byte
+	rotatedAt      time.Time
+	rotationPeriod time.Duration
+	now            func() time.Time
 }
 
-func newPSKStore() *pskStore { return &pskStore{seen: make(map[string]struct{})} }
-
-// record stores a freshly issued PSK so a later lookup accepts it.
-func (s *pskStore) record(psk []byte) {
-	if len(psk) == 0 {
-		return
+// newTicketKeyRotator seeds the rotator. If seed is non-empty it is used as the
+// initial current key (after a length check); otherwise a random key is
+// generated. rotationPeriod is how often the current key is rotated.
+func newTicketKeyRotator(seed []byte, rotationPeriod time.Duration) (*ticketKeyRotator, error) {
+	if rotationPeriod <= 0 {
+		return nil, errors.New("quicgm: ticket-key rotation period must be positive")
 	}
-	s.mu.Lock()
-	s.seen[string(psk)] = struct{}{}
-	s.mu.Unlock()
+	cur := make([]byte, tls13gm.SessionTicketKeyLen)
+	if len(seed) >= tls13gm.SessionTicketKeyLen {
+		copy(cur, seed[:tls13gm.SessionTicketKeyLen])
+	} else if _, err := rand.Read(cur); err != nil {
+		return nil, err
+	}
+	return &ticketKeyRotator{
+		current:        cur,
+		rotationPeriod: rotationPeriod,
+		now:            time.Now,
+	}, nil
 }
 
-// lookup resolves a client-offered identity to the PSK. In tls13gm the identity
-// IS the PSK (carried verbatim in NewSessionTicket.Ticket), so a previously
-// recorded PSK is returned as-is; unknown identities yield ok=false, after
-// which the binder check still rejects them.
-func (s *pskStore) lookup(identity []byte) ([]byte, bool) {
-	s.mu.RLock()
-	_, ok := s.seen[string(identity)]
-	s.mu.RUnlock()
-	if !ok {
-		return nil, false
+// keys returns the active TEK list, newest first: [current, previous]. It
+// performs a lazy rotation when the rotation period has elapsed (no background
+// goroutine). The previous key is nil before the first rotation.
+func (r *ticketKeyRotator) keys() [][]byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.now().Sub(r.rotatedAt) >= r.rotationPeriod {
+		r.rotateLocked()
 	}
-	return append([]byte(nil), identity...), true
+	if r.previous == nil {
+		return [][]byte{r.current}
+	}
+	return [][]byte{r.current, r.previous}
+}
+
+// rotateLocked forces a rotation: previous <- current, current <- fresh random.
+// Used by tests to exercise the rotation window deterministically.
+func (r *ticketKeyRotator) rotateLocked() {
+	next := make([]byte, tls13gm.SessionTicketKeyLen)
+	if _, err := rand.Read(next); err != nil {
+		return // keep current key on failure; next keys() call retries
+	}
+	r.previous = r.current
+	r.current = next
+	r.rotatedAt = r.now()
+}
+
+// rotate forces an immediate rotation (test/diagnostics helper).
+func (r *ticketKeyRotator) rotate() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rotateLocked()
 }

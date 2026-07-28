@@ -190,12 +190,13 @@ type Config struct {
 	// the connection's destination connection ID. Required when GMSM4GCM is true.
 	GMHandshakeConfig *GMHandshakeConfig
 	// GMOnClientSessionTicket, when non-nil, is invoked on the client exactly
-	// once per NewSessionTicket received post-handshake (1-RTT). psk is the
-	// resumption PSK (NewSessionTicket.Ticket, carried verbatim); ticketAgeAdd
-	// is the ticket_age_add to obfuscate the ticket age. Feed them back as
-	// ClientConfig.ResumptionPSK / ResumptionObfuscatedTicketAge on a subsequent
-	// DialEarly to attempt 0-RTT. Servers ignore it.
-	GMOnClientSessionTicket func(psk []byte, ticketAgeAdd uint32)
+	// once per NewSessionTicket received post-handshake (1-RTT). identity is the
+	// opaque ticket (to echo back as the pre_shared_key identity on a later
+	// resumption); psk is the resumption PSK the client derived (keys the binder
+	// and 0-RTT early secret); ticketAgeAdd is the ticket_age_add. Feed them
+	// back as ClientConfig.ResumptionIdentity / ResumptionPSK /
+	// ResumptionObfuscatedTicketAge on a subsequent DialEarly. Servers ignore it.
+	GMOnClientSessionTicket func(identity, psk []byte, ticketAgeAdd uint32)
 }
 
 // GMHandshakeConfig carries pollux-go tls13gm handshake configuration for a

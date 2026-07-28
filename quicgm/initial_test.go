@@ -2,6 +2,7 @@ package quicgm
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -98,5 +99,21 @@ func TestInitialPacket_RejectsNonInitialType(t *testing.T) {
 	notInitial := append([]byte{0xD0}, bytes.Repeat([]byte{0}, 32)...)
 	if _, _, _, _, _, err := OpenInitialPacket([]byte{1, 2, 3, 4}, notInitial); err == nil {
 		t.Error("non-Initial long-header packet should be rejected")
+	}
+}
+
+// TestSealInitialPacket_RejectsEmptyDCIDUpFront 确认 SealInitialPacket 在密钥
+// 派生之前就拒绝空 dcid（错误信息为 quicgm 层级，而非 HKDF 层级）。
+//
+// 回归背景：此前空 dcid 检查放在 DeriveQUICInitialSecrets 调用之后，是死代码
+// （后者已校验空 dcid 并提前返回）。修复将检查前移，确保立即返回清晰的
+// quicgm 错误并避免无谓的 HKDF 计算。
+func TestSealInitialPacket_RejectsEmptyDCIDUpFront(t *testing.T) {
+	_, err := SealInitialPacket(nil, []byte{1, 2}, nil, 1, []byte("payload"))
+	if err == nil {
+		t.Fatal("SealInitialPacket with empty dcid should fail")
+	}
+	if !strings.Contains(err.Error(), "dcid must be non-empty") {
+		t.Errorf("expected quicgm-level empty dcid error, got: %v", err)
 	}
 }

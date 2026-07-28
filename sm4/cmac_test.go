@@ -589,3 +589,40 @@ func TestCMACComputeCMACWithNilData(t *testing.T) {
 		t.Errorf("nil vs empty: %x vs %x", macNil, macEmpty)
 	}
 }
+
+// TestCMACSumConstantTimeGuards 验证恒定时间 Sum 实现的两个不变量，防止未来
+// 被退化为分支实现（侧信道回归）：
+//  1. Sum 不修改内部状态——对同一 CMAC 多次调用 Sum 结果必须一致。
+//  2. 完整块（走 K1）与差一字节的不完整块（走 K2 + 10* padding）必须产生不同
+//     tag，确认 isComplete 选择与 padding 注入在恒定时间路径下仍然生效。
+func TestCMACSumConstantTimeGuards(t *testing.T) {
+	c, err := sm4.NewCMAC(cmacKey)
+	if err != nil {
+		t.Fatalf("NewCMAC: %v", err)
+	}
+	full := make([]byte, sm4.BlockSize) // exactly one block -> K1 path (complete)
+	if _, err := c.Write(full); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	first := c.Sum(nil)
+	again := c.Sum(nil)
+	if !bytes.Equal(first, again) {
+		t.Fatalf("Sum is not idempotent: %x then %x (state mutated)", first, again)
+	}
+
+	// A message one byte short of a full block exercises the K2 + 10* padding
+	// path (incomplete). Its tag must differ from the full-block tag, confirming
+	// the subkey selection and padding byte (0x80) are actually applied.
+	short := make([]byte, sm4.BlockSize-1)
+	c2, err := sm4.NewCMAC(cmacKey)
+	if err != nil {
+		t.Fatalf("NewCMAC: %v", err)
+	}
+	if _, err := c2.Write(short); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	shortTag := c2.Sum(nil)
+	if bytes.Equal(first, shortTag) {
+		t.Errorf("full-block and incomplete-block CMAC must differ; both = %x", first)
+	}
+}

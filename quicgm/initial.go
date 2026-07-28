@@ -30,6 +30,12 @@ func SealInitialPacket(dcid, scid, token []byte, pn uint64, payload []byte) ([]b
 	if pn > 0xFFFFFFFF {
 		return nil, fmt.Errorf("quicgm: packet number %d exceeds 32 bits", pn)
 	}
+	// Validate dcid before key derivation: DeriveQUICInitialSecrets also rejects
+	// an empty dcid, but checking here gives a quicgm-level error without
+	// spending HKDF cycles and keeps Seal/Open symmetric.
+	if len(dcid) == 0 {
+		return nil, errors.New("quicgm: dcid must be non-empty (it seeds the Initial secret)")
+	}
 	clientIn, _, err := tls13gm.DeriveQUICInitialSecrets(dcid)
 	if err != nil {
 		return nil, fmt.Errorf("quicgm: derive initial secret: %w", err)
@@ -50,9 +56,6 @@ func SealInitialPacket(dcid, scid, token []byte, pn uint64, payload []byte) ([]b
 	hdr := make([]byte, 0, 64)
 	hdr = append(hdr, firstByte)
 	hdr = appendUint32(hdr, QUICVersion1)
-	if len(dcid) == 0 {
-		return nil, errors.New("quicgm: dcid must be non-empty (it seeds the Initial secret)")
-	}
 	if err := checkCIDLen("dcid", dcid); err != nil {
 		return nil, err
 	}

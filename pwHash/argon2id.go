@@ -26,8 +26,15 @@ type Argon2id struct {
 
 // NewArgon2id constructs an argon2id hasher with the given parameters.
 // Use [DefaultArgon2idParams] unless you have a specific reason to deviate.
-func NewArgon2id(p Argon2idParams) *Argon2id {
-	return &Argon2id{params: p}
+//
+// Returns an error if any parameter is outside the safe range — this is the
+// fail-fast boundary so a misconfigured hasher never reaches [Argon2id.Hash],
+// where the underlying argon2 primitive would panic on zero cost parameters.
+func NewArgon2id(p Argon2idParams) (*Argon2id, error) {
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
+	return &Argon2id{params: p}, nil
 }
 
 // Algorithm returns "argon2id".
@@ -124,7 +131,35 @@ func decodeArgon2id(encoded string) (Argon2idParams, []byte, []byte, error) {
 	}
 	params.SaltLength = uint32(len(salt))
 	params.KeyLength = uint32(len(dk))
+
+	// Defense against attacker-controlled PHC: argon2.IDKey panics (not errors)
+	// on time<1 or threads<1, and a zero KeyLength dereferences nil internally.
+	// Reject these up-front so Verify never crashes on untrusted input.
+	if err := params.validateDecoded(len(salt), len(dk)); err != nil {
+		return Argon2idParams{}, nil, nil, err
+	}
+
 	return params, salt, dk, nil
+}
+
+// validateDecoded checks that parameters parsed from a PHC string are safe to
+// feed to argon2.IDKey. It is the security boundary between untrusted encoded
+// input and the underlying C-less argon2 implementation, which panics on
+// out-of-range cost parameters.
+func (p Argon2idParams) validateDecoded(saltLen, keyLen int) error {
+	switch {
+	case p.Memory == 0:
+		return fmt.Errorf("%w: memory must be positive", ErrMalformedHash)
+	case p.Iterations == 0:
+		return fmt.Errorf("%w: iterations must be positive", ErrMalformedHash)
+	case p.Parallelism == 0:
+		return fmt.Errorf("%w: parallelism must be positive", ErrMalformedHash)
+	case keyLen == 0:
+		return fmt.Errorf("%w: hash must be non-empty", ErrMalformedHash)
+	case saltLen < minSaltLength:
+		return fmt.Errorf("%w: salt too short", ErrMalformedHash)
+	}
+	return nil
 }
 
 // parseArgon2idParamBlock parses "m=<>,t=<>,p=<>" into Argon2idParams.
@@ -149,6 +184,11 @@ func parseArgon2idParamBlock(block string) (Argon2idParams, error) {
 			p.Iterations = uint32(n)
 			gotT = true
 		case "p":
+			// Reject p > 255 rather than silently truncating via uint8(n); a
+			// truncated parallelism would silently disagree with the issuer.
+			if n > 255 {
+				return Argon2idParams{}, fmt.Errorf("%w: parallelism out of range", ErrMalformedHash)
+			}
 			p.Parallelism = uint8(n)
 			gotP = true
 		default:
@@ -164,8 +204,8 @@ func parseArgon2idParamBlock(block string) (Argon2idParams, error) {
 // ErrMalformedHash is returned when an encoded hash cannot be parsed.
 var ErrMalformedHash = errors.New("pwhash: malformed encoded hash")
 
-// readRandom fills b with cryptographically secure random bytes.
-// Wrapped so tests can stub it if needed; production uses crypto/rand.
-func readRandom(b []byte) (int, error) {
-	return rand.Read(b)
-}
+// readRandom fills b with cryptographically secure random bytes. It is a
+// package-level variable (not a plain func) so tests can replace it with a
+// deterministic source via `readRandom = mockRead`. Production uses
+// crypto/rand.Read.
+var readRandom = rand.Read

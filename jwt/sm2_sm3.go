@@ -56,11 +56,11 @@ type signingMethodSM2SM3 struct {
 func (m *signingMethodSM2SM3) Alg() string { return string(AlgSM2SM3) }
 
 // Sign signs signingString with an SM2 private key and returns the raw
-// ASN.1-encoded signature bytes. key MUST be *sm2.PrivateKey. The JWT library
-// handles base64url encoding when assembling the final token.
+// ASN.1-encoded signature bytes. key MUST be a non-nil *sm2.PrivateKey. The
+// JWT library handles base64url encoding when assembling the final token.
 func (m *signingMethodSM2SM3) Sign(signingString string, key any) ([]byte, error) {
 	priv, ok := key.(*sm2.PrivateKey)
-	if !ok {
+	if !ok || priv == nil {
 		return nil, ErrInvalidSM2Key
 	}
 	sig, err := sm2.SignWithSM2(rand.Reader, priv, m.uid, []byte(signingString))
@@ -70,9 +70,9 @@ func (m *signingMethodSM2SM3) Sign(signingString string, key any) ([]byte, error
 	return sig, nil
 }
 
-// Verify validates an SM2-SM3 signature. key MUST be *ecdsa.PublicKey
-// (which is what sm2.PublicKey aliases). sig is the raw (base64-decoded)
-// signature bytes as delivered by the JWT library's parser.
+// Verify validates an SM2-SM3 signature. key MUST be a non-nil
+// *ecdsa.PublicKey (which is what sm2.PublicKey aliases). sig is the raw
+// (base64-decoded) signature bytes as delivered by the JWT library's parser.
 //
 // Any verification failure (bad signature, wrong key, tampered payload)
 // returns an error. The JWT library further enforces that the token's alg
@@ -80,7 +80,7 @@ func (m *signingMethodSM2SM3) Sign(signingString string, key any) ([]byte, error
 // jwt.ParseWithClaims, defending against alg-confusion attacks.
 func (m *signingMethodSM2SM3) Verify(signingString string, sig []byte, key any) error {
 	pub, ok := key.(*ecdsa.PublicKey)
-	if !ok {
+	if !ok || pub == nil {
 		return ErrInvalidSM2Key
 	}
 	if !sm2.VerifyWithSM2(pub, m.uid, []byte(signingString), sig) {

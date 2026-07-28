@@ -6,7 +6,8 @@
 // cryptosuite) can switch password-hashing backends by configuration while
 // keeping a single call site:
 //
-//	h := pwhash.NewArgon2id(pwhash.DefaultArgon2idParams())
+//	h, err := pwhash.NewArgon2id(pwhash.DefaultArgon2idParams())
+//	if err != nil { /* params out of safe range */ }
 //	encoded, _ := h.Hash("user-password")
 //	if h.Verify("user-password", encoded) { ... }
 //	if h.NeedsRehash(encoded) { /* lazily upgrade */ }

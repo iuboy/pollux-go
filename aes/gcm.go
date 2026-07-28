@@ -36,7 +36,7 @@ type Sealed struct {
 func GenerateNonce() ([]byte, error) {
 	nonce := make([]byte, GCMNonceSize)
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, errors.New("aes: failed to generate nonce")
+		return nil, fmt.Errorf("aes: failed to generate nonce: %w", err)
 	}
 	return nonce, nil
 }
@@ -103,7 +103,9 @@ func SealCombined(key, plaintext, aad []byte) ([]byte, error) {
 		return nil, err
 	}
 	// Seal appends ciphertext+tag to the first argument; passing nonce as the
-	// dst yields the desired nonce || ct layout in a single allocation.
+	// dst yields the desired nonce || ct layout. (Seal may reallocate if nonce's
+	// capacity is too small to hold the result, so this is not guaranteed to be
+	// a single allocation — but the layout is what matters for byte compatibility.)
 	return aead.Seal(nonce, nonce, plaintext, aad), nil
 }
 

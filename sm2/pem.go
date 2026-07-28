@@ -85,13 +85,21 @@ func ParsePublicKeyFromPEM(pemData []byte) (*ecdsa.PublicKey, error) {
 
 // WritePrivateKeyToPEM 将 SM2 私钥序列化为 PEM 格式 (PKCS#8)。
 func WritePrivateKeyToPEM(key *PrivateKey) ([]byte, error) {
-	der, err := gmsmSMX509.MarshalPKCS8PrivateKey(key)
+	der, err := MarshalPKCS8PrivateKey(key)
 	if err != nil {
 		return nil, err
 	}
 
 	block := &pem.Block{Type: "PRIVATE KEY", Bytes: der}
 	return pem.EncodeToMemory(block), nil
+}
+
+// MarshalPKCS8PrivateKey 将 SM2 私钥序列化为 PKCS#8 DER（含 SM2 OID）。
+// 经 gmsm/smx509 派发——直接调 stdlib x509.MarshalPKCS8PrivateKey 不会写入
+// SM2 OID，反序列化时会被识别为普通 ECDSA。与 WritePrivateKeyToPEM 共用底层，
+// 供需要原始 DER（非 PEM）的调用方使用。
+func MarshalPKCS8PrivateKey(key *PrivateKey) ([]byte, error) {
+	return gmsmSMX509.MarshalPKCS8PrivateKey(key)
 }
 
 // WritePublicKeyToPEM 将 SM2 公钥序列化为 PEM 格式。

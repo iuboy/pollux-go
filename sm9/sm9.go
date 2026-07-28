@@ -9,14 +9,14 @@ import (
 )
 
 var (
-	errUIDEmpty        = errors.New("sm9: uid must not be empty")
-	errNilSignMaster   = errors.New("sm9: nil signing master key")
-	errNilEncMaster    = errors.New("sm9: nil encryption master key")
-	errNilSignPriv     = errors.New("sm9: nil signing private key")
-	errNilEncPriv      = errors.New("sm9: nil encryption private key")
-	errNilEncMasterPub = errors.New("sm9: nil encryption master public key")
+	errUIDEmpty         = errors.New("sm9: uid must not be empty")
+	errNilSignMaster    = errors.New("sm9: nil signing master key")
+	errNilEncMaster     = errors.New("sm9: nil encryption master key")
+	errNilSignPriv      = errors.New("sm9: nil signing private key")
+	errNilEncPriv       = errors.New("sm9: nil encryption private key")
+	errNilEncMasterPub  = errors.New("sm9: nil encryption master public key")
 	errNilSignMasterPub = errors.New("sm9: nil signing master public key")
-	errSigEmpty        = errors.New("sm9: empty signature")
+	errSigEmpty         = errors.New("sm9: empty signature")
 
 	// ErrSignatureInvalid is returned by Verify when signature verification
 	// fails. It is distinct from input-validation errors (nil key, empty uid,

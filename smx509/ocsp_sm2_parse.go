@@ -1,13 +1,16 @@
 package smx509
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
 
 	"github.com/iuboy/pollux-go/sm2"
+	"github.com/iuboy/pollux-go/sm3"
 	"golang.org/x/crypto/ocsp"
 )
 
@@ -40,8 +43,10 @@ func buildHashOIDMap() map[string]crypto.Hash {
 // Used explicitly (rather than nil) to avoid implicit dependency on gmsm's
 // default-UID fallback which may change across gmsm releases.
 var defaultSM2UID = []byte("1234567812345678")
-// of ocsp.ParseResponseForCert but replaces stdlib x509.CheckSignature (which
-// rejects sm2.P256()) with sm2.VerifyASN1WithSM2.
+
+// parseSM2OCSPResponse is an SM2-aware variant of ocsp.ParseResponseForCert:
+// it replaces stdlib x509.CheckSignature (which rejects sm2.P256()) with
+// sm2.VerifyASN1WithSM2.
 //
 // issuer is the CA certificate whose key signed the OCSP response; if nil,
 // signature verification is skipped (parse-only). If the response embeds a
@@ -72,8 +77,18 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate) (*ocsp.Response
 		return nil, errors.New("smx509: trailing data in basic OCSP response")
 	}
 
-	if n := len(basicResp.TBSResponseData.Responses); n == 0 {
+	n := len(basicResp.TBSResponseData.Responses)
+	if n == 0 {
 		return nil, errors.New("smx509: OCSP response contains no statuses")
+	}
+	if n > 1 {
+		// Without a target certificate/serial to filter on (this entry point
+		// takes none), a multi-status response is ambiguous: the caller cannot
+		// tell which CertID the returned status applies to. x/crypto's
+		// ParseResponse rejects this case for the same reason. Accepting
+		// Responses[0] blindly would let an attacker satisfy a query about
+		// serial X by bundling a "Good" status for serial Y. Fail closed.
+		return nil, errors.New("smx509: OCSP response contains multiple statuses; use a cert-filtering parser")
 	}
 	singleResp := basicResp.TBSResponseData.Responses[0]
 
@@ -115,6 +130,44 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate) (*ocsp.Response
 		return nil
 	}
 
+	// matchesResponderID reports whether the ResponderID in the response
+	// actually identifies signerCert. RFC 6960 §4.2.2.2/§4.2.2.3 mandate this:
+	// ResponderID exists precisely so the relying party can locate the signing
+	// cert, and a response whose ResponderID does not match the signer MUST be
+	// rejected. Without this check an attacker who controls two authorized
+	// responders (or one compromised key plus a second valid cert) could swap
+	// the embedded cert while keeping the original ResponderID, defeating the
+	// identity binding. x/crypto/ocsp omits this check (it trusts the caller's
+	// issuer arg); pollux-go's embedded-cert path goes further and must close
+	// the loop.
+	//
+	// Tag 1 (Name): byte-for-byte DER comparison of the responder's
+	// RawSubject against RawResponderName.
+	// Tag 2 (KeyHash): Hash(BIT STRING subjectPublicKey) per RFC 6960 §4.4.1,
+	// using the CertID hash algorithm.
+	matchesResponderID := func(signerCert *x509.Certificate) bool {
+		switch basicResp.TBSResponseData.RawResponderID.Tag {
+		case 1: // Name
+			return bytes.Equal(signerCert.RawSubject, ret.RawResponderName)
+		case 2: // KeyHash
+			// Determine hash algorithm from the CertID (the same hash MUST be
+			// used for both, per RFC 6960 §4.4.1).
+			hf := certIDHashFunc(singleResp.CertID.HashAlgorithm.Algorithm)
+			if hf == nil {
+				return false
+			}
+			var pubKeyInfo struct {
+				Algorithm pkix.AlgorithmIdentifier
+				PublicKey asn1.BitString
+			}
+			if _, err := asn1.Unmarshal(signerCert.RawSubjectPublicKeyInfo, &pubKeyInfo); err != nil {
+				return false
+			}
+			return bytes.Equal(hf(pubKeyInfo.PublicKey.RightAlign()), ret.ResponderKeyHash)
+		}
+		return false
+	}
+
 	if len(basicResp.Certificates) > 0 {
 		// Embedded responder cert: parse it (SM2-aware) and verify the
 		// response signature against it.
@@ -122,9 +175,33 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate) (*ocsp.Response
 		if perr != nil {
 			return nil, perr
 		}
+		// RFC 6960 §4.2.1 vs §4.2.2.2: a CA may sign its own OCSP responses
+		// (issuer-direct) using its own certificate, in which case no special
+		// EKU applies. Only a DELEGATED responder — a distinct cert whose key
+		// the CA authorized to respond on its behalf — MUST carry the
+		// id-kp-OCSPSigning EKU. Without that distinction, any leaf the issuer
+		// signed (e.g. a TLS cert whose key an attacker holds) could forge
+		// valid OCSP responses. We detect issuer-direct by comparing public
+		// keys (delegation implies a different key); when issuer is nil we
+		// cannot confirm identity, so fail closed by requiring the EKU.
+		isIssuerDirect := false
+		if issuer != nil {
+			ePub, ok1 := embedded.PublicKey.(*ecdsa.PublicKey)
+			iPub, ok2 := issuer.PublicKey.(*ecdsa.PublicKey)
+			if ok1 && ok2 && ePub.Equal(iPub) {
+				isIssuerDirect = true
+			}
+		}
+		if !isIssuerDirect && !hasOCSPSigningEKU(embedded) {
+			return nil, errors.New("smx509: embedded responder cert lacks id-kp-OCSPSigning EKU")
+		}
 		ret.Certificate = embedded
 		if err := verifyAgainst(embedded); err != nil {
 			return nil, errors.New("smx509: bad signature on embedded certificate: " + err.Error())
+		}
+		// RFC 6960 §4.2.2.2: ResponderID MUST identify the actual signer.
+		if !matchesResponderID(embedded) {
+			return nil, errors.New("smx509: OCSP ResponderID does not match embedded responder certificate")
 		}
 		// Optionally verify the embedded cert was signed by issuer.
 		if issuer != nil {
@@ -139,6 +216,10 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate) (*ocsp.Response
 	} else if issuer != nil {
 		if err := verifyAgainst(issuer); err != nil {
 			return nil, errors.New("smx509: bad SM2 OCSP signature: " + err.Error())
+		}
+		// Same §4.2.2.2 binding for the issuer-direct path.
+		if !matchesResponderID(issuer) {
+			return nil, errors.New("smx509: OCSP ResponderID does not match issuer certificate")
 		}
 	}
 
@@ -177,6 +258,56 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate) (*ocsp.Response
 	}
 
 	return ret, nil
+}
+
+// oidExtKeyUsageOCSPSigning is id-kp-OCSPSigning (RFC 6960 §4.2.2.2).
+var oidExtKeyUsageOCSPSigning = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 9}
+
+// hasOCSPSigningEKU reports whether cert is authorized to sign OCSP responses
+// as a delegated responder. RFC 6960 §4.2.2.2 mandates the id-kp-OCSPSigning
+// EKU on delegated responder certs. Both the recognized ExtKeyUsage slice and
+// the raw UnknownExtKeyUsage OIDs are checked, so a cert whose EKU the parser
+// left unmapped is still handled correctly.
+func hasOCSPSigningEKU(cert *x509.Certificate) bool {
+	if cert == nil {
+		return false
+	}
+	for _, ku := range cert.ExtKeyUsage {
+		if ku == x509.ExtKeyUsageOCSPSigning {
+			return true
+		}
+	}
+	for _, oid := range cert.UnknownExtKeyUsage {
+		if oid.Equal(oidExtKeyUsageOCSPSigning) {
+			return true
+		}
+	}
+	return false
+}
+
+// certIDHashFunc returns a function that hashes data using the algorithm named
+// by oid, or nil if the OID is unrecognized or unavailable. SM3 (which has no
+// crypto.Hash constant) is handled via sm3.New; the standard hashes via
+// crypto.Hash.New. Used by ResponderID key-hash matching where the algorithm
+// is taken from the CertID per RFC 6960 §4.4.1.
+func certIDHashFunc(oid asn1.ObjectIdentifier) func([]byte) []byte {
+	if oid.Equal(sm3HashOID) {
+		return func(b []byte) []byte {
+			h := sm3.New()
+			h.Write(b)
+			return h.Sum(nil)
+		}
+	}
+	for h, ha := range sm2HashOIDs {
+		if oid.Equal(ha) && h.Available() {
+			return func(b []byte) []byte {
+				ht := h.New()
+				ht.Write(b)
+				return ht.Sum(nil)
+			}
+		}
+	}
+	return nil
 }
 
 // isSM2OCSPResponse peeks at the response's signature algorithm OID to decide

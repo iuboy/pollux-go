@@ -363,29 +363,29 @@ func (c *tlcpConn) serverResumeHandshake(suite *tlcpCipherSuite, clientHello *tl
 	copy(masterSecret, sess.masterSecret)
 
 	if err := c.establishKeys(suite, masterSecret, clientHello.random, serverHello.random); err != nil {
-			zeroBytes(masterSecret)
-			return err
-		}
+		zeroBytes(masterSecret)
+		return err
+	}
 
-		// Resume: server sends Finished first, then reads the client's.
-		if err := c.writeRecord(tlcpRecordChangeCipherSpec, []byte{1}); err != nil {
-			zeroBytes(masterSecret)
-			return err
-		}
-		finished := &tlcpFinishedMsg{verifyData: transcript.serverSum(masterSecret)}
-		if err := c.writeHandshakeRecord(finished, transcript); err != nil {
-			zeroBytes(masterSecret)
-			return err
-		}
-		if err := c.flush(); err != nil {
-			zeroBytes(masterSecret)
-			return err
-		}
+	// Resume: server sends Finished first, then reads the client's.
+	if err := c.writeRecord(tlcpRecordChangeCipherSpec, []byte{1}); err != nil {
+		zeroBytes(masterSecret)
+		return err
+	}
+	finished := &tlcpFinishedMsg{verifyData: transcript.serverSum(masterSecret)}
+	if err := c.writeHandshakeRecord(finished, transcript); err != nil {
+		zeroBytes(masterSecret)
+		return err
+	}
+	if err := c.flush(); err != nil {
+		zeroBytes(masterSecret)
+		return err
+	}
 
-		if err := c.readClientCCSAndFinished(transcript, masterSecret); err != nil {
-			zeroBytes(masterSecret)
-			return err
-		}
+	if err := c.readClientCCSAndFinished(transcript, masterSecret); err != nil {
+		zeroBytes(masterSecret)
+		return err
+	}
 
 	zeroBytes(masterSecret)
 	return nil

@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
 	"math/big"
 	"testing"
@@ -215,8 +216,8 @@ func TestParseOCSPResponseWithIssuer_SM2(t *testing.T) {
 		t.Errorf("serial = %v, want 42", parsed.SerialNumber)
 	}
 	if parsed.IssuerHash != crypto.SHA256 {
-			t.Errorf("IssuerHash = %v, want SHA256", parsed.IssuerHash)
-		}
+		t.Errorf("IssuerHash = %v, want SHA256", parsed.IssuerHash)
+	}
 }
 
 // TestParseOCSPResponseWithIssuer_SM2_Revoked covers the Revoked branch.
@@ -296,5 +297,177 @@ func TestParseOCSPResponseWithIssuer_Tampered(t *testing.T) {
 	_, err := ParseOCSPResponseWithIssuer(respBytes, caCert)
 	if err == nil {
 		t.Fatal("expected error for tampered SM2 OCSP response")
+	}
+}
+
+// TestParseOCSPResponseWithIssuer_DelegatedResponder_EKU covers RFC 6960
+// §4.2.2.2: an embedded delegated responder cert (a leaf distinct from the
+// issuer, signed by the issuer) MUST carry id-kp-OCSPSigning. A cert lacking
+// the EKU must be rejected; one carrying it must be accepted.
+func TestParseOCSPResponseWithIssuer_DelegatedResponder_EKU(t *testing.T) {
+	// Issuer / CA.
+	caKey, err := sm2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		PublicKey:             caKey.Public(),
+	}
+	caDER, err := CreateCertificate(caTmpl, caTmpl, caKey.Public(), caKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate CA: %v", err)
+	}
+	caCert, err := ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("ParseCertificate CA: %v", err)
+	}
+
+	// Delegated responder key + two certs: one with EKU, one without.
+	respKey, err := sm2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		PublicKey:    respKey.Public(),
+	}
+	noEKUDER, err := CreateCertificate(base, caTmpl, respKey.Public(), caKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate delegated w/o EKU: %v", err)
+	}
+	noEKUCert, err := ParseCertificate(noEKUDER)
+	if err != nil {
+		t.Fatalf("ParseCertificate delegated w/o EKU: %v", err)
+	}
+
+	withEKUTmpl := *base
+	withEKUTmpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning}
+	withEKUDER, err := CreateCertificate(&withEKUTmpl, caTmpl, respKey.Public(), caKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate delegated w/ EKU: %v", err)
+	}
+	withEKUCert, err := ParseCertificate(withEKUDER)
+	if err != nil {
+		t.Fatalf("ParseCertificate delegated w/ EKU: %v", err)
+	}
+
+	tmplNoEKU := &ocsp.Response{
+		Status:       ocsp.Good,
+		SerialNumber: big.NewInt(42),
+		ThisUpdate:   time.Now().UTC(),
+		NextUpdate:   time.Now().Add(time.Hour).UTC(),
+		Certificate:  noEKUCert, // embedded delegated responder cert (no EKU)
+	}
+	tmplWithEKU := &ocsp.Response{
+		Status:       ocsp.Good,
+		SerialNumber: big.NewInt(42),
+		ThisUpdate:   time.Now().UTC(),
+		NextUpdate:   time.Now().Add(time.Hour).UTC(),
+		Certificate:  withEKUCert, // embedded delegated responder cert (w/ EKU)
+	}
+
+	// Without EKU: rejected even though the responder key is valid for the
+	// signature and the cert was issued by the CA.
+	respNoEKU, err := CreateOCSPResponse(noEKUCert, caCert, tmplNoEKU, respKey)
+	if err != nil {
+		t.Fatalf("CreateOCSPResponse delegated w/o EKU: %v", err)
+	}
+	if _, err := ParseOCSPResponseWithIssuer(respNoEKU, caCert); err == nil {
+		t.Fatal("expected rejection of delegated responder cert lacking OCSPSigning EKU")
+	}
+
+	// With EKU: accepted.
+	respWithEKU, err := CreateOCSPResponse(withEKUCert, caCert, tmplWithEKU, respKey)
+	if err != nil {
+		t.Fatalf("CreateOCSPResponse delegated w/ EKU: %v", err)
+	}
+	parsed, err := ParseOCSPResponseWithIssuer(respWithEKU, caCert)
+	if err != nil {
+		t.Fatalf("ParseOCSPResponseWithIssuer delegated w/ EKU: %v", err)
+	}
+	if parsed.Status != ocsp.Good {
+		t.Errorf("status = %v, want Good", parsed.Status)
+	}
+}
+
+// TestParseOCSPResponseWithIssuer_ResponderIDMismatch verifies RFC 6960
+// §4.2.2.2 enforcement: a response whose ResponderID does not match the
+// embedded signing certificate MUST be rejected.
+//
+// Attack modeled: an attacker (or compromised responder) holds the SAME SM2
+// private key under two different subjects — certA (CN=responder-A) and certB
+// (CN=responder-B), both issued by the CA with OCSPSigning EKU. They sign an
+// OCSP response with that shared key, set ResponderID = A's subject, but embed
+// certB. The signature verifies against certB (same key), and certB carries
+// the EKU — without ResponderID matching the parser would accept the response
+// as if it came from B, even though the response itself claims A authored it.
+// This breaks the identity binding RFC 6960 §4.2.2.2 mandates.
+func TestParseOCSPResponseWithIssuer_ResponderIDMismatch(t *testing.T) {
+	caKey, _ := sm2.GenerateKey(rand.Reader)
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		PublicKey:             caKey.Public(),
+	}
+	caDER, _ := CreateCertificate(caTmpl, caTmpl, caKey.Public(), caKey)
+	caCert, _ := ParseCertificate(caDER)
+
+	// One shared key, two distinct-subject certs (key reuse = the attack
+	// surface ResponderID matching defends against).
+	sharedKey, err := sm2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mkCert := func(serial *big.Int, cn string) *x509.Certificate {
+		tmpl := &x509.Certificate{
+			SerialNumber: serial,
+			NotBefore:    time.Now().Add(-time.Hour),
+			NotAfter:     time.Now().Add(24 * time.Hour),
+			PublicKey:    sharedKey.Public(),
+			Subject:      pkix.Name{CommonName: cn},
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageOCSPSigning},
+		}
+		der, err := CreateCertificate(tmpl, caTmpl, sharedKey.Public(), caKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := ParseCertificate(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	certA := mkCert(big.NewInt(10), "responder-A")
+	certB := mkCert(big.NewInt(11), "responder-B")
+
+	// Sign with the shared key, set CreateOCSPResponse responder=certA so the
+	// ResponderID becomes A's subject, but embed certB via template.Certificate.
+	// The signature is computed over the TBS (whose ResponderID = A), using the
+	// shared key — so it verifies against BOTH certA and certB. The parser only
+	// sees certB: signature OK, EKU OK, but ResponderID (A) ≠ certB subject.
+	tmpl := &ocsp.Response{
+		Status:       ocsp.Good,
+		SerialNumber: big.NewInt(42),
+		ThisUpdate:   time.Now().UTC(),
+		NextUpdate:   time.Now().Add(time.Hour).UTC(),
+		Certificate:  certB,
+	}
+	resp, err := CreateOCSPResponse(certA, caCert, tmpl, sharedKey)
+	if err != nil {
+		t.Fatalf("CreateOCSPResponse: %v", err)
+	}
+	_, err = ParseOCSPResponseWithIssuer(resp, caCert)
+	if err == nil {
+		t.Fatal("expected rejection of response whose ResponderID does not match embedded cert")
 	}
 }

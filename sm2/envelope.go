@@ -153,15 +153,21 @@ func createTempCertForEnvelope() (*smx509.Certificate, []byte, error) {
 	}
 	// The temporary private key is only needed to self-sign the throwaway
 	// recipient certificate; it is never used to decrypt anything. Zero its
-	// scalar bytes immediately after signing so it does not linger in memory
-	// per the minimal-exposure principle in docs/security/memory-management.md.
-	// FillBytes into a scratch slice then memsecure-zero that slice —
-	// big.Int.SetInt64(0) alone does not overwrite the backing array.
+	// scalar value immediately after signing per the minimal-exposure principle
+	// in docs/security/memory-management.md.
+	//
+	// NOTE: math/big.Int does not expose its internal nat words, so a fully
+	// secure overwrite of the backing array is impossible from outside the
+	// type. The previous FillBytes-into-scratch + zero-scratch pattern only
+	// cleared a COPY of the scalar (FillBytes is a read), leaving the real key
+	// intact — a silent no-op. SetInt64(0) at least zeroes the logical scalar
+	// value so the key is no longer usable or directly readable. This matches
+	// jwt.sm2SignerVerifier.Zeroize and is the best-effort convention Go's own
+	// crypto/ecdsa documents for big.Int-backed keys.
 	defer func() {
-		scratch := make([]byte, 32)
-		tmpPriv.D.FillBytes(scratch)
-		memsecure.ZeroBytes(scratch)
-		tmpPriv.D.SetInt64(0)
+		if tmpPriv != nil && tmpPriv.D != nil {
+			tmpPriv.D.SetInt64(0)
+		}
 	}()
 
 	sn, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))

@@ -1,5 +1,5 @@
 // Package sha provides convenience wrappers around the standard library
-// crypto/sha256 and crypto/sha512, symmetric in API surface to
+// crypto/sha256, symmetric in API surface to
 // [github.com/iuboy/pollux-go/sm3].
 //
 // pollux-go positions itself as an integration toolkit that exposes GM

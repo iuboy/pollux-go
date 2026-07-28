@@ -246,6 +246,14 @@ func readVarintBytes(b []byte, pos int, name string) ([]byte, int, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("quicgm: read %s length: %w", name, err)
 	}
+	// QUIC varints encode up to 2^62-1, which overflows int on 32-bit builds.
+	// An unguarded int(v) would truncate negative, letting the end>len(b)
+	// bounds check pass and make() panic on a negative length. Cap at the
+	// same 2^31-1 ceiling the rest of this package uses (crypto_frame.go,
+	// initial.go readCryptoFrame, longhandshake.go).
+	if v > 1<<31-1 {
+		return nil, 0, fmt.Errorf("quicgm: %s length %d too large", name, v)
+	}
 	start := pos + n
 	end := start + int(v)
 	if end > len(b) {

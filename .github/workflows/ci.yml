@@ -38,6 +38,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: gofmt
+        # Cheapest check first: fail fast on formatting drift. The vendored
+        # quic-go/ fork is excluded (upstream code, PATCHES.md), matching the
+        # gosec/staticcheck exclusions below. `gofmt -l` lists files needing
+        # formatting; the grep leaves a clean (exit 1 → no output → empty diff)
+        # state when everything is already formatted.
+        run: |
+          if diff="$(gofmt -l . | grep -v '^quic-go/')"; then
+            echo "gofmt drift in:"; echo "$diff"; exit 1
+          fi
       - name: gosec
         # Excludes mirror Makefile GOSEC_EXCLUDE — rules reviewed as safe for a
         # GM stack (see Makefile header for the per-rule rationale). The

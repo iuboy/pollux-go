@@ -24,8 +24,11 @@ type Sealed struct {
 // for SM4-GCM.
 //
 // Each encryption under the same key MUST use a unique nonce. Nonce reuse with
-// GCM is catastrophic: it allows key recovery and message forgery. Prefer
-// SealRandomNonce, which binds nonce generation to the encrypt path.
+// GCM is catastrophic: it exposes the GHASH authentication subkey H (enabling
+// message forgery) and produces a two-time pad on the CTR keystream (leaking
+// plaintext XOR). It does NOT recover the SM4 encryption key itself — see
+// doc.go for the full nonce/IV reuse rationale. Prefer SealRandomNonce, which
+// binds nonce generation to the encrypt path.
 func GenerateNonce() ([]byte, error) {
 	nonce := make([]byte, GCMNonceSize)
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {

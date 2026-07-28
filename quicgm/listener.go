@@ -82,7 +82,6 @@ type Conn struct {
 	udpConn *net.UDPConn
 
 	closeOnce sync.Once
-	closed    bool
 
 	ticketMu        sync.Mutex
 	sessionIdentity []byte
@@ -195,7 +194,6 @@ func (c *Conn) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
 		err = c.inner.CloseWithError(0, "done")
-		c.closed = true
 		if c.udpConn != nil {
 			// Best-effort: report the QUIC close error but always close the socket.
 			if uerr := c.udpConn.Close(); uerr != nil && err == nil {

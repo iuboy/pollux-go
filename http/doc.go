@@ -28,8 +28,8 @@ import (
 	"net/http"
 	"time"
 
-	polluxTLS "github.com/iuboy/pollux-go/tlcp"
 	newpkg "github.com/iuboy/pollux-go/https"
+	polluxTLS "github.com/iuboy/pollux-go/tlcp"
 )
 
 // Type aliases (zero-cost, identity at the type system level).

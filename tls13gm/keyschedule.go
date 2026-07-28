@@ -91,6 +91,9 @@ func DeriveTrafficKeys(trafficSecret []byte, keyLen, ivLen int) (TrafficKeys, er
 	}
 	iv, err := HKDFExpandLabel(trafficSecret, LabelIV, nil, ivLen)
 	if err != nil {
+		// Zero the already-derived key on the IV error path so it does not
+		// linger on the heap. Mirrors DeriveQUICPacketKeys (quic_keys.go).
+		memsecure.ZeroBytes(key)
 		return TrafficKeys{}, fmt.Errorf("tls13gm: derive traffic IV: %w", err)
 	}
 	return TrafficKeys{Key: key, IV: iv}, nil

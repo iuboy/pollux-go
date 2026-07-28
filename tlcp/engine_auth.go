@@ -104,7 +104,7 @@ func tlcpSignHandshake(rand io.Reader, sigType tlcpSigType, priv crypto.PrivateK
 		if !isSM2 {
 			return nil, fmt.Errorf("tlcp: ECC_SM3 signature requires an SM2 private key, got %T", priv)
 		}
-		_ = sm2Key // sm2Key is only used to gate the type assertion; opts carries the SM2 parameters
+		_ = sm2Key                                     // sm2Key is only used to gate the type assertion; opts carries the SM2 parameters
 		opts = polluxSM2.NewSM2SignerOption(true, nil) // GM mode, default UID
 	case tlcpSigRSA256:
 		opts = crypto.SHA256

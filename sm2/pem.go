@@ -17,7 +17,7 @@ var (
 	// parses successfully but the encoded key is not on the SM2 P256 curve.
 	// It is the sentinel smx509 uses to decide whether to fall through to the
 	// standard-library private-key parsers.
-	ErrNotSM2Key = errors.New("sm2: key is not SM2")
+	ErrNotSM2Key  = errors.New("sm2: key is not SM2")
 	errPEMDecode  = errors.New("sm2: failed to decode PEM block")
 	errNoKeyInPEM = errors.New("sm2: no key found in PEM data")
 )

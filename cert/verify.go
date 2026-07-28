@@ -130,16 +130,16 @@ func VerifyDualCertificate(signCert, encCert *x509.Certificate, signRoots, encRo
 			return errors.New("cert: sign certificate must have KeyUsageDigitalSignature")
 		}
 
-	encKeyUsage := encCert.KeyUsage
-	// TLCP encryption certs are used both for SM2 public-key encryption of the
-	// PMS (KeyEncipherment / DataEncipherment) and, in ECDHE suites, for SM2
-	// MQV key agreement (KeyAgreement). Accept any of the three usages so a
-	// legitimate SM2 enc cert configured for ECDHE is not rejected.
-	if encKeyUsage&x509.KeyUsageKeyEncipherment == 0 &&
-		encKeyUsage&x509.KeyUsageDataEncipherment == 0 &&
-		encKeyUsage&x509.KeyUsageKeyAgreement == 0 {
-		return errors.New("cert: enc certificate must have KeyUsageKeyEncipherment, KeyUsageDataEncipherment, or KeyUsageKeyAgreement")
-	}
+		encKeyUsage := encCert.KeyUsage
+		// TLCP encryption certs are used both for SM2 public-key encryption of the
+		// PMS (KeyEncipherment / DataEncipherment) and, in ECDHE suites, for SM2
+		// MQV key agreement (KeyAgreement). Accept any of the three usages so a
+		// legitimate SM2 enc cert configured for ECDHE is not rejected.
+		if encKeyUsage&x509.KeyUsageKeyEncipherment == 0 &&
+			encKeyUsage&x509.KeyUsageDataEncipherment == 0 &&
+			encKeyUsage&x509.KeyUsageKeyAgreement == 0 {
+			return errors.New("cert: enc certificate must have KeyUsageKeyEncipherment, KeyUsageDataEncipherment, or KeyUsageKeyAgreement")
+		}
 
 		if err := VerifyCertificate(signCert, VerifyOptions{Roots: signRoots}); err != nil {
 			return fmt.Errorf("cert: sign certificate verification failed: %w", err)

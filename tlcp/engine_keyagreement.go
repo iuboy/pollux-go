@@ -145,6 +145,7 @@ func tlcpECCProcessClientKeyExchange(decrypter crypto.Decrypter, ckePayload []by
 //   - Long-form lengths MUST NOT use more length bytes than necessary (no
 //     leading zero padding), and MUST NOT encode a value < 128.
 //   - Indefinite-length form (0x80) is forbidden in DER.
+//
 // Rejecting non-canonical encodings prevents ambiguous wire bytes that could
 // be used to bypass length-based checks downstream.
 func decodeSM2ASN1SequenceLength(ciphertext []byte) (int, error) {

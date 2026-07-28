@@ -6,7 +6,7 @@ import (
 	"golang.org/x/crypto/cryptobyte"
 )
 
-// This file implements marshal/unmarshal for the eight TLCP handshake messages
+// This file implements marshal/unmarshal for the nine TLCP handshake messages
 // (GB/T 38636-2020 §6.4.5): ClientHello, ServerHello, Certificate,
 // ServerKeyExchange, CertificateRequest, ServerHelloDone, CertificateVerify,
 // ClientKeyExchange, Finished.

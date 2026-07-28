@@ -478,8 +478,15 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 		return errors.New("tls13gm: ServerHello did not negotiate TLS 1.3")
 	}
 	if findExtension(sh.Extensions, ExtensionTypePreSharedKey) != nil {
-		// Server selected our PSK (psk_dhe_ke): derive the early secret from
-		// the resumption PSK and skip Certificate/CertificateVerify.
+		// Server selected PSK (psk_dhe_ke). This is only legitimate if the
+		// client actually offered a PSK in its ClientHello (resumptionPSK !=
+		// nil). A server that selects a PSK the client never offered is a
+		// protocol violation — and accepting it would skip
+		// Certificate/CertificateVerify below, handing an active attacker a
+		// full authentication bypass. Fail closed.
+		if c.resumptionPSK == nil {
+			return errors.New("tls13gm: ServerHello selected pre_shared_key but client offered none")
+		}
 		c.pskMode = true
 	}
 	ks := findExtension(sh.Extensions, ExtensionTypeKeyShare)
@@ -1394,7 +1401,9 @@ func containsUint16List(data []byte, lenSize int, want uint16) bool {
 // Zero securely zeroes every secret-bearing []byte field held by the
 // ClientHandshaker: the TLS 1.3 key-derivation intermediates (handshake /
 // master / resumption-master secrets, handshake-traffic secrets), the
-// HandshakeSecrets sub-structure (via ZeroAll), and the resumption PSK /
+// HandshakeSecrets sub-structure (via Zero, which preserves the traffic
+// secrets owned by the transport layer — see the inline note at the call
+// site), and the resumption PSK /
 // identity copied from ClientConfig.
 //
 // It is intended to be called when the handshaker is no longer needed (e.g.

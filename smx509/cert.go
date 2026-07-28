@@ -68,18 +68,21 @@ func CreateCertificateRequest(template *x509.CertificateRequest, priv any) ([]by
 	return x509.CreateCertificateRequest(rand.Reader, template, priv)
 }
 
-// ParseCertificate parses a DER-encoded certificate, attempting
-// standard parsing first, then SM2-aware parsing as fallback.
+// ParseCertificate parses a DER-encoded certificate.
+//
+// gmsm/smx509 is tried first because it is a strict superset of crypto/x509
+// (it handles RSA/ECDSA/Ed25519/SM2/SM9), so routing SM2 deterministically to
+// the gmsm backend avoids relying on crypto/x509's version-dependent behavior
+// for SM2 OIDs and skips a wasted parse attempt. crypto/x509 remains as a
+// fallback for ASN.1 edge cases gmsm may not yet support.
 func ParseCertificate(der []byte) (*x509.Certificate, error) {
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		smCert, smErr := smx509.ParseCertificate(der)
-		if smErr != nil {
-			return nil, fmt.Errorf("x509: %w; smx509: %w", err, smErr)
-		}
+	if smCert, err := smx509.ParseCertificate(der); err == nil {
 		return smCert.ToX509(), nil
 	}
-	return cert, nil
+	if cert, err := x509.ParseCertificate(der); err == nil {
+		return cert, nil
+	}
+	return nil, errors.New("smx509: failed to parse certificate (gmsm and stdlib both rejected input)")
 }
 
 // ParseCertificatePEM parses a PEM-encoded certificate.
@@ -91,18 +94,16 @@ func ParseCertificatePEM(pemData []byte) (*x509.Certificate, error) {
 	return ParseCertificate(block.Bytes)
 }
 
-// ParseCertificateRequest parses a DER-encoded CSR, attempting
-// standard parsing first, then SM2-aware parsing as fallback.
+// ParseCertificateRequest parses a DER-encoded CSR.
+// gmsm/smx509 is tried first (crypto/x509 superset), see ParseCertificate.
 func ParseCertificateRequest(der []byte) (*x509.CertificateRequest, error) {
-	csr, err := x509.ParseCertificateRequest(der)
-	if err != nil {
-		smCSR, smErr := smx509.ParseCertificateRequest(der)
-		if smErr != nil {
-			return nil, fmt.Errorf("x509: %w; smx509: %w", err, smErr)
-		}
+	if smCSR, err := smx509.ParseCertificateRequest(der); err == nil {
 		return smCSR.ToX509(), nil
 	}
-	return csr, nil
+	if csr, err := x509.ParseCertificateRequest(der); err == nil {
+		return csr, nil
+	}
+	return nil, errors.New("smx509: failed to parse certificate request (gmsm and stdlib both rejected input)")
 }
 
 // SignatureAlgorithmForPrivateKey returns the appropriate signature algorithm

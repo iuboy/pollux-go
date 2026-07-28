@@ -12,11 +12,18 @@ import (
 	"github.com/iuboy/pollux-go/tls13gm"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/qerr"
 )
 
 // gmFirstKeyUpdateInterval mirrors quic-go's FirstKeyUpdateInterval: the packet
 // count after which the first key update is initiated (exercises the mechanism).
 const gmFirstKeyUpdateInterval uint64 = 100
+
+// gmAEADInvalidPacketLimit is the AEAD integrity limit for SM4-GCM
+// (128-bit authentication tag): the maximum number of packets that may fail
+// authentication before the connection is closed, denying a limitless
+// decryption oracle (RFC 9001 §6.6).
+const gmAEADInvalidPacketLimit uint64 = 1 << 36
 
 // gmUpdatableAEAD is the 1-RTT AEAD with key update. It implements
 // ShortHeaderSealer and ShortHeaderOpener. One instance serves as both the
@@ -24,18 +31,24 @@ const gmFirstKeyUpdateInterval uint64 = 100
 type gmUpdatableAEAD struct {
 	sendKM, rcvKM *gmKeyMaterial // current phase send / receive
 	prevRcvKM     *gmKeyMaterial // previous phase receive (for packet-number echo)
+	// TODO(P1): prevRcvKM is currently retained for the connection lifetime.
+	// Upstream drops it after PTO (startKeyDropTimer, RFC 9001 §6.5) to bound
+	// how long the previous-phase key lives in memory; porting that weakens
+	// forward-secrecy loss and bounds late-packet-echo replay surface.
 
 	nextSendSecret []byte // seeds the next send keys via QUICKeyUpdate
 	nextRcvSecret  []byte
 
 	keyPhase protocol.KeyPhaseBit
 
-	largestAcked protocol.PacketNumber
-	firstSent    protocol.PacketNumber
-	firstRcvd    protocol.PacketNumber
-	highestRcvdPN protocol.PacketNumber
-	numSent      uint64
-	numRcvd      uint64
+	largestAcked       protocol.PacketNumber
+	firstSent          protocol.PacketNumber
+	firstRcvd          protocol.PacketNumber
+	highestRcvdPN      protocol.PacketNumber
+	numSent            uint64
+	numRcvd            uint64
+	invalidPacketCount uint64
+	invalidPacketLimit uint64
 
 	handshakeConfirmed bool
 }
@@ -66,15 +79,16 @@ func newGMUpdatableAEAD(sendKeys, rcvKeys *tls13gm.QUICPacketKeys, sendSecret, r
 		return nil, err
 	}
 	return &gmUpdatableAEAD{
-		sendKM:         sendKM,
-		rcvKM:          rcvKM,
-		nextSendSecret: nextSend,
-		nextRcvSecret:  nextRcv,
-		keyPhase:       protocol.KeyPhaseZero,
-		firstSent:      protocol.InvalidPacketNumber,
-		firstRcvd:      protocol.InvalidPacketNumber,
-		largestAcked:   protocol.InvalidPacketNumber,
-		highestRcvdPN:  protocol.InvalidPacketNumber,
+		sendKM:             sendKM,
+		rcvKM:              rcvKM,
+		nextSendSecret:     nextSend,
+		nextRcvSecret:      nextRcv,
+		keyPhase:           protocol.KeyPhaseZero,
+		firstSent:          protocol.InvalidPacketNumber,
+		firstRcvd:          protocol.InvalidPacketNumber,
+		largestAcked:       protocol.InvalidPacketNumber,
+		highestRcvdPN:      protocol.InvalidPacketNumber,
+		invalidPacketLimit: gmAEADInvalidPacketLimit,
 	}, nil
 }
 
@@ -164,6 +178,10 @@ func (u *gmUpdatableAEAD) Overhead() int { return u.sendKM.aead.Overhead() }
 func (u *gmUpdatableAEAD) KeyPhase() protocol.KeyPhaseBit {
 	if u.shouldInitiateKeyUpdate() {
 		if err := u.rollKeys(); err != nil {
+			// rollKeys fails only on an invariant violation (OOM / HKDF bug).
+			// The ShortHeaderSealer.KeyPhase interface has no error return
+			// (mirroring upstream updatable_aead.go), so we fail closed here
+			// rather than continue with stale keys past the AEAD nonce budget.
 			panic(fmt.Sprintf("handshake: GM key update failed: %v", err))
 		}
 	}
@@ -182,6 +200,13 @@ func (u *gmUpdatableAEAD) DecodePacketNumber(wirePN protocol.PacketNumber, wireP
 
 func (u *gmUpdatableAEAD) Open(dst, src []byte, _ monotime.Time, pn protocol.PacketNumber, kp protocol.KeyPhaseBit, ad []byte) ([]byte, error) {
 	if kp != u.keyPhase {
+		// RFC 9001 §6.1: the peer must not initiate a key update until it has
+		// received an ACK for a packet it sent under the current key phase. If
+		// we have not yet sent anything in this phase, the peer updated too
+		// quickly — close the connection.
+		if u.keyPhase != protocol.KeyPhaseZero && u.firstSent == protocol.InvalidPacketNumber {
+			return nil, &qerr.TransportError{ErrorCode: qerr.KeyUpdateError, ErrorMessage: "keys updated too quickly"}
+		}
 		// Peer initiated a key update: roll to the next phase and try there.
 		if err := u.rollKeys(); err != nil {
 			return nil, err
@@ -198,6 +223,12 @@ func (u *gmUpdatableAEAD) Open(dst, src []byte, _ monotime.Time, pn protocol.Pac
 		}
 	}
 	if err != nil {
+		// RFC 9001 §6.6: close the connection once too many packets fail AEAD
+		// authentication, denying an attacker a limitless decryption oracle.
+		u.invalidPacketCount++
+		if u.invalidPacketCount >= u.invalidPacketLimit {
+			return nil, &qerr.TransportError{ErrorCode: qerr.AEADLimitReached}
+		}
 		return nil, ErrDecryptionFailed
 	}
 	u.numRcvd++

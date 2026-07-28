@@ -10,12 +10,30 @@ func TestGetCipherSuitesNational(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCipherSuites(national): %v", err)
 	}
-	if len(suites) != 4 {
-		t.Fatalf("expected 4 national suites, got %d", len(suites))
+	// The default national selection is GCM + ECDHE (forward secrecy) only;
+	// CBC and static ECC suites are excluded (see LegacyNationalCipherSuites).
+	if len(suites) != 1 {
+		t.Fatalf("expected 1 secure national suite (GCM+ECDHE), got %d", len(suites))
+	}
+	if suites[0] != ECDHE_SM2_WITH_SM4_GCM_SM3 {
+		t.Errorf("expected ECDHE_SM2_WITH_SM4_GCM_SM3, got 0x%04X", suites[0])
 	}
 	for _, s := range suites {
 		if !IsNationalCipherSuite(s) {
 			t.Errorf("suite 0x%04X not recognized as national", s)
+		}
+	}
+}
+
+func TestLegacyNationalCipherSuites(t *testing.T) {
+	suites := LegacyNationalCipherSuites()
+	// Legacy list includes CBC and static ECC suites (4 total).
+	if len(suites) != 4 {
+		t.Fatalf("expected 4 legacy national suites, got %d", len(suites))
+	}
+	for _, s := range suites {
+		if !IsNationalCipherSuite(s) {
+			t.Errorf("legacy suite 0x%04X not recognized as national", s)
 		}
 	}
 }
@@ -35,8 +53,9 @@ func TestGetCipherSuitesHybrid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCipherSuites(hybrid): %v", err)
 	}
-	if len(suites) != 8 {
-		t.Fatalf("expected 8 hybrid suites, got %d", len(suites))
+	// 4 international + 1 secure national (GCM+ECDHE) = 5.
+	if len(suites) != 5 {
+		t.Fatalf("expected 5 hybrid suites, got %d", len(suites))
 	}
 }
 

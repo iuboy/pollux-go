@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -235,6 +236,36 @@ func TestNewClient(t *testing.T) {
 	if client.Transport == nil {
 		t.Fatal("transport should not be nil")
 	}
+}
+
+// TestNewClient_TLS_FailClosed covers the fail-closed gate on the standard-TLS
+// client path (buildTLSClientConfig). A client that configures no server
+// authentication (no RootCAs, no client cert, no InsecureSkipVerify opt-in)
+// must be rejected at construction time rather than silently falling back to
+// the host cert store. See http/config.go.
+func TestNewClient_TLS_FailClosed(t *testing.T) {
+	t.Run("empty config rejected", func(t *testing.T) {
+		_, err := NewClient(&ClientOptions{Mode: ModeTLS})
+		if err == nil {
+			t.Fatal("NewClient(ModeTLS) with no auth: expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "TLSInsecureSkipVerify") {
+			t.Errorf("error should mention the missing auth option, got: %v", err)
+		}
+	})
+
+	t.Run("explicit InsecureSkipVerify accepted", func(t *testing.T) {
+		client, err := NewClient(&ClientOptions{
+			Mode:                  ModeTLS,
+			TLSInsecureSkipVerify: true,
+		})
+		if err != nil {
+			t.Fatalf("NewClient with InsecureSkipVerify: %v", err)
+		}
+		if client == nil || client.Transport == nil {
+			t.Fatal("client/transport should not be nil")
+		}
+	})
 }
 
 func TestHybridServer(t *testing.T) {

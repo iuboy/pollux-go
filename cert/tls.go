@@ -2,7 +2,6 @@ package cert
 
 import (
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 )
 
@@ -44,19 +43,13 @@ func BuildClientTLSConfig(opts TLSClientOptions) (*tls.Config, error) {
 		cfg.MinVersion = tls.VersionTLS12
 	}
 	if opts.Roots != nil {
-		stdPool := opts.Roots.ToStandardPool()
-		cfg.RootCAs = stdPool
-		// For SM2 certificates, also set raw DER so lower layers can re-parse.
-		rawDER := opts.Roots.RawDER()
-		if len(rawDER) > 0 {
-			// Re-add raw certs to ensure both standard and SM2 paths can verify.
-			for _, der := range rawDER {
-				cert, err := x509.ParseCertificate(der)
-				if err == nil {
-					stdPool.AddCert(cert)
-				}
-			}
-		}
+		// ToStandardPool already adds every certificate by its raw DER.
+		// Re-parsing the raw DER with the standard library would only duplicate
+		// RSA/ECDSA roots and silently drop SM2 roots (stdlib rejects the SM2
+		// curve), masking misconfiguration. Standard crypto/tls cannot validate
+		// SM2 chains regardless; SM2 verification must go through the pollux
+		// smx509 / tls13gm path, not a *tls.Config.
+		cfg.RootCAs = opts.Roots.ToStandardPool()
 	}
 	return cfg, nil
 }

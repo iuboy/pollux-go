@@ -49,6 +49,12 @@ func ZeroUint32(data []uint32) {
 	}
 
 	// Layer 1: XOR-based zeroing (consistent with ZeroBytes pattern).
+	// Guard len*4 against integer overflow on 32-bit builds (where int is 32
+	// bits wide); on such targets an attacker-controlled slice length near
+	// MaxInt32/4 would wrap byteLen and yield an out-of-bounds view.
+	if uint64(len(data)) > (1<<32-1)/4 {
+		return
+	}
 	byteLen := len(data) * 4
 	zeros := make([]byte, byteLen)
 	subtle.XORBytes(
@@ -73,6 +79,10 @@ func ZeroUint64(data []uint64) {
 	}
 
 	// Layer 1: XOR-based zeroing (consistent with ZeroBytes pattern).
+	// Guard len*8 against integer overflow on 32-bit builds (see ZeroUint32).
+	if uint64(len(data)) > (1<<32-1)/8 {
+		return
+	}
 	byteLen := len(data) * 8
 	zeros := make([]byte, byteLen)
 	subtle.XORBytes(

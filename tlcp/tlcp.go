@@ -12,6 +12,7 @@ import (
 	gotlcp "gitee.com/Trisia/gotlcp/tlcp"
 	gmsmSmx509 "github.com/emmansun/gmsm/smx509"
 	"github.com/iuboy/pollux-go/internal/panicsafe"
+	polluxsmx509 "github.com/iuboy/pollux-go/smx509"
 	polluxtls "github.com/iuboy/pollux-go/tls"
 )
 
@@ -140,6 +141,24 @@ func configToGotlcp(c *Config) (*gotlcp.Config, error) {
 	if c == nil {
 		return nil, errors.New("tlcp: nil config")
 	}
+	// Only TLCP 1.1 is implemented here (Version12 is based on TLS 1.3 and is
+	// not supported by this wrapper). An empty Version is treated as the 1.1
+	// default; an explicit non-1.1 version is rejected.
+	if c.Version != "" && c.Version != Version11 {
+		return nil, fmt.Errorf("%w: %s (only Version11 supported)", ErrInvalidVersion, c.Version)
+	}
+	// Cipher suites: default to the GCM-only set when unset, and reject any
+	// non-national suite, enforcing the documented GCM-only default here
+	// rather than letting gotlcp fall back to its own (CBC-containing) defaults.
+	suites := c.CipherSuites
+	if len(suites) == 0 {
+		suites = defaultCipherSuites
+	}
+	for _, s := range suites {
+		if !polluxtls.IsNationalCipherSuite(s) {
+			return nil, fmt.Errorf("%w: cipher suite 0x%04X is not a national suite", ErrInvalidCipherSuite, s)
+		}
+	}
 
 	gc := &gotlcp.Config{
 		ServerName:         c.ServerName,
@@ -148,18 +167,35 @@ func configToGotlcp(c *Config) (*gotlcp.Config, error) {
 		ClientAuth:         gotlcp.ClientAuthType(c.ClientAuth),
 	}
 
-	// Certificate conversion: SignCertificate -> Certificates[0], EncCertificate -> Certificates[1]
-	if c.SignCertificate != nil {
-		gc.Certificates = append(gc.Certificates, gotlcp.Certificate{
+	gc.CipherSuites = suites
+
+	// Dual certificates: gotlcp hard-codes Certificates[0]=sign, [1]=encrypt.
+	// Assign by fixed index (never append) so a lone certificate can never
+	// land in the wrong slot and be used for the opposite purpose. Both must
+	// be set together or both absent (a bare client needs no local certs).
+	if c.SignCertificate != nil || c.EncCertificate != nil {
+		if c.SignCertificate == nil {
+			return nil, ErrMissingSignCertificate
+		}
+		if c.EncCertificate == nil {
+			return nil, ErrMissingEncCertificate
+		}
+		gc.Certificates = make([]gotlcp.Certificate, 2)
+		gc.Certificates[0] = gotlcp.Certificate{
 			Certificate: c.SignCertificate.Certificate,
 			PrivateKey:  c.SignCertificate.PrivateKey,
-		})
-	}
-	if c.EncCertificate != nil {
-		gc.Certificates = append(gc.Certificates, gotlcp.Certificate{
+		}
+		gc.Certificates[1] = gotlcp.Certificate{
 			Certificate: c.EncCertificate.Certificate,
 			PrivateKey:  c.EncCertificate.PrivateKey,
-		})
+		}
+	}
+
+	// Dual-certificate pairing verification (same CA/subject, correct key
+	// usages), augmenting gotlcp chain verification. Registered only when the
+	// caller has not explicitly opted out of verification.
+	if !c.InsecureSkipVerify {
+		gc.VerifyPeerCertificate = verifyDualPeerCertificates
 	}
 
 	// RootCAs: merge signing + encryption root certificates into gmsm smx509.CertPool
@@ -184,6 +220,33 @@ func configToGotlcp(c *Config) (*gotlcp.Config, error) {
 	}
 
 	return gc, nil
+}
+
+// verifyDualPeerCertificates enforces TLCP dual-certificate pairing (the
+// sign and encrypt certs must share CA and subject, and carry the correct
+// key usages) on the peer presented certificates. It runs after gotlcp own
+// chain verification. rawCerts[0]=sign, rawCerts[1]=encrypt. An empty
+// rawCerts (no peer cert, e.g. an unauthenticated client) is allowed;
+// gotlcp ClientAuth / server-certificate checks govern that case.
+func verifyDualPeerCertificates(rawCerts [][]byte, _ [][]*gmsmSmx509.Certificate) error {
+	if len(rawCerts) == 0 {
+		return nil
+	}
+	if len(rawCerts) < 2 {
+		return errors.New("tlcp: peer did not present a dual certificate pair")
+	}
+	signSm, err := gmsmSmx509.ParseCertificate(rawCerts[0])
+	if err != nil {
+		return fmt.Errorf("tlcp: parse peer sign certificate: %w", err)
+	}
+	encSm, err := gmsmSmx509.ParseCertificate(rawCerts[1])
+	if err != nil {
+		return fmt.Errorf("tlcp: parse peer encrypt certificate: %w", err)
+	}
+	if err := polluxsmx509.VerifyDualCerts(signSm.ToX509(), encSm.ToX509()); err != nil {
+		return err
+	}
+	return nil
 }
 
 // buildSMX509CertPool builds a gmsm smx509.CertPool from a stdlib x509.Certificate list.

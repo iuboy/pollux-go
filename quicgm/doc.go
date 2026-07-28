@@ -1,25 +1,28 @@
-// Package quicgm provides QUIC packet protection using the RFC 8998 SM4-GCM
-// cipher suite (TLS_SM4_GCM_SM3, 0x00C6), assembled from the cryptographic
-// primitives exported by the tls13gm package.
+// Package quicgm provides QUIC over the RFC 8998 SM4-GCM cipher suite
+// (TLS_SM4_GCM_SM3, 0x00C6), integrating the GM cryptographic primitives from
+// the tls13gm package with the vendored quic-go fork.
 //
-// quicgm mirrors the relationship between quic-go and crypto/tls: it consumes
-// the RFC 8998 key schedule, AEAD, and header-protection primitives provided by
-// tls13gm and assembles the RFC 9001 §5 packet-protection operations:
+// The package exposes two layers:
 //
-//   - Payload protection: SM4-GCM AEAD with a packet-number-based nonce
-//     (nonce = IV XOR packet_number).
-//   - Header protection: an SM4-ECB mask applied to the first byte's low 4/5
-//     bits and the packet number field (RFC 9001 §5.4).
+//   - Connection layer: Listen/Dial/DialEarly, plus Listener/Conn/ServerConfig/
+//     ClientConfig, provide RFC 9001 GM QUIC endpoints (server + client,
+//     including 0-RTT). AntiReplayCache guards 0-RTT against replay. The
+//     connection state machine (ACK, retransmission, stream multiplexing,
+//     congestion control) is provided by the vendored quic-go fork, which
+//     polls the GM handshake via an injected GMCryptoSetup.
+//   - Packet-protection layer: SealInitialPacket/OpenInitialPacket,
+//     SealHandshakePacket/OpenHandshakePacket, Seal1RTTPacket/Open1RTTPacket,
+//     and QUICPacketProtector implement the RFC 9001 §5 payload + header
+//     protection (SM4-GCM AEAD with packet-number-based nonce, SM4-ECB header
+//     mask). CRYPTO frame encode/decode (RFC 9000 §19.6) carries TLS handshake
+//     messages; varint and packet-number truncation primitives follow
+//     RFC 9000 §16/§17.1.
 //
-// This package implements the packet-protection layer for the QUIC long-header
-// Initial and Handshake packets and the short-header 1-RTT packet (RFC 9000
-// §17), plus the minimal CRYPTO frame (RFC 9000 §19.6) that carries TLS
-// handshake messages. It does not parse the full QUIC header grammar beyond the
-// packet forms it builds and opens. The QUIC/TLS handshake itself is driven by
-// tls13gm's ClientHandshaker/ServerHandshaker, whose HandshakeSecrets feed
-// NewQUICPacketProtectorFromKeys; this package does not run the TLS key
-// exchange. The QUIC connection state machine (ACK, retransmission, stream
-// multiplexing, congestion control) remains the responsibility of quic-go.
+// The TLS 1.3 GM handshake itself is driven by tls13gm's
+// ClientHandshaker/ServerHandshaker; quicgm feeds the resulting
+// HandshakeSecrets into the packet protectors. This package does not run the
+// TLS key exchange directly.
 //
-// Status: RFC 8998 transport-level GM QUIC packet protection (Route C).
+// Status: RFC 8998 transport-level GM QUIC, including Listen/Dial/DialEarly
+// connection layer (interop-verified, Route C).
 package quicgm

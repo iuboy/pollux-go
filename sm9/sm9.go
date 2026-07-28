@@ -8,7 +8,14 @@ import (
 	gmsmSM9 "github.com/emmansun/gmsm/sm9"
 )
 
-var errUIDEmpty = errors.New("sm9: uid must not be empty")
+var (
+	errUIDEmpty        = errors.New("sm9: uid must not be empty")
+	errNilSignMaster   = errors.New("sm9: nil signing master key")
+	errNilEncMaster    = errors.New("sm9: nil encryption master key")
+	errNilSignPriv     = errors.New("sm9: nil signing private key")
+	errNilEncPriv      = errors.New("sm9: nil encryption private key")
+	errNilEncMasterPub = errors.New("sm9: nil encryption master public key")
+)
 
 // DefaultSignHID is the default signing HID per GM/T 0005-2012.
 const DefaultSignHID byte = 0x01
@@ -44,6 +51,9 @@ func GenerateSignMasterKey() (*SignMasterPrivateKey, error) {
 
 // GenerateSignUserKey derives a signing user private key from the master key.
 func GenerateSignUserKey(master *SignMasterPrivateKey, uid []byte) (*SignPrivateKey, error) {
+	if master == nil {
+		return nil, errNilSignMaster
+	}
 	if len(uid) == 0 {
 		return nil, errUIDEmpty
 	}
@@ -57,6 +67,9 @@ func GenerateEncryptMasterKey() (*EncryptMasterPrivateKey, error) {
 
 // GenerateEncryptUserKey derives an encryption user private key from the master key.
 func GenerateEncryptUserKey(master *EncryptMasterPrivateKey, uid []byte) (*EncryptPrivateKey, error) {
+	if master == nil {
+		return nil, errNilEncMaster
+	}
 	if len(uid) == 0 {
 		return nil, errUIDEmpty
 	}
@@ -67,13 +80,16 @@ func GenerateEncryptUserKey(master *EncryptMasterPrivateKey, uid []byte) (*Encry
 // the SM9 library handles hashing internally, so callers should pass the original
 // message, not a pre-hashed value.
 func Sign(privateKey *SignPrivateKey, data []byte) ([]byte, error) {
+	if privateKey == nil {
+		return nil, errNilSignPriv
+	}
 	return gmsmSM9.SignASN1(rand.Reader, privateKey, data)
 }
 
 // Verify verifies an SM9 signature on data. The data parameter must match what was
 // passed to Sign (the original message, not a hash).
 func Verify(publicKey *SignMasterPublicKey, uid []byte, data, sig []byte) bool {
-	if len(uid) == 0 {
+	if publicKey == nil || len(uid) == 0 {
 		return false
 	}
 	return gmsmSM9.VerifyASN1(publicKey, uid, DefaultSignHID, data, sig)
@@ -81,6 +97,9 @@ func Verify(publicKey *SignMasterPublicKey, uid []byte, data, sig []byte) bool {
 
 // Encrypt encrypts plaintext using SM9 with the specified options.
 func Encrypt(publicKey *EncryptMasterPublicKey, uid []byte, plaintext []byte, opts EncrypterOpts) ([]byte, error) {
+	if publicKey == nil {
+		return nil, errNilEncMasterPub
+	}
 	if len(uid) == 0 {
 		return nil, errUIDEmpty
 	}
@@ -89,6 +108,9 @@ func Encrypt(publicKey *EncryptMasterPublicKey, uid []byte, plaintext []byte, op
 
 // Decrypt decrypts SM9 ciphertext.
 func Decrypt(privateKey *EncryptPrivateKey, uid, ciphertext []byte) ([]byte, error) {
+	if privateKey == nil {
+		return nil, errNilEncPriv
+	}
 	if len(uid) == 0 {
 		return nil, errUIDEmpty
 	}
@@ -97,6 +119,9 @@ func Decrypt(privateKey *EncryptPrivateKey, uid, ciphertext []byte) ([]byte, err
 
 // WrapKey encapsulates a key using SM9 key encapsulation mechanism.
 func WrapKey(publicKey *EncryptMasterPublicKey, uid []byte, keyLen int) (key []byte, cipher []byte, err error) {
+	if publicKey == nil {
+		return nil, nil, errNilEncMasterPub
+	}
 	if len(uid) == 0 {
 		return nil, nil, errUIDEmpty
 	}
@@ -108,6 +133,9 @@ func WrapKey(publicKey *EncryptMasterPublicKey, uid []byte, keyLen int) (key []b
 
 // WrapKeyASN1 encapsulates a key using SM9 and returns ASN.1 encoded result.
 func WrapKeyASN1(publicKey *EncryptMasterPublicKey, uid []byte, keyLen int) ([]byte, error) {
+	if publicKey == nil {
+		return nil, errNilEncMasterPub
+	}
 	if len(uid) == 0 {
 		return nil, errUIDEmpty
 	}
@@ -119,6 +147,9 @@ func WrapKeyASN1(publicKey *EncryptMasterPublicKey, uid []byte, keyLen int) ([]b
 
 // UnwrapKey decapsulates a key from SM9 key encapsulation.
 func UnwrapKey(privateKey *EncryptPrivateKey, uid, cipher []byte, keyLen int) ([]byte, error) {
+	if privateKey == nil {
+		return nil, errNilEncPriv
+	}
 	if len(uid) == 0 {
 		return nil, errUIDEmpty
 	}

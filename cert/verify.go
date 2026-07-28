@@ -29,6 +29,9 @@ func VerifyCertificate(cert *x509.Certificate, opts VerifyOptions) error {
 		if opts.Roots == nil || opts.Roots.Len() == 0 {
 			return ErrNoRoots
 		}
+		if err := validateRootsAreCAs(opts.Roots); err != nil {
+			return err
+		}
 
 		if IsSM2Certificate(cert) {
 			return verifySM2(cert, opts)
@@ -68,6 +71,18 @@ func verifySM2(cert *x509.Certificate, opts VerifyOptions) error {
 			currentTime.Format(time.RFC3339), cert.NotAfter.Format(time.RFC3339))
 	}
 
+	return nil
+}
+
+// validateRootsAreCAs rejects non-CA (leaf) certificates used as trust
+// anchors. A trust root must be a CA; accepting a leaf as its own anchor would
+// let any self-signed leaf bypass chain validation entirely.
+func validateRootsAreCAs(roots *Pool) error {
+	for _, c := range roots.Certificates() {
+		if !c.IsCA {
+			return fmt.Errorf("%w: %q is not a CA", ErrLeafAsRoot, c.Subject.String())
+		}
+	}
 	return nil
 }
 

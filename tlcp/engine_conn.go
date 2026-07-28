@@ -374,6 +374,8 @@ type tlcpEngineConfig struct {
 	sessionCache       tlcpSessionCache  // optional session-resumption store (Phase 5)
 	clientCerts        *tlcpServerCerts  // client dual certificates (mutual auth / ECDHE)
 	requestClientCert  bool              // server: send CertificateRequest
+	clientRoots        *polluxsmx509.CertPool // 客户端证书验证根池（服务端 mTLS，nil=不验）
+	clientAuth         ClientAuthType    // 客户端证书校验级别（精确区分 Require/VerifyIfGiven）
 }
 
 // newTLCPConn wraps a transport connection.

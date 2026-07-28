@@ -347,9 +347,14 @@ func TestParsePEMCertificates_NonCertificateBlock(t *testing.T) {
 MFkwEwYHKoZIzj0CAQYIKoEcz1UBgi0DQgAEdummiesubstringnotrealbutlengthok
 -----END PRIVATE KEY-----
 `)
-	certs := parsePEMCertificates(keyPEM)
+	certs, skipped := parsePEMCertificates(keyPEM)
 	if len(certs) != 0 {
 		t.Errorf("parsePEMCertificates(private key block) = %d certs, want 0", len(certs))
+	}
+	// PRIVATE KEY blocks are not CERTIFICATE-typed, so they are ignored (not
+	// counted as skipped). skipped stays 0.
+	if skipped != 0 {
+		t.Errorf("parsePEMCertificates(private key block) skipped = %d, want 0", skipped)
 	}
 }
 

@@ -24,8 +24,11 @@ func DeriveKey(masterKey, label, context []byte, length int) ([]byte, error) {
 		return nil, fmt.Errorf("sm4/kdf: length %d exceeds maximum %d", length, maxDeriveKeyLength)
 	}
 
-	result := make([]byte, 0, length)
 	blocks := (length + BlockSize - 1) / BlockSize
+	// Pre-allocate exactly blocks*BlockSize so the append loop never
+	// reallocates, then truncate to length at the end. (Using length as the
+	// cap would under-allocate when length is not a multiple of BlockSize.)
+	result := make([]byte, 0, blocks*BlockSize)
 
 	// Pre-build the fixed-input portion: label || 0x00 || context
 	// This is identical across all rounds and only needs to be built once.
@@ -37,17 +40,22 @@ func DeriveKey(masterKey, label, context []byte, length int) ([]byte, error) {
 	lBits := make([]byte, 4)
 	binary.BigEndian.PutUint32(lBits, uint32(length*8))
 
-	for i := 1; i <= blocks; i++ {
-		// Build round input: [counter(4)] || fixedInput || [L in bits(4)]
-		counter := make([]byte, 4)
-		binary.BigEndian.PutUint32(counter, uint32(i))
-		roundInput := make([]byte, 0, 4+len(fixedInput)+4)
-		roundInput = append(roundInput, counter...)
-		roundInput = append(roundInput, fixedInput...)
-		roundInput = append(roundInput, lBits...)
+	// Reuse a single roundInput buffer across all rounds — the structure
+	// (counter || fixedInput || lBits) is the same length every iteration,
+	// only the counter prefix changes. Avoids blocks heap allocations.
+	roundInput := make([]byte, 0, 4+len(fixedInput)+4)
+	roundInput = append(roundInput, make([]byte, 4)...) // placeholder counter
+	roundInput = append(roundInput, fixedInput...)
+	roundInput = append(roundInput, lBits...)
+	fixedLen := len(roundInput) // 4 + len(fixedInput) + 4
 
-		// PRF: SM4-CMAC over roundInput
-		blockOut, err := ComputeCMAC(masterKey, roundInput)
+	for i := 1; i <= blocks; i++ {
+		// Overwrite only the counter prefix; the rest of roundInput is unchanged.
+		binary.BigEndian.PutUint32(roundInput[:4], uint32(i))
+
+		// PRF: SM4-CMAC over roundInput. ComputeCMAC reads the slice without
+		// retaining it, so reusing roundInput across iterations is safe.
+		blockOut, err := ComputeCMAC(masterKey, roundInput[:fixedLen])
 		if err != nil {
 			return nil, err
 		}

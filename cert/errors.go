@@ -15,6 +15,4 @@ var (
 	ErrUnsupportedCert = errors.New("cert: unsupported certificate type")
 	// ErrInvalidPEM is returned when a PEM block cannot be decoded.
 	ErrInvalidPEM = errors.New("cert: failed to decode PEM block")
-	// ErrInvalidPrivateKey is returned when a private key cannot be parsed.
-	ErrInvalidPrivateKey = errors.New("cert: failed to parse private key")
 )

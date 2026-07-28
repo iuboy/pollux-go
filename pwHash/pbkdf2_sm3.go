@@ -104,6 +104,10 @@ func encodePBKDF2SM3(p PBKDF2Params, salt, dk []byte) string {
 }
 
 // decodePBKDF2SM3 parses a PHC-style pbkdf2-sm3 string into params + salt + digest.
+// All decoded parameters are validated via PBKDF2Params.Validate before return,
+// matching the defense-in-depth pattern in decodeArgon2id: an attacker-crafted
+// PHC string cannot reach the underlying PBKDF2 primitive with out-of-range
+// cost parameters.
 func decodePBKDF2SM3(encoded string) (PBKDF2Params, []byte, []byte, error) {
 	// Layout: $pbkdf2-sm3$i=<iter>$<b64-salt>$<b64-hash>
 	parts := strings.Split(encoded, "$")
@@ -125,9 +129,18 @@ func decodePBKDF2SM3(encoded string) (PBKDF2Params, []byte, []byte, error) {
 	if err != nil {
 		return PBKDF2Params{}, nil, nil, fmt.Errorf("%w: bad hash b64", ErrMalformedHash)
 	}
-	return PBKDF2Params{
+	params := PBKDF2Params{
 		Iterations: iter,
 		SaltLength: len(salt),
 		KeyLength:  len(dk),
-	}, salt, dk, nil
+	}
+	// Defense in depth: validate the decoded cost/length parameters before
+	// handing them to the PBKDF2 primitive, mirroring decodeArgon2id's
+	// validateDecoded call. Without this an attacker-crafted PHC string with
+	// e.g. iter > maxPBKDF2Iteration or a too-short salt would only be caught
+	// downstream (or worse, accepted by a permissive PBKDF2 implementation).
+	if err := params.Validate(); err != nil {
+		return PBKDF2Params{}, nil, nil, fmt.Errorf("%w: %v", ErrMalformedHash, err)
+	}
+	return params, salt, dk, nil
 }

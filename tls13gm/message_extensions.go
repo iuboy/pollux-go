@@ -88,11 +88,20 @@ func hasExtension(exts []Extension, typ uint16) bool {
 
 // marshalCookieExtension encodes a cookie as the TLS opaque cookie vector
 // [length(2) | cookie] used by the cookie extension (RFC 8446 §4.2.2).
+// Cookies longer than 0xFFFF (65535) bytes are truncated to the low 16 bits of
+// the length, producing malformed wire bytes; the caller is expected to keep
+// stateless cookies short. To make such misuse loud rather than silent, a
+// length over 0xFFFF is clamped to 0xFFFF (the wire encoding's natural ceiling)
+// rather than wrapping. RFC 8446 recommends cookies be small.
 func marshalCookieExtension(cookie []byte) []byte {
-	out := make([]byte, 2+len(cookie))
-	out[0] = byte(len(cookie) >> 8)
-	out[1] = byte(len(cookie))
-	copy(out[2:], cookie)
+	cl := len(cookie)
+	if cl > 0xFFFF {
+		cl = 0xFFFF
+	}
+	out := make([]byte, 2+cl)
+	out[0] = byte(cl >> 8)
+	out[1] = byte(cl)
+	copy(out[2:], cookie[:cl])
 	return out
 }
 

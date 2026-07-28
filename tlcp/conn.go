@@ -91,6 +91,10 @@ func (c *Conn) Close() error {
 		return c.inner.Close()
 	}
 	if c.rawConn != nil {
+		if c.initErr != nil {
+			_ = c.rawConn.Close()
+			return c.initErr
+		}
 		return c.rawConn.Close()
 	}
 	return nil
@@ -101,9 +105,8 @@ func (c *Conn) LocalAddr() net.Addr {
 	if c.inner != nil {
 		return c.inner.LocalAddr()
 	}
-	if c.rawConn != nil {
-		return c.rawConn.LocalAddr()
-	}
+	// When uninitialized, return nil rather than rawConn's address to
+	// avoid misleading callers into believing the connection is valid.
 	return nil
 }
 
@@ -112,9 +115,8 @@ func (c *Conn) RemoteAddr() net.Addr {
 	if c.inner != nil {
 		return c.inner.RemoteAddr()
 	}
-	if c.rawConn != nil {
-		return c.rawConn.RemoteAddr()
-	}
+	// When uninitialized, return nil rather than rawConn's address to
+	// avoid misleading callers into believing the connection is valid.
 	return nil
 }
 
@@ -122,6 +124,9 @@ func (c *Conn) RemoteAddr() net.Addr {
 func (c *Conn) SetDeadline(t time.Time) error {
 	if c.inner != nil {
 		return c.inner.SetDeadline(t)
+	}
+	if c.initErr != nil {
+		return c.initErr
 	}
 	if c.rawConn != nil {
 		return c.rawConn.SetDeadline(t)
@@ -134,6 +139,9 @@ func (c *Conn) SetReadDeadline(t time.Time) error {
 	if c.inner != nil {
 		return c.inner.SetReadDeadline(t)
 	}
+	if c.initErr != nil {
+		return c.initErr
+	}
 	if c.rawConn != nil {
 		return c.rawConn.SetReadDeadline(t)
 	}
@@ -144,6 +152,9 @@ func (c *Conn) SetReadDeadline(t time.Time) error {
 func (c *Conn) SetWriteDeadline(t time.Time) error {
 	if c.inner != nil {
 		return c.inner.SetWriteDeadline(t)
+	}
+	if c.initErr != nil {
+		return c.initErr
 	}
 	if c.rawConn != nil {
 		return c.rawConn.SetWriteDeadline(t)
@@ -165,10 +176,11 @@ func (c *Conn) ConnectionState() ConnectionState {
 		PeerCertificates:  es.PeerCertificates,
 	}
 	// TLCP convention: [0]=signing, [1]=encryption.
-	if len(result.PeerCertificates) > 0 {
+	// Defensively validate certificate count before indexing.
+	if len(result.PeerCertificates) >= 1 {
 		result.PeerSignCert = result.PeerCertificates[0]
 	}
-	if len(result.PeerCertificates) > 1 {
+	if len(result.PeerCertificates) >= 2 {
 		result.PeerEncCert = result.PeerCertificates[1]
 	}
 	return result

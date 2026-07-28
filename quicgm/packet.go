@@ -4,6 +4,7 @@ import (
 	"crypto/cipher"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/iuboy/pollux-go/sm4"
 	"github.com/iuboy/pollux-go/tls13gm"
@@ -12,7 +13,12 @@ import (
 // QUICPacketProtector applies RFC 9001 packet protection to QUIC packets using
 // the RFC 8998 SM4-GCM cipher suite. It consumes the cryptographic primitives
 // exported by tls13gm, mirroring how quic-go consumes crypto/tls.
+//
+// Safety: a QUICPacketProtector is safe for concurrent use. EncryptPayload,
+// DecryptPayload, ApplyHeaderProtection, and RemoveHeaderProtection each acquire
+// a short-lived mutex to serialize AEAD and HP block operations.
 type QUICPacketProtector struct {
+	mu      sync.Mutex
 	keys    *tls13gm.QUICPacketKeys
 	aead    *tls13gm.AEAD
 	hpBlock cipher.Block // SM4-ECB for header protection; created once, reused per packet
@@ -62,12 +68,16 @@ func NewQUICPacketProtectorFromKeys(keys *tls13gm.QUICPacketKeys) (*QUICPacketPr
 // is authenticated as additional data. The result has the 16-byte GCM tag
 // appended (ciphertext || tag).
 func (p *QUICPacketProtector) EncryptPayload(pn uint64, header, payload []byte) ([]byte, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.aead.Seal(pn, payload, header)
 }
 
 // DecryptPayload decrypts a QUIC packet payload produced by EncryptPayload,
 // authenticating header as additional data.
 func (p *QUICPacketProtector) DecryptPayload(pn uint64, header, ciphertext []byte) ([]byte, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.aead.Open(pn, ciphertext, header)
 }
 
@@ -79,6 +89,8 @@ func (p *QUICPacketProtector) DecryptPayload(pn uint64, header, ciphertext []byt
 // buffer[pnOffset+4 : pnOffset+20]. Header protection MUST be applied after
 // payload encryption.
 func (p *QUICPacketProtector) ApplyHeaderProtection(buffer []byte, pnOffset, pnLen int, isLongHeader bool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if err := validateHeaderArgs(buffer, pnOffset, pnLen); err != nil {
 		return err
 	}
@@ -96,6 +108,8 @@ func (p *QUICPacketProtector) ApplyHeaderProtection(buffer []byte, pnOffset, pnL
 // big-endian integer. Callers that truncate packet numbers on the wire must
 // reconstruct the full value against their expected largest packet number.
 func (p *QUICPacketProtector) RemoveHeaderProtection(buffer []byte, pnOffset int, isLongHeader bool) (uint64, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if pnOffset < 1 || pnOffset >= len(buffer) {
 		return 0, fmt.Errorf("quicgm: packet number offset %d out of range for buffer length %d", pnOffset, len(buffer))
 	}
@@ -121,12 +135,19 @@ func (p *QUICPacketProtector) Keys() *tls13gm.QUICPacketKeys { return p.keys }
 // TagSize returns the AEAD authentication-tag size in bytes (16 for SM4-GCM).
 func (p *QUICPacketProtector) TagSize() int { return p.aead.Overhead() }
 
-// Zero securely zeroes the protector's key material.
+// Zero securely zeroes the protector's key material. The underlying QUICPacketKeys
+// are zeroed, and the AEAD/block cipher references are dropped.
 func (p *QUICPacketProtector) Zero() {
-	if p == nil || p.keys == nil {
+	if p == nil {
 		return
 	}
-	p.keys.Zero()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.keys != nil {
+		p.keys.Zero()
+	}
+	p.aead = nil
+	p.hpBlock = nil
 }
 
 func (p *QUICPacketProtector) headerMask(buffer []byte, pnOffset int) ([]byte, error) {

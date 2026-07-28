@@ -45,7 +45,10 @@ func TestHS256_RoundTrip(t *testing.T) {
 
 func TestHS512_RoundTrip(t *testing.T) {
 	sv := mustHS512(t, "")
-	token, _ := sv.Sign(&jwt.RegisteredClaims{Subject: "x"})
+	token, _ := sv.Sign(&jwt.RegisteredClaims{
+		Subject:   "x",
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	})
 	if sv.Algorithm() != AlgHS512 {
 		t.Errorf("Algorithm = %s, want HS512", sv.Algorithm())
 	}
@@ -56,7 +59,10 @@ func TestHS512_RoundTrip(t *testing.T) {
 
 func TestHS256_RejectsTamperedToken(t *testing.T) {
 	sv := mustHS256(t, "iss")
-	token, _ := sv.Sign(&jwt.RegisteredClaims{Subject: "orig"})
+	token, _ := sv.Sign(&jwt.RegisteredClaims{
+		Subject:   "orig",
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	})
 	tampered := tamperSignature(t, token)
 	if err := sv.Verify(tampered, &jwt.RegisteredClaims{}); err == nil {
 		t.Error("Verify accepted a tampered token")
@@ -71,7 +77,10 @@ func TestHS256_RejectsWrongSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHS256(otherSecret) err = %v", err)
 	}
-	token, _ := signer.Sign(&jwt.RegisteredClaims{Subject: "x"})
+	token, _ := signer.Sign(&jwt.RegisteredClaims{
+		Subject:   "x",
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	})
 	if err := verifier.Verify(token, &jwt.RegisteredClaims{}); err == nil {
 		t.Error("Verify accepted token signed with a different secret")
 	}
@@ -83,7 +92,10 @@ func TestHS256_RejectsWrongSecret(t *testing.T) {
 func TestHS256_RejectsSM2Token(t *testing.T) {
 	priv, _ := sm2.GenerateKeyDefault()
 	sm2SV, _ := NewSM2SM3(priv, &priv.PublicKey, "")
-	sm2Token, _ := sm2SV.Sign(&jwt.RegisteredClaims{Subject: "x"})
+	sm2Token, _ := sm2SV.Sign(&jwt.RegisteredClaims{
+		Subject:   "x",
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	})
 
 	hs256 := mustHS256(t, "")
 	if err := hs256.Verify(sm2Token, &jwt.RegisteredClaims{}); err == nil {
@@ -187,7 +199,10 @@ func TestSM2SM3_RoundTrip(t *testing.T) {
 func TestSM2SM3_RejectsTamperedToken(t *testing.T) {
 	priv, pub := newTestSM2Key(t)
 	sv, _ := NewSM2SM3(priv, pub, "")
-	token, _ := sv.Sign(&jwt.RegisteredClaims{Subject: "orig"})
+	token, _ := sv.Sign(&jwt.RegisteredClaims{
+		Subject:   "orig",
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	})
 	tampered := tamperSignature(t, token)
 	if err := sv.Verify(tampered, &jwt.RegisteredClaims{}); err == nil {
 		t.Error("SM2 verifier accepted a tampered token")
@@ -219,7 +234,10 @@ func TestSM2SM3_RejectsDifferentKey(t *testing.T) {
 	_, pubB := newTestSM2Key(t)
 	signer, _ := NewSM2SM3(privA, nil, "")
 	verifier, _ := NewSM2SM3(nil, pubB, "")
-	token, _ := signer.Sign(&jwt.RegisteredClaims{Subject: "x"})
+	token, _ := signer.Sign(&jwt.RegisteredClaims{
+		Subject:   "x",
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	})
 	if err := verifier.Verify(token, &jwt.RegisteredClaims{}); err == nil {
 		t.Error("SM2 verifier accepted token signed with a different key")
 	}
@@ -232,7 +250,10 @@ func TestSM2SM3_RejectsHS256Token(t *testing.T) {
 	sm2Verifier, _ := NewSM2SM3(nil, pub, "")
 
 	hs256 := mustHS256(t, "")
-	hs256Token, _ := hs256.Sign(&jwt.RegisteredClaims{Subject: "x"})
+	hs256Token, _ := hs256.Sign(&jwt.RegisteredClaims{
+		Subject:   "x",
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	})
 
 	if err := sm2Verifier.Verify(hs256Token, &jwt.RegisteredClaims{}); err == nil {
 		t.Error("SM2 verifier accepted an HS256 token (alg confusion)")

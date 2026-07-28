@@ -26,5 +26,9 @@
 // is handled by quic-go; tls13gm provides the GM primitives and handshake logic
 // that quic-go's crypto/tls integration normally provides.
 //
-// Status: RFC 8998 GM complement to crypto/tls (Route C).
+// "Route C" is the project-internal term for the RFC 8998 GM path
+// (TLS_SM4_GCM_SM3), as opposed to "Route A" (standard AES-GCM TLS 1.3 via
+// crypto/tls) and "Route B" (TLCP 1.1 via the tlcp package). The term appears
+// in cross-package doc comments and should be understood as "the GM QUIC
+// path through this package + quicgm".
 package tls13gm

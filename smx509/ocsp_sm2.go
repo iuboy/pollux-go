@@ -77,6 +77,12 @@ type sm2RevokedInfo struct {
 // replaced with SM2. issuer is the CA used to compute the CertID hashes;
 // responderCert is the responder (signer) certificate.
 func createSM2OCSPResponse(issuer, responderCert *x509.Certificate, template ocsp.Response, priv *sm2.PrivateKey) ([]byte, error) {
+	if issuer == nil {
+		return nil, errors.New("smx509: issuer certificate must not be nil")
+	}
+	if responderCert == nil {
+		return nil, errors.New("smx509: responder certificate must not be nil")
+	}
 	var publicKeyInfo struct {
 		Algorithm pkix.AlgorithmIdentifier
 		PublicKey asn1.BitString
@@ -86,7 +92,7 @@ func createSM2OCSPResponse(issuer, responderCert *x509.Certificate, template ocs
 	}
 
 	if template.IssuerHash == 0 {
-		template.IssuerHash = crypto.SHA1
+		template.IssuerHash = crypto.SHA256 // Default to SHA256; SM3 not in crypto.Hash
 	}
 	if !template.IssuerHash.Available() {
 		return nil, errors.New("smx509: issuer hash algorithm not linked into binary")
@@ -160,11 +166,10 @@ func createSM2OCSPResponse(issuer, responderCert *x509.Certificate, template ocs
 
 	response := sm2BasicResponse{
 		TBSResponseData: tbsResponseData,
-		SignatureAlgorithm: pkix.AlgorithmIdentifier{
-			Algorithm: oidSignatureSM2WithSM3,
-			// SM2 algorithm identifier carries no parameters (empty SEQUENCE),
-			// consistent with gmsm.
-		},
+			SignatureAlgorithm: pkix.AlgorithmIdentifier{
+				Algorithm: oidSignatureSM2WithSM3,
+				Parameters: asn1.RawValue{Tag: 5}, // ASN.1 NULL
+			},
 		Signature: asn1.BitString{
 			Bytes:     signature,
 			BitLength: 8 * len(signature),

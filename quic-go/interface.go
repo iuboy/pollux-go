@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/iuboy/pollux-go/tls13gm"
 	"github.com/quic-go/quic-go/internal/handshake"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/qlogwriter"
@@ -58,6 +57,12 @@ type TokenStore interface {
 //
 // when the server rejects a 0-RTT connection attempt.
 var Err0RTTRejected = errors.New("0-RTT rejected")
+
+// ErrWouldBlock is returned by [SendStream.TryWriteAll] if the entire slice can't be queued immediately.
+var ErrWouldBlock = errors.New("operation would block")
+
+// ErrWriteLimitReached is returned by [SendStream.WriteWithLimit] when its limiter prevents accepting the entire slice.
+var ErrWriteLimitReached = errors.New("write limit reached")
 
 // QUICVersionContextKey can be used to find out the QUIC version of a TLS handshake from the
 // context returned by tls.Config.ClientInfo.Context.
@@ -174,7 +179,7 @@ type Config struct {
 	// Enable QUIC datagram support (RFC 9221).
 	EnableDatagrams bool
 	// Enable QUIC Stream Resets with Partial Delivery.
-	// See https://datatracker.ietf.org/doc/html/draft-ietf-quic-reliable-stream-reset-07.
+	// See https://datatracker.ietf.org/doc/html/draft-ietf-quic-reliable-stream-reset-09.
 	EnableStreamResetPartialDelivery bool
 
 	Tracer func(ctx context.Context, isClient bool, connID ConnectionID) qlogwriter.Trace
@@ -197,14 +202,6 @@ type Config struct {
 	// back as ClientConfig.ResumptionIdentity / ResumptionPSK /
 	// ResumptionObfuscatedTicketAge on a subsequent DialEarly. Servers ignore it.
 	GMOnClientSessionTicket func(identity, psk []byte, ticketAgeAdd uint32)
-}
-
-// GMHandshakeConfig carries pollux-go tls13gm handshake configuration for a
-// Config with GMSM4GCM enabled. Exactly one of Client or Server should be set,
-// matching whether the Config is used for Dial (Client) or Listen (Server).
-type GMHandshakeConfig struct {
-	Client *tls13gm.ClientConfig
-	Server *tls13gm.ServerConfig
 }
 
 // ClientInfo contains information about an incoming connection attempt.

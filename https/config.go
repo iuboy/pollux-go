@@ -1,9 +1,10 @@
-package http
+package https
 
 import (
 	"crypto/tls"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -14,8 +15,8 @@ import (
 )
 
 var (
-	errMissingAddr        = errors.New("pollux/http: addr is required")
-	errMissingCertificate = errors.New("pollux/http: certificate is required")
+	errMissingAddr        = errors.New("pollux/https: addr is required")
+	errMissingCertificate = errors.New("pollux/https: certificate is required")
 )
 
 // defaultTLSCurvePreferences restricts the (key-exchange) curves negotiated by
@@ -54,6 +55,10 @@ type ServerOptions struct {
 
 	// --- 通用 ---
 
+	// CipherSuites is shared between TLCP and TLS paths. In hybrid mode both
+	// paths read it; callers running both protocols on one ServerOptions
+	// should leave this empty so each path falls back to its own safe default
+	// (tlcp.DefaultCipherSuites for TLCP, tls.Config defaults for TLS).
 	CipherSuites       []uint16
 	ClientAuth         tlcp.ClientAuthType
 	InsecureSkipVerify bool
@@ -62,9 +67,20 @@ type ServerOptions struct {
 	TLSClientAuth tls.ClientAuthType
 	ClientCAs     *polluxCert.Pool
 
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
+	// ReadTimeout, WriteTimeout, IdleTimeout control the server-side timeouts.
+	// They use *time.Duration pointer semantics to distinguish three states:
+	//
+	//   - nil  → apply the package default (30s/30s/120s) — conservative
+	//   - non-nil non-zero → the explicit duration
+	//   - non-nil zero     → explicitly disable that timeout (NOT recommended
+	//                        except behind a reverse proxy that enforces its
+	//                        own timeouts; removes Slowloris protection)
+	//
+	// Use pollux/https.Duration(d) to take a pointer to a literal duration,
+	// or NoTimeout() to explicitly opt out of a timeout.
+	ReadTimeout  *time.Duration
+	WriteTimeout *time.Duration
+	IdleTimeout  *time.Duration
 }
 
 // LoadTLCPCertificates loads a TLCP dual certificate pair from files.
@@ -166,11 +182,24 @@ func (o *ServerOptions) buildTLSConfig() (*tls.Config, error) {
 func loadSM2KeyPair(certPEM, keyPEM []byte) (*tls.Certificate, error) {
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil {
-		return nil, errors.New("pollux/http: failed to decode cert PEM")
+		return nil, errors.New("pollux/https: failed to decode cert PEM")
+	}
+	polluxCert, err := polluxCert.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("pollux/https: failed to parse SM2 certificate: %w", err)
 	}
 	key, err := polluxSm2.ParsePrivateKeyFromPEM(keyPEM)
 	if err != nil {
 		return nil, err
+	}
+	// Verify the private key matches the certificate's public key.
+	certPub, ok := polluxCert.PublicKey.(*polluxSm2.PublicKey)
+	if !ok {
+		return nil, errors.New("pollux/https: SM2 certificate public key type mismatch")
+	}
+	keyPub := &key.PublicKey
+	if certPub.X.Cmp(keyPub.X) != 0 || certPub.Y.Cmp(keyPub.Y) != 0 {
+		return nil, errors.New("pollux/https: private key does not match certificate's public key")
 	}
 	return &tls.Certificate{
 		Certificate: [][]byte{certBlock.Bytes},
@@ -210,18 +239,26 @@ type ClientOptions struct {
 	TLSCipherSuites       []uint16
 	TLSInsecureSkipVerify bool
 
-	Timeout      time.Duration
+	// Timeout controls the end-to-end client request timeout. Same pointer
+	// semantics as ServerOptions.ReadTimeout:
+	//
+	//   - nil  → no client.Timeout (http.Client default: unlimited per-request)
+	//   - non-nil non-zero → the explicit duration
+	//   - non-nil zero     → explicitly no timeout
+	Timeout      *time.Duration
 	MaxRedirects int // Maximum number of HTTP redirects (default: 10). Set to -1 to disable redirect following.
 }
 
 // buildTLCPClientConfig builds a tlcp.Config for client use.
 func (o *ClientOptions) buildTLCPClientConfig() (*tlcp.Config, error) {
 	// Fail-closed: a TLCP client without any root CAs, client certificates,
-	// or explicit InsecureSkipVerify would fall back to the system cert store
-	// (non-deterministic across environments) — effectively unauthenticated
-	// by accident. Require at least one trust anchor or explicit opt-in.
-	if o.SignRootCAs == nil && o.EncRootCAs == nil && len(o.Certificates) == 0 && !o.InsecureSkipVerify {
-		return nil, errors.New("pollux/http: at least one certificate, root pool, or InsecureSkipVerify is required")
+		// or explicit InsecureSkipVerify would fall back to the system cert store
+		// (non-deterministic across environments) — effectively unauthenticated
+		// by accident. Require at least one trust anchor or explicit opt-in.
+		// TLCP client auth uses SignCert/EncCert, not Certificates (which is TLS field).
+		if o.SignRootCAs == nil && o.EncRootCAs == nil &&
+			(o.SignCert == nil && o.EncCert == nil) && !o.InsecureSkipVerify {
+		return nil, errors.New("pollux/https: at least one certificate, root pool, or InsecureSkipVerify is required")
 	}
 	cfg := &tlcp.Config{
 		SignCertificate:    o.SignCert,
@@ -256,7 +293,7 @@ func (o *ClientOptions) buildTLCPClientConfig() (*tlcp.Config, error) {
 // behavior.
 func (o *ClientOptions) buildTLSClientConfig() (*tls.Config, error) {
 	if len(o.Certificates) == 0 && o.RootCAs == nil && !o.TLSInsecureSkipVerify {
-		return nil, errors.New("pollux/http: at least one certificate, root pool, or TLSInsecureSkipVerify is required")
+		return nil, errors.New("pollux/https: at least one certificate, root pool, or TLSInsecureSkipVerify is required")
 	}
 
 	cfg := &tls.Config{

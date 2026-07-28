@@ -16,6 +16,16 @@ package pwhash
 // NeedsRehash reports whether an existing encoded hash should be recomputed
 // with the current parameters — used to lazily upgrade hashes during login
 // after a parameter bump or algorithm change.
+//
+// Concurrency contract: every PasswordHasher implementation MUST be safe for
+// concurrent use. A single instance is expected to be shared across HTTP
+// request goroutines (the typical deployment pattern for an auth service),
+// so all methods — Hash, Verify, NeedsRehash, Algorithm — MUST be safe to
+// call from multiple goroutines simultaneously without external
+// synchronization. The current concrete implementations (Argon2id,
+// PBKDF2SM3) satisfy this because their params field is a value type set
+// once at construction and never mutated; future implementations that hold
+// mutable state MUST guard it internally.
 type PasswordHasher interface {
 	// Hash returns a PHC-style encoded string embedding algorithm + params.
 	Hash(password string) (encoded string, err error)

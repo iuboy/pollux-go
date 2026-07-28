@@ -164,6 +164,26 @@ func TestHKDFExtract_WithExplicitSalt(t *testing.T) {
 	}
 }
 
+// TestHKDFExtract_EmptySaltUsesDefaultSalt covers the RFC 5869 §2.2 rule:
+// when salt is empty, HKDF-Extract substitutes a zero string of HashLen as
+// the HMAC key. The result must therefore equal HMAC(zeroes, ikm).
+func TestHKDFExtract_EmptySaltUsesDefaultSalt(t *testing.T) {
+	ikm := []byte("input-keying-material")
+	ours := HKDFExtract(nil, ikm)
+	// Empty salt ⇒ HMAC key is a zero byte slice of length Size.
+	defaultSalt := make([]byte, Size)
+	std := hmac.New(sha256.New, defaultSalt)
+	std.Write(ikm)
+	if !bytes.Equal(ours, std.Sum(nil)) {
+		t.Errorf("HKDFExtract(nil salt) does not match HMAC(zeros, ikm)")
+	}
+	// Also exercise the explicit empty-slice form (len==0, non-nil).
+	ours2 := HKDFExtract([]byte{}, ikm)
+	if !bytes.Equal(ours, ours2) {
+		t.Errorf("HKDFExtract(nil) != HKDFExtract([]byte{})")
+	}
+}
+
 func TestNewHMAC_DifferentKeysProduceDifferentMACs(t *testing.T) {
 	data := []byte("same data")
 	h1 := NewHMAC([]byte("key-a"))

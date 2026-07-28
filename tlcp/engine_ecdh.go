@@ -3,7 +3,6 @@ package tlcp
 import (
 	"crypto"
 	"crypto/ecdsa"
-	"crypto/rand"
 	"errors"
 	"io"
 
@@ -95,6 +94,3 @@ func (uv *ecdhPublicKey) sm2SharedKey(isResponder bool, keyLen int, sPub, sRemot
 	// sides when uid/remoteUID are nil — matching gotlcp's behavior.
 	return uv.k.SM2SharedKey(isResponder, keyLen, sPub.k, sRemote.k, nil, nil)
 }
-
-// keep the rand import honest (used indirectly via GenerateKey's reader).
-var _ = rand.Reader

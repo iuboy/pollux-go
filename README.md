@@ -59,9 +59,9 @@ pt, _ := sm4.OpenWithNonce(key, sealed, additionalData)
 标准 TLS 1.3 HTTP 服务（路线 A）：
 
 ```go
-import "github.com/iuboy/pollux-go/http"
+import "github.com/iuboy/pollux-go/https"
 
-srv, err := http.NewTLS13Server(opts)  // MinVersion 强制 TLS 1.3
+srv, err := https.NewTLS13Server(opts)  // MinVersion 强制 TLS 1.3
 ```
 
 各包的完整 API 见 godoc，设计背景见 [文档](#文档)。

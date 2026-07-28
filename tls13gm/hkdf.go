@@ -58,6 +58,11 @@ func buildHKDFLabel(label string, context []byte, length int) ([]byte, error) {
 // HKDF-Expand-Label(secret, label, Hash(transcript), Hash.length); the hash is
 // taken at the call site so it can be amortized via the incremental Transcript
 // digest instead of re-hashing the full buffer each time.
+//
+// In production handshake code, callers pass Transcript.Sum() (always 32
+// bytes). Some test vectors and non-transcript callers pass other context
+// bytes; we do not hard-enforce the 32-byte length to preserve that API
+// surface, but production callers MUST pass an SM3 digest.
 func DeriveSecret(secret []byte, label string, transcriptHash []byte) ([]byte, error) {
 	return HKDFExpandLabel(secret, label, transcriptHash, sm3.Size)
 }

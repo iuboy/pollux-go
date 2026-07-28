@@ -105,7 +105,7 @@ func populateConfig(config *Config) *Config {
 		initialPacketSize = protocol.InitialPacketSize
 	}
 
-	return &Config{
+	cfg := &Config{
 		GetConfigForClient:               config.GetConfigForClient,
 		Versions:                         versions,
 		HandshakeIdleTimeout:             handshakeIdleTimeout,
@@ -125,8 +125,7 @@ func populateConfig(config *Config) *Config {
 		EnableStreamResetPartialDelivery: config.EnableStreamResetPartialDelivery,
 		Allow0RTT:                        config.Allow0RTT,
 		Tracer:                           config.Tracer,
-		GMSM4GCM:                         config.GMSM4GCM,
-		GMHandshakeConfig:                config.GMHandshakeConfig,
-		GMOnClientSessionTicket:          config.GMOnClientSessionTicket,
 	}
+	copyGMConfigFields(cfg, config) // GM fields; see gm_config.go.
+	return cfg
 }

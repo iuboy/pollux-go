@@ -87,9 +87,17 @@ func DecryptSessionTicket(teks [][]byte, ticket []byte) ([]byte, uint32, error) 
 	}
 	aad := []byte{sessionTicketVersion}
 	// Always try every candidate. A success records the candidate plaintext
-	// instead of returning early, so the number of AEAD.Open calls is fixed at
-	// len(teks) regardless of which key matched. AEAD.Open is itself
-	// constant-time over the ciphertext, making the whole loop timing-uniform.
+	// instead of returning early, so the number of AEAD.Open calls is bounded
+	// by len(teks) regardless of which key matched. AEAD.Open is itself
+	// constant-time over the ciphertext.
+	//
+	// Timing caveat: the loop is NOT strictly uniform — keys whose length is
+	// not SessionTicketKeyLen or whose NewAEAD call fails hit an early
+	// `continue` and skip the AEAD.Open call. In practice the rotator only
+	// ever produces well-formed 16-byte keys, so this non-uniformity is not
+	// observable on the happy path. If a future caller mixes malformed keys
+	// into the rotation window, those should be filtered before reaching
+	// this loop to preserve the timing contract.
 	var (
 		result []byte
 		ageAdd uint32

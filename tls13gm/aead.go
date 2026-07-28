@@ -11,6 +11,7 @@ var errInvalidNonceLen = errors.New("tls13gm: nonce must be 12 bytes for TLS 1.3
 
 // NewAEAD creates an SM4-GCM AEAD cipher for TLS 1.3 packet protection.
 // The SM4-GCM cipher.AEAD is initialized once at construction time for efficiency.
+// nonce is deep-copied so the caller may reuse the input slice.
 // Returns an error if nonce is not exactly 12 bytes (TLS 1.3 SM4-GCM nonce length).
 func NewAEAD(key, nonce []byte) (*AEAD, error) {
 	if len(nonce) != 12 {
@@ -20,7 +21,9 @@ func NewAEAD(key, nonce []byte) (*AEAD, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &AEAD{aead: aead, fixedNonce: nonce}, nil
+	fixedNonce := make([]byte, 12)
+	copy(fixedNonce, nonce)
+	return &AEAD{aead: aead, fixedNonce: fixedNonce}, nil
 }
 
 // AEAD provides SM4-GCM encryption/decryption for TLS 1.3 records.

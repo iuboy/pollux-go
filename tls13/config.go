@@ -27,6 +27,10 @@ type ClientOptions struct {
 }
 
 // ServerConfig returns a *tls.Config enforcing TLS 1.3 for server use.
+// Both MinVersion and MaxVersion are pinned to TLS 1.3 so the config
+// rejects both downgrade attempts (MinVersion floor) and future-version
+// negotiation (MaxVersion ceiling) — the function name's "TLS 1.3"
+// contract is enforced regardless of caller configuration.
 func ServerConfig(opts ServerOptions) (*tls.Config, error) {
 	if len(opts.Certificates) == 0 {
 		return nil, errNoCertificates
@@ -36,6 +40,7 @@ func ServerConfig(opts ServerOptions) (*tls.Config, error) {
 	}
 	cfg := &tls.Config{
 		MinVersion:   tls.VersionTLS13,
+		MaxVersion:   tls.VersionTLS13,
 		Certificates: opts.Certificates,
 		NextProtos:   opts.NextProtos,
 		ClientAuth:   opts.ClientAuth,
@@ -47,9 +52,12 @@ func ServerConfig(opts ServerOptions) (*tls.Config, error) {
 }
 
 // ClientConfig returns a *tls.Config enforcing TLS 1.3 for client use.
+// Both MinVersion and MaxVersion are pinned to TLS 1.3 — see ServerConfig
+// for the rationale.
 func ClientConfig(opts ClientOptions) (*tls.Config, error) {
 	cfg := &tls.Config{
 		MinVersion:         tls.VersionTLS13,
+		MaxVersion:         tls.VersionTLS13,
 		ServerName:         opts.ServerName,
 		RootCAs:            opts.RootCAs,
 		Certificates:       opts.Certificates,

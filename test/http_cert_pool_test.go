@@ -11,7 +11,7 @@ import (
 	"time"
 
 	polluxCert "github.com/iuboy/pollux-go/cert"
-	polluxHttp "github.com/iuboy/pollux-go/http"
+	polluxHttp "github.com/iuboy/pollux-go/https"
 	polluxSM2 "github.com/iuboy/pollux-go/sm2"
 	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )

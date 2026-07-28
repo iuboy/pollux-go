@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iuboy/pollux-go/internal/memsecure"
 	"github.com/iuboy/pollux-go/tls13gm"
 )
 
@@ -87,11 +88,23 @@ func (r *ticketKeyRotator) keys() [][]byte {
 }
 
 // rotateLocked forces a rotation: previous <- current, current <- fresh random.
-// Used by tests to exercise the rotation window deterministically.
+// The displaced previous key is securely zeroed via memsecure so it does not
+// linger on the heap waiting for GC. Used by tests to exercise the rotation
+// window deterministically. Caller MUST hold r.mu.
 func (r *ticketKeyRotator) rotateLocked() {
 	next := make([]byte, tls13gm.SessionTicketKeyLen)
 	if _, err := rand.Read(next); err != nil {
-		return // keep current key on failure; next keys() call retries
+		// Keep the current key on failure; the next keys() call retries. We do
+		// NOT silently advance rotatedAt here — leaving it untouched means the
+		// next keys() call sees the same elapsed time and retries immediately,
+		// rather than masking the failure for a full rotation period.
+		return
+	}
+	// Securely zero the displaced previous key before dropping the reference.
+	// The GC will not scrub the backing array, so without this the previous TEK
+	// lingers in memory until the allocator reuses those pages.
+	if r.previous != nil {
+		memsecure.ZeroBytes(r.previous)
 	}
 	r.previous = r.current
 	r.current = next

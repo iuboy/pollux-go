@@ -2,6 +2,7 @@ package smx509
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -94,6 +95,34 @@ func TestCheckCertificateRequestSignature(t *testing.T) {
 
 	if err := CheckCertificateRequestSignature(csr); err != nil {
 		t.Errorf("CheckCertificateRequestSignature: %v", err)
+	}
+}
+
+// TestCheckCertificateRequestSignature_CorruptedECDSA 验证 ECDSA CSR 的
+// 破坏签名被正确拒绝（回归保护）。
+//
+// 回归背景：CheckCertificateRequestSignature 对所有 stdlib 失败做 gmsm 重试，
+// 但 gmsm 重试走 DER 往返（Raw 含原始有效签名），会从 DER 恢复有效签名，
+// 掩盖内存中破坏的 Signature 字段 → 破坏签名被误判为有效。修复仅对
+// ErrUnsupportedAlgorithm（SM2 OID）重试，其他错误直接返回。
+func TestCheckCertificateRequestSignature_CorruptedECDSA(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tpl := &x509.CertificateRequest{Subject: pkix.Name{CommonName: "corrupted"}}
+	der, err := x509.CreateCertificateRequest(rand.Reader, tpl, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := x509.ParseCertificateRequest(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 破坏内存中的签名字节
+	csr.Signature = []byte{0x00, 0x01, 0x02}
+	if err := CheckCertificateRequestSignature(csr); err == nil {
+		t.Error("corrupted ECDSA CSR signature should be rejected, got nil")
 	}
 }
 

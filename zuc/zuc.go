@@ -79,12 +79,13 @@ func Encrypt(key []byte, count, bearer, direction uint32, plaintext []byte) ([]b
 	if err != nil {
 		return nil, err
 	}
-	if stream == nil {
-		// Defensive: gmsm should never return (nil, nil), but a future
-		// regression would panic on the XORKeyStream call below. Surface it
-		// as an error instead.
-		return nil, fmt.Errorf("zuc: NewEEACipher returned nil stream without error")
-	}
+	// Note: gmsmZUC.NewEEACipher returns a non-interface concrete type
+	// boxed into the stream cipher interface; staticcheck proves (via
+	// cross-package analysis) it never returns a nil interface. A defensive
+	// `if stream == nil` check here is dead code (SA4023) and was removed.
+	// If gmsm ever changes the contract, the XORKeyStream call below will
+	// panic loudly rather than fail silently — which is the desired
+	// failure mode for a contract regression.
 	ciphertext := make([]byte, len(plaintext))
 	stream.XORKeyStream(ciphertext, plaintext)
 	return ciphertext, nil
@@ -96,9 +97,8 @@ func MAC(key []byte, count, bearer, direction uint32, data []byte) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	if h == nil {
-		return nil, fmt.Errorf("zuc: NewEIAHash returned nil hash without error")
-	}
+	// See Encrypt for why no defensive `if h == nil` check here:
+	// gmsmZUC.NewEIAHash never returns a nil interface (SA4023).
 	if _, err := h.Write(data); err != nil {
 		return nil, err
 	}

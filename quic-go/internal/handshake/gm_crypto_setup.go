@@ -486,8 +486,16 @@ func (g *GMCryptoSetup) SetLargest1RTTAcked(pn protocol.PacketNumber) error {
 // ChangeConnectionID is a no-op in P0. (Retry/path validation support follows.)
 func (g *GMCryptoSetup) ChangeConnectionID(protocol.ConnectionID) {}
 
-// GetSessionTicket returns nothing in P0 (no PSK/resumption yet).
-func (g *GMCryptoSetup) GetSessionTicket() ([]byte, error) { return nil, nil }
+// GetSessionTicket returns a NewSessionTicket (carrying a resumption PSK) for
+// the server to send post-handshake, enabling the client to resume — and use
+// 0-RTT — on a future connection. Only valid server-side, after
+// HandleClientFinished.
+func (g *GMCryptoSetup) GetSessionTicket() ([]byte, error) {
+	if g.perspective != protocol.PerspectiveServer || g.serverHs == nil {
+		return nil, nil
+	}
+	return g.serverHs.NewSessionTicket(7200, 0)
+}
 
 func (g *GMCryptoSetup) Close() error { return nil }
 

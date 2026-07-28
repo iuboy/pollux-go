@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/iuboy/pollux-go/sm2"
 	"golang.org/x/crypto/ocsp"
 )
 
@@ -17,8 +18,14 @@ const (
 )
 
 // CreateOCSPResponse creates an OCSP response signed by the responder.
-// If the responder key is SM2, the response is signed with SM2+SM3.
+// If signer is an SM2 private key, the response is signed with SM2+SM3
+// (GM/T 0009-2012) via createSM2OCSPResponse; otherwise it delegates to
+// golang.org/x/crypto/ocsp.CreateResponse, which cannot handle SM2 keys
+// (its signingParamsForPublicKey rejects sm2.P256()).
 func CreateOCSPResponse(template *ocsp.Response, responderCert *x509.Certificate, signer crypto.Signer) ([]byte, error) {
+	if sm2Key, ok := signer.(*sm2.PrivateKey); ok {
+		return createSM2OCSPResponse(responderCert, responderCert, *template, sm2Key)
+	}
 	return ocsp.CreateResponse(responderCert, responderCert, *template, signer)
 }
 

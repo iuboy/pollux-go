@@ -296,22 +296,7 @@ next_keys   = DeriveQUICPacketKeys(next_secret)
 
 5. **状态机一致性**: QUIC 加密级别切换（Initial → Handshake → 1-RTT）必须严格按序，丢弃越级数据包。
 
-## 9. 下一步行动
-
-| 步骤 | 任务 | 优先级 | 状态 |
-|------|------|--------|------|
-| 1 | QUIC 标签常量 + 密钥派生（`tls13gm/quic_keys.go`） | P2 | ✅ 已完成 |
-| 2 | Header Protection mask（`tls13gm/quic_header.go`，SM4-ECB） | P2 | ✅ 已完成 |
-| 3 | Transport 组装层（`quicgm/packet.go`） | P2 | ✅ 已完成 |
-| 4 | Key Update 支持（`tls13gm.QUICKeyUpdate`） | P2 | ✅ 已完成 |
-| 5 | 包内 + 黑盒测试 | P2 | ✅ 已完成 |
-| 6a | QUIC v1 Initial packet 端到端保护（varint + Seal/Open，dcid 派生 keys） | P3 | ✅ 已完成 |
-| 6b | TLS 1.3 GM 握手引擎（消息层 + transcript + 状态机）→ 三级密钥切换；quicgm CRYPTO frame + Handshake/1-RTT 包变体 | P3 | ✅ 已完成 |
-| 6c | packet-number 截断编解码（Choose/Truncate/Decode，RFC 9000 §17.1） | P3 | ✅ 已完成 |
-| 7 | 性能基准测试（对比 AES-128-GCM） | P3 | ✅ 已完成 |
-| 8 | BabaSSL/Tongsuo 互操作验证（1-RTT 握手 + 应用数据回显 + PSK resumption） | P4 | ✅ 已完成（见 [互通矩阵](../security/interop-matrix.md)） |
-
-### 9.1 性能基线（Apple M5, darwin/arm64, go 1.26, benchtime=2s）
+## 9. 性能基线（Apple M5, darwin/arm64, go 1.26, benchtime=2s）
 
 | 操作 | 大小 | 吞吐 (MB/s) | 说明 |
 |------|------|-------------|------|

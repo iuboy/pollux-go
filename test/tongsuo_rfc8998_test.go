@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iuboy/pollux-go/sm3"
 	"github.com/iuboy/pollux-go/tls13gm"
 )
 
@@ -694,15 +695,6 @@ func TestRFC8998_Tongsuo_PSKResume(t *testing.T) {
 	if !ok {
 		t.Skip("Tongsuo/BabaSSL not found; skipping RFC 8998 interop gate")
 	}
-	// Tongsuo s_server rejects the pollux binder with "binder does not verify"
-	// (extensions.c:1673) despite pollux's binder/PSK/RMS being byte-for-byte
-	// RFC 8446 correct (openssl-verified) and phase-1 traffic secrets matching
-	// the Tongsuo keylog. The discrepancy is on the Tongsuo side (GM-fork
-	// non-standard RMS/binder behaviour) and needs source-level debugging. Skip
-	// so this does not block CI; the test body is retained as reproduction +
-	// diagnostic harness. See docs/security/interop-matrix.md and memory
-	// tls13gm-psk-resume-interop-blocker.
-	t.Skip("pollux<->Tongsuo PSK resume binder blocked on Tongsuo side (black box); pollux crypto verified correct")
 	cert, key := tongsuoGenSM2Cert(t, ts)
 	// -naccept 2: accept two connections on one s_server instance so the ticket
 	// issued to the first is resumable on the second (in-memory ticket store).
@@ -801,6 +793,11 @@ func TestRFC8998_DialFixedResume(t *testing.T) {
 		t.Fatalf("read NST: %v", err)
 	}
 	conn1.Close()
+	t1sm3 := sm3.Sum(hs1.TranscriptBytes())
+	t.Logf("PDBG t1_SM3=%x", t1sm3)
+	rms, _ := tls13gm.DeriveResumptionMasterSecret(hs1.MasterSecret(), t1sm3[:])
+	t.Logf("PDBG RMS=%x", rms)
+	t.Logf("PDBG PSK=%x", psk)
 	t.Logf("harvested identity(%d) psk(%d) age=%d", len(identity), len(psk), ageAdd)
 	// Phase 2: PSK resume.
 	conn2, err := net.Dial("tcp", "127.0.0.1:"+port)

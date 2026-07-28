@@ -41,9 +41,15 @@ type GMCryptoSetup struct {
 
 	events []Event
 
-	// clientSessionTicket caches the last NewSessionTicket received (1-RTT
-	// post-handshake) so the application can extract the resumption PSK.
-	clientSessionTicket []byte
+	// clientSessionPSK / clientTicketAgeAdd cache the resumption PSK and
+	// ticket_age_add from the last NewSessionTicket received (1-RTT
+	// post-handshake), so the application can reuse them for 0-RTT.
+	clientSessionPSK  []byte
+	clientTicketAgeAdd uint32
+	// onClientSessionTicket, when non-nil, is invoked once per freshly received
+	// NewSessionTicket (client side only), delivering the resumption PSK and
+	// ticket_age_add to the application for a subsequent 0-RTT attempt.
+	onClientSessionTicket func(psk []byte, ticketAgeAdd uint32)
 
 	// Packet-protection codecs, populated lazily as keys become available.
 	initialSealer   LongHeaderSealer
@@ -69,6 +75,7 @@ func NewGMCryptoSetupClient(
 	tp *wire.TransportParameters,
 	logger utils.Logger,
 	version protocol.Version,
+	onClientSessionTicket func(psk []byte, ticketAgeAdd uint32),
 ) (*GMCryptoSetup, error) {
 	if clientCfg == nil {
 		return nil, fmt.Errorf("handshake: GM client config is required")
@@ -83,12 +90,13 @@ func NewGMCryptoSetupClient(
 		return nil, err
 	}
 	g := &GMCryptoSetup{
-		perspective: protocol.PerspectiveClient,
-		version:     version,
-		logger:      logger,
-		clientHs:    hs,
-		ourParams:   tp,
-		events:      make([]Event, 0, 8),
+		perspective:           protocol.PerspectiveClient,
+		version:               version,
+		logger:                logger,
+		clientHs:              hs,
+		ourParams:             tp,
+		events:                make([]Event, 0, 8),
+		onClientSessionTicket: onClientSessionTicket,
 	}
 	if err := g.initInitialKeys(hs.Secrets()); err != nil {
 		return nil, err
@@ -242,7 +250,15 @@ func (g *GMCryptoSetup) handleOneClient(msgType uint8, msg []byte, encLevel prot
 		// surfaces the PSK via the CRYPTO stream for the application to cache).
 		switch msgType {
 		case tls13gm.HandshakeTypeNewSessionTicket:
-			g.clientSessionTicket = append(g.clientSessionTicket[:0], msg...)
+			psk, ageAdd, err := tls13gm.ParseNewSessionTicketBody(msg[4:])
+			if err != nil {
+				return fmt.Errorf("handshake: GM parse NewSessionTicket: %w", err)
+			}
+			g.clientSessionPSK = psk
+			g.clientTicketAgeAdd = ageAdd
+			if g.onClientSessionTicket != nil {
+				g.onClientSessionTicket(psk, ageAdd)
+			}
 			return nil
 		default:
 			return fmt.Errorf("handshake: GM unexpected 1-RTT message type %d", msgType)
@@ -518,23 +534,33 @@ func (g *GMCryptoSetup) GetSessionTicket() ([]byte, error) {
 	return g.serverHs.NewSessionTicket(7200, 0)
 }
 
-// ClientSessionTicket returns the most recent NewSessionTicket received from
-// the server (client side), or nil if none. The application extracts the
-// resumption PSK (the Ticket field) to attempt resumption / 0-RTT on a later
-// connection. Not part of the CryptoSetup interface; cast to *GMCryptoSetup to
-// access.
-func (g *GMCryptoSetup) ClientSessionTicket() []byte { return g.clientSessionTicket }
+// ClientSessionTicket returns the resumption PSK and ticket_age_add from the
+// most recent NewSessionTicket received from the server (client side), or
+// (nil, 0) if none. The PSK is the NewSessionTicket.Ticket field (carried
+// verbatim) and can be reused as ClientConfig.ResumptionPSK for a subsequent
+// 0-RTT attempt, paired with ticketAgeAdd as ResumptionObfuscatedTicketAge.
+// Not part of the CryptoSetup interface; cast to *GMCryptoSetup to access.
+func (g *GMCryptoSetup) ClientSessionTicket() (psk []byte, ticketAgeAdd uint32) {
+	return g.clientSessionPSK, g.clientTicketAgeAdd
+}
 
 func (g *GMCryptoSetup) Close() error { return nil }
 
 func (g *GMCryptoSetup) ConnectionState() ConnectionState {
-	// P0: minimal state. tls.ConnectionState does not carry the cipher suite, so
-	// the GM suite (TLS_SM4_GCM_SM3) is implied by the use of GMCryptoSetup.
+	// tls.ConnectionState does not carry the cipher suite, so the GM suite
+	// (TLS_SM4_GCM_SM3) is implied by the use of GMCryptoSetup.
+	used0RTT := false
+	if g.perspective == protocol.PerspectiveClient && g.clientHs != nil {
+		// 0-RTT is "used" only when the server accepted it (echoed early_data).
+		used0RTT = g.clientHs.EarlyDataAccepted()
+	} else if g.serverHs != nil {
+		used0RTT = g.serverHs.AcceptedEarlyData()
+	}
 	return ConnectionState{
 		tls.ConnectionState{
 			Version:           0x0304, // TLS 1.3
 			HandshakeComplete: g.handshakeDone,
 		},
-		false, // Used0RTT
+		used0RTT,
 	}
 }

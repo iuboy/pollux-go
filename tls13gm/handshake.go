@@ -135,6 +135,9 @@ type ClientHandshaker struct {
 	// makes the handshake skip Certificate/CertificateVerify (server omits them
 	// in PSK mode) and derive the early secret from resumptionPSK.
 	pskMode bool
+	// earlyDataAccepted is set in HandleEncryptedExtensions when the server
+	// echoed early_data, i.e. it accepted the client's 0-RTT.
+	earlyDataAccepted bool
 }
 
 // PeerTransportParams returns the raw QUIC transport parameters received from
@@ -512,6 +515,10 @@ func (c *ClientHandshaker) HandleEncryptedExtensions(encryptedExt []byte) error 
 	if tp := findExtension(ee.Extensions, ExtensionTypeQUICTransportParams); tp != nil {
 		c.peerTransportParams = tp
 	}
+	// The server echoes early_data only when it accepted the client's 0-RTT.
+	if hasExtension(ee.Extensions, ExtensionTypeEarlyData) {
+		c.earlyDataAccepted = true
+	}
 	c.transcript.AddMessage(eeType, eeBody)
 	// In PSK mode the server omits Certificate/CertificateVerify, so advance
 	// straight to the Finished-expecting phase.
@@ -718,11 +725,14 @@ type ServerHandshaker struct {
 	// pre_shared_key binder validates; ServerFlight then derives the early
 	// secret from it instead of zeros.
 	resumptionPSKs        [][]byte
+	pskLookup             func(identity []byte) (psk []byte, ok bool)
+	onPSKIssued           func(psk []byte)
 	resumptionSelectedPSK []byte
 	// allowEarlyData echoes ServerConfig.AllowEarlyData; clientOfferedEarlyData
 	// is set in HandleClientHello when the ClientHello carries early_data.
 	allowEarlyData         bool
 	clientOfferedEarlyData bool
+	acceptedEarlyData      bool // set when the server echoes early_data in EE
 	earlyDataAcceptor      func([]byte) bool
 }
 
@@ -760,6 +770,14 @@ type ServerConfig struct {
 	// caller populates this from a ticket store; tls13gm does not maintain one.
 	ResumptionPSKs [][]byte
 
+	// PSKLookup, when non-nil, resolves a client-offered pre_shared_key identity
+	// to the resumption PSK the server issued for it (returns ok=false if the
+	// identity is unknown). It takes precedence over ResumptionPSKs and lets a
+	// stateful server accept tickets it issued on a prior connection (e.g. the
+	// QUIC GMCryptoSetup records each NewSessionTicket's PSK here). The binder is
+	// still verified, so an identity that maps to no issued PSK is rejected.
+	PSKLookup func(identity []byte) (psk []byte, ok bool)
+
 	// AllowEarlyData, when true, lets the server accept 0-RTT data from a
 	// resuming client (the EncryptedExtensions then carries early_data). A server
 	// accepting 0-RTT MUST pair this with an AntiReplayCache (quicgm); without
@@ -772,6 +790,12 @@ type ServerConfig struct {
 	// client's offered resumption PSK; the acceptor typically consults an
 	// AntiReplayCache.
 	EarlyDataAcceptor func(psk []byte) bool
+
+	// OnPSKIssued, when non-nil, is invoked with each freshly derived resumption
+	// PSK right before the NewSessionTicket carrying it is sealed. A stateful
+	// server records the PSK so a later PSKLookup can accept it for resumption
+	// (and 0-RTT) on another connection.
+	OnPSKIssued func(psk []byte)
 }
 
 // NewServerHandshakerWithConfig prepares a server handshaker from an explicit
@@ -808,6 +832,8 @@ func NewServerHandshakerWithConfig(cfg ServerConfig) (*ServerHandshaker, error) 
 		secrets:              HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
 		localTransportParams: cfg.TransportParameters,
 		resumptionPSKs:       cfg.ResumptionPSKs,
+		pskLookup:            cfg.PSKLookup,
+		onPSKIssued:          cfg.OnPSKIssued,
 		allowEarlyData:       cfg.AllowEarlyData,
 		earlyDataAcceptor:    cfg.EarlyDataAcceptor,
 	}, nil
@@ -909,7 +935,7 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 // constant time. On success s.resumptionSelectedPSK is set so ServerFlight can
 // derive the early secret from the PSK instead of zeros.
 func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte) error {
-	if len(s.resumptionPSKs) == 0 {
+	if len(s.resumptionPSKs) == 0 && s.pskLookup == nil {
 		return fmt.Errorf("tls13gm: client offered PSK but server has none configured")
 	}
 	identities, binders, err := parsePreSharedKeyExtension(pskExt)
@@ -920,10 +946,16 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 		return fmt.Errorf("tls13gm: pre_shared_key must offer exactly one identity and binder")
 	}
 	var psk []byte
-	for _, candidate := range s.resumptionPSKs {
-		if bytes.Equal(candidate, identities[0].Identity) {
-			psk = candidate
-			break
+	if s.pskLookup != nil {
+		if p, ok := s.pskLookup(identities[0].Identity); ok {
+			psk = p
+		}
+	} else {
+		for _, candidate := range s.resumptionPSKs {
+			if bytes.Equal(candidate, identities[0].Identity) {
+				psk = candidate
+				break
+			}
 		}
 	}
 	if psk == nil {
@@ -1027,9 +1059,12 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	if s.localTransportParams != nil {
 		ee.Extensions = append(ee.Extensions, Extension{Type: ExtensionTypeQUICTransportParams, Data: s.localTransportParams})
 	}
-	if s.clientOfferedEarlyData && s.allowEarlyData {
-		// Accept the client's 0-RTT: echo early_data in EncryptedExtensions so
-		// the client knows its early data was accepted.
+	// Accept the client's 0-RTT only when the early traffic keys were actually
+	// derived in HandleClientHello — which happens iff the policy (allowEarlyData
+	// + EarlyDataAcceptor) admitted it. Echoing early_data without the keys would
+	// advertise acceptance while being unable to decrypt the 0-RTT.
+	if s.secrets.ClientEarlyKeys != nil {
+		s.acceptedEarlyData = true
 		ee.Extensions = append(ee.Extensions, Extension{Type: ExtensionTypeEarlyData})
 	}
 	if encExt, err = MarshalHandshakeMessage(ee); err != nil {
@@ -1132,6 +1167,16 @@ func (s *ServerHandshaker) HandleClientFinished(cf []byte) error {
 	return nil
 }
 
+// AcceptedEarlyData reports whether this server accepted the client's 0-RTT
+// (echoed early_data in EncryptedExtensions). It is meaningful after the server
+// flight has been built.
+func (s *ServerHandshaker) AcceptedEarlyData() bool { return s.acceptedEarlyData }
+
+// EarlyDataAccepted reports whether the server accepted this client's 0-RTT
+// (echoed early_data in EncryptedExtensions). Meaningful after the server flight
+// is processed.
+func (c *ClientHandshaker) EarlyDataAccepted() bool { return c.earlyDataAccepted }
+
 // NewSessionTicket produces a NewSessionTicket handshake message carrying a
 // fresh resumption PSK, for the server to send post-handshake under the 1-RTT
 // keys. HandleClientFinished must have completed. ticketLifetime is the PSK
@@ -1149,6 +1194,9 @@ func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32, ticketAgeAdd 
 	psk, err := DeriveResumptionPSK(s.resumptionMasterSecret, nonce[:])
 	if err != nil {
 		return nil, err
+	}
+	if s.onPSKIssued != nil {
+		s.onPSKIssued(psk)
 	}
 	return MarshalHandshakeMessage(&NewSessionTicketMsg{
 		TicketLifetime: ticketLifetime,

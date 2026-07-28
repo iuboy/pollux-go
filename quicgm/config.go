@@ -68,21 +68,26 @@ func (c *ClientConfig) idleTimeout() time.Duration {
 
 // tls13ServerConfig builds the tls13gm server handshaker config. DCID and
 // TransportParameters are filled by the QUIC transport (GMCryptoSetup), not here.
-func (c *ServerConfig) tls13ServerConfig() *tls13gm.ServerConfig {
+// store records issued PSKs and resolves them on resumption (shared across all
+// connections accepted by one Listener).
+func (c *ServerConfig) tls13ServerConfig(store *pskStore) *tls13gm.ServerConfig {
 	cfg := &tls13gm.ServerConfig{
-		Certificate:    c.Certificate,
-		PrivateKey:     c.PrivateKey,
-		AllowEarlyData: c.AllowEarlyData,
+		Certificate: c.Certificate,
+		PrivateKey:  c.PrivateKey,
+		// Record every issued PSK so a later connection can resume against it.
+		OnPSKIssued: store.record,
+		// Resolve a client-offered identity (== PSK) against the issued set.
+		PSKLookup: store.lookup,
 	}
-	// Fail-safe: only wire the acceptor (and thus accept 0-RTT) when an
-	// anti-replay cache is configured.
-	if c.AllowEarlyData && c.AntiReplay != nil {
+	// AllowEarlyData is honored only when an anti-replay cache is configured
+	// (fail-safe). PSK resumption itself works regardless of 0-RTT.
+	allowEarly := c.AllowEarlyData && c.AntiReplay != nil
+	cfg.AllowEarlyData = allowEarly
+	if allowEarly {
 		cache := c.AntiReplay
 		cfg.EarlyDataAcceptor = func(psk []byte) bool {
 			return cache.Check(psk, 0) // age 0: ticket-age tracking is a follow-up
 		}
-	} else {
-		cfg.AllowEarlyData = false
 	}
 	return cfg
 }

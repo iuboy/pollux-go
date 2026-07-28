@@ -497,7 +497,7 @@ var newClientConnection = func(
 	var cs handshake.CryptoSetup
 	if conf.GMSM4GCM {
 		// Route C: RFC 8998 GM handshake driven by pollux-go tls13gm.
-		gmCS, err := handshake.NewGMCryptoSetupClient(destConnID, conf.GMHandshakeConfig.Client, params, logger, s.version)
+		gmCS, err := handshake.NewGMCryptoSetupClient(destConnID, conf.GMHandshakeConfig.Client, params, logger, s.version, conf.GMOnClientSessionTicket)
 		if err != nil {
 			panic("quic-go: GM client CryptoSetup init failed: " + err.Error())
 		}

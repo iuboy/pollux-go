@@ -85,7 +85,7 @@ func TestGMCryptoSetup_FullHandshake(t *testing.T) {
 	}
 	client, err := NewGMCryptoSetupClient(connID, &tls13gm.ClientConfig{
 		InsecureSkipVerify: true,
-	}, clientTP, utils.DefaultLogger, protocol.Version1)
+	}, clientTP, utils.DefaultLogger, protocol.Version1, nil)
 	if err != nil {
 		t.Fatalf("NewGMCryptoSetupClient: %v", err)
 	}

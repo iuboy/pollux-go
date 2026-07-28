@@ -1,6 +1,7 @@
 package tls13gm
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/subtle"
@@ -670,6 +671,13 @@ type ServerHandshaker struct {
 	// CH..client Finished) and seeds NewSessionTicket via DeriveResumptionPSK.
 	// Empty until HandleClientFinished.
 	resumptionMasterSecret []byte
+
+	// resumptionPSKs are the PSKs accepted for resumption (from ServerConfig).
+	// resumptionSelectedPSK is set by HandleClientHello when the client's
+	// pre_shared_key binder validates; ServerFlight then derives the early
+	// secret from it instead of zeros.
+	resumptionPSKs        [][]byte
+	resumptionSelectedPSK []byte
 }
 
 // PeerTransportParams returns the raw QUIC transport parameters received from
@@ -690,6 +698,12 @@ type ServerConfig struct {
 	// consumer; a QUIC transport layer supplies it so the peer can configure the
 	// connection. tls13gm carries the bytes verbatim.
 	TransportParameters []byte
+
+	// ResumptionPSKs is the set of PSKs this server will accept for resumption.
+	// A client offering one of these in pre_shared_key (with a valid binder)
+	// gets a PSK-mode handshake (no Certificate/CertificateVerify). A production
+	// caller populates this from a ticket store; tls13gm does not maintain one.
+	ResumptionPSKs [][]byte
 }
 
 // NewServerHandshakerWithConfig prepares a server handshaker from an explicit
@@ -725,6 +739,7 @@ func NewServerHandshakerWithConfig(cfg ServerConfig) (*ServerHandshaker, error) 
 		transcript:           NewTranscript(),
 		secrets:              HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
 		localTransportParams: cfg.TransportParameters,
+		resumptionPSKs:       cfg.ResumptionPSKs,
 	}, nil
 }
 
@@ -793,6 +808,70 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 	if tp := findExtension(chMsg.Extensions, ExtensionTypeQUICTransportParams); tp != nil {
 		s.peerTransportParams = tp
 	}
+	// PSK resumption (RFC 8446 §4.2.11): if the client offered pre_shared_key,
+	// validate the binder against a known PSK. On success the selected PSK is
+	// recorded for ServerFlight to derive the early secret from.
+	if pskExt := findExtension(chMsg.Extensions, ExtensionTypePreSharedKey); pskExt != nil {
+		if err := s.verifyPSKBinder(&chMsg, pskExt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// verifyPSKBinder validates the client's pre_shared_key binder: it matches the
+// offered identity against the server's known PSKs, reconstructs the truncated
+// ClientHello (binders list empty), recomputes the binder, and compares in
+// constant time. On success s.resumptionSelectedPSK is set so ServerFlight can
+// derive the early secret from the PSK instead of zeros.
+func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte) error {
+	if len(s.resumptionPSKs) == 0 {
+		return fmt.Errorf("tls13gm: client offered PSK but server has none configured")
+	}
+	identities, binders, err := parsePreSharedKeyExtension(pskExt)
+	if err != nil {
+		return fmt.Errorf("tls13gm: parse pre_shared_key: %w", err)
+	}
+	if len(identities) != 1 || len(binders) != 1 {
+		return fmt.Errorf("tls13gm: pre_shared_key must offer exactly one identity and binder")
+	}
+	var psk []byte
+	for _, candidate := range s.resumptionPSKs {
+		if bytes.Equal(candidate, identities[0].Identity) {
+			psk = candidate
+			break
+		}
+	}
+	if psk == nil {
+		return fmt.Errorf("tls13gm: client PSK identity not recognized")
+	}
+	// Reconstruct the truncated ClientHello (pre_shared_key binders empty) to
+	// recompute the binder over the same transcript the client used.
+	truncExts := make([]Extension, len(chMsg.Extensions))
+	copy(truncExts, chMsg.Extensions)
+	for i, e := range truncExts {
+		if e.Type == ExtensionTypePreSharedKey {
+			trunc, err := marshalPreSharedKeyExtension(identities, nil)
+			if err != nil {
+				return err
+			}
+			truncExts[i] = Extension{Type: ExtensionTypePreSharedKey, Data: trunc}
+		}
+	}
+	truncChMsg := *chMsg
+	truncChMsg.Extensions = truncExts
+	truncFull, err := MarshalHandshakeMessage(&truncChMsg)
+	if err != nil {
+		return err
+	}
+	expected, err := computeResumptionBinder(psk, truncFull)
+	if err != nil {
+		return err
+	}
+	if !equalConstantTime(expected, binders[0]) {
+		return fmt.Errorf("tls13gm: PSK binder verification failed")
+	}
+	s.resumptionSelectedPSK = psk
 	return nil
 }
 

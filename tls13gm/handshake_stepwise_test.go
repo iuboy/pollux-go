@@ -401,4 +401,56 @@ func TestClientHello_PreSharedKey(t *testing.T) {
 	}
 }
 
+// TestServerHandshake_VerifyPSKBinder drives the PSK binder end-to-end between a
+// client and server: the client builds a PSK ClientHello (with binder), and the
+// server's HandleClientHello verifies the binder. A recognized PSK is accepted;
+// an unrecognized one is rejected.
+func TestServerHandshake_VerifyPSKBinder(t *testing.T) {
+	dcid := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	cert, serverKey := generateTestSM2Cert(t)
+	psk := bytes.Repeat([]byte{0xEE}, sm3.Size)
+
+	client, err := NewClientHandshakerWithConfig(ClientConfig{
+		DCID:                          dcid,
+		InsecureSkipVerify:            true,
+		ResumptionPSK:                 psk,
+		ResumptionObfuscatedTicketAge: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
+	}
+	ch, err := client.ClientHello()
+	if err != nil {
+		t.Fatalf("ClientHello: %v", err)
+	}
+
+	// Server recognizing the PSK must accept the binder.
+	server, err := NewServerHandshakerWithConfig(ServerConfig{
+		DCID:           dcid,
+		Certificate:    cert,
+		PrivateKey:     serverKey,
+		ResumptionPSKs: [][]byte{psk},
+	})
+	if err != nil {
+		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
+	}
+	if err := server.HandleClientHello(ch); err != nil {
+		t.Fatalf("HandleClientHello with recognized PSK: %v", err)
+	}
+
+	// Server without the PSK must reject.
+	server2, err := NewServerHandshakerWithConfig(ServerConfig{
+		DCID:           dcid,
+		Certificate:    cert,
+		PrivateKey:     serverKey,
+		ResumptionPSKs: [][]byte{bytes.Repeat([]byte{0xFF}, sm3.Size)},
+	})
+	if err != nil {
+		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
+	}
+	if err := server2.HandleClientHello(ch); err == nil {
+		t.Fatal("HandleClientHello accepted an unrecognized PSK")
+	}
+}
+
 

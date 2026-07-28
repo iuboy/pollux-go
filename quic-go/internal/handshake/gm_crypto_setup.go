@@ -46,8 +46,7 @@ type GMCryptoSetup struct {
 	initialOpener   LongHeaderOpener
 	handshakeSealer LongHeaderSealer
 	handshakeOpener LongHeaderOpener
-	oneRTTSealer   ShortHeaderSealer
-	oneRTTOpener   ShortHeaderOpener
+	oneRTTAEAD *gmUpdatableAEAD
 
 	initialDropped   bool
 	handshakeDropped bool
@@ -334,20 +333,19 @@ func (g *GMCryptoSetup) installHandshakeKeys(secrets tls13gm.HandshakeSecrets) e
 // derived, fixed at key phase 0 for P0.
 func (g *GMCryptoSetup) install1RTTKeys(secrets tls13gm.HandshakeSecrets) error {
 	var sealKeys, openKeys *tls13gm.QUICPacketKeys
+	var sealSecret, openSecret []byte
 	if g.perspective == protocol.PerspectiveClient {
 		sealKeys, openKeys = secrets.ClientApplicationKeys, secrets.ServerApplicationKeys
+		sealSecret, openSecret = secrets.ClientApplicationTrafficSecret, secrets.ServerApplicationTrafficSecret
 	} else {
 		sealKeys, openKeys = secrets.ServerApplicationKeys, secrets.ClientApplicationKeys
+		sealSecret, openSecret = secrets.ServerApplicationTrafficSecret, secrets.ClientApplicationTrafficSecret
 	}
-	sealer, err := newGMShortSealer(sealKeys, protocol.KeyPhaseZero)
+	aead, err := newGMUpdatableAEAD(sealKeys, openKeys, sealSecret, openSecret)
 	if err != nil {
 		return err
 	}
-	opener, err := newGMShortOpener(openKeys, protocol.KeyPhaseZero)
-	if err != nil {
-		return err
-	}
-	g.oneRTTSealer, g.oneRTTOpener = sealer, opener
+	g.oneRTTAEAD = aead
 	g.enqueue(Event{Kind: EventReceivedReadKeys})
 	return nil
 }
@@ -412,17 +410,17 @@ func (g *GMCryptoSetup) GetHandshakeSealer() (LongHeaderSealer, error) {
 }
 
 func (g *GMCryptoSetup) Get1RTTOpener() (ShortHeaderOpener, error) {
-	if g.oneRTTOpener == nil {
+	if g.oneRTTAEAD == nil {
 		return nil, ErrKeysNotYetAvailable
 	}
-	return g.oneRTTOpener, nil
+	return g.oneRTTAEAD, nil
 }
 
 func (g *GMCryptoSetup) Get1RTTSealer() (ShortHeaderSealer, error) {
-	if g.oneRTTSealer == nil {
+	if g.oneRTTAEAD == nil {
 		return nil, ErrKeysNotYetAvailable
 	}
-	return g.oneRTTSealer, nil
+	return g.oneRTTAEAD, nil
 }
 
 // Get0RTTOpener returns the 0-RTT packet opener (server side): the early
@@ -466,16 +464,24 @@ func (g *GMCryptoSetup) SetHandshakeConfirmed() {
 	// Once the handshake is confirmed, the Handshake encryption level is dropped
 	// (quic-go calls dropEncryptionLevel(Handshake), which removes the packet-
 	// number space). Drop the handshake sealer/opener in lockstep so
-	// GetHandshakeSealer returns ErrKeysDropped and packers skip the level —
-	// otherwise a CONNECTION_CLOSE would try to packet-number-allocate for a
-	// level whose pnSpace is gone and nil-deref.
+	// GetHandshakeSealer returns ErrKeysDropped and packers skip the level.
 	g.handshakeDropped = true
 	g.handshakeSealer, g.handshakeOpener = nil, nil
+	// Enable 1-RTT key updates (RFC 9001 §6): the first update is allowed once
+	// the handshake is confirmed.
+	if g.oneRTTAEAD != nil {
+		g.oneRTTAEAD.SetHandshakeConfirmed()
+	}
 }
 
-// SetLargest1RTTAcked is a no-op in P0. P3 wires tls13gm.QUICKeyUpdate for key
-// rotation.
-func (g *GMCryptoSetup) SetLargest1RTTAcked(protocol.PacketNumber) error { return nil }
+// SetLargest1RTTAcked feeds the key-update state machine (governs when a
+// locally-initiated update is allowed) and detects a peer that failed to update.
+func (g *GMCryptoSetup) SetLargest1RTTAcked(pn protocol.PacketNumber) error {
+	if g.oneRTTAEAD != nil {
+		return g.oneRTTAEAD.SetLargestAcked(pn)
+	}
+	return nil
+}
 
 // ChangeConnectionID is a no-op in P0. (Retry/path validation support follows.)
 func (g *GMCryptoSetup) ChangeConnectionID(protocol.ConnectionID) {}

@@ -18,12 +18,12 @@ import (
 // tlcpSessionState captures the resumption material from a full handshake.
 // masterSecret is stored as a copy; the cache zeroes it on eviction.
 type tlcpSessionState struct {
-	sessionID       []byte
-	version         uint16
-	cipherSuite     uint16
-	masterSecret    []byte
+	sessionID        []byte
+	version          uint16
+	cipherSuite      uint16
+	masterSecret     []byte
 	peerCertificates [][]byte // DER list, role-dependent (client sees server certs)
-	createdAt       time.Time
+	createdAt        time.Time
 }
 
 // tlcpSessionCache is the contract for a session store. Implementations must be

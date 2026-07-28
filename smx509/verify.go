@@ -22,6 +22,10 @@ type VerifyOptions struct {
 	DNSName       string
 	Roots         *CertPool
 	Intermediates *CertPool
+	// KeyUsages specifies the extended key usages the certificate must satisfy.
+	// If nil, defaults to ExtKeyUsageServerAuth (matching crypto/x509 default).
+	// Set to []ExtKeyUsage{ExtKeyUsageClientAuth} when verifying client certs.
+	KeyUsages []x509.ExtKeyUsage
 }
 
 // Verify verifies a certificate, automatically selecting the standard library
@@ -40,7 +44,8 @@ func Verify(cert *x509.Certificate, opts VerifyOptions) error {
 
 	// Build standard x509.VerifyOptions from CertPool.
 	verifyOpts := x509.VerifyOptions{
-		DNSName: opts.DNSName,
+		DNSName:   opts.DNSName,
+		KeyUsages: opts.KeyUsages,
 	}
 	if opts.Roots != nil {
 		verifyOpts.Roots = opts.Roots.toStdCertPool()
@@ -72,8 +77,16 @@ func verifySM2(cert *x509.Certificate, opts VerifyOptions) error {
 		return fmt.Errorf("smx509: parse SM2 cert: %w", err)
 	}
 
+	// gmsm's ExtKeyUsage is a distinct int-backed type from stdlib's; convert
+	// element-wise (constant values are identical).
+	var smKeyUsages []smx509.ExtKeyUsage
+	for _, ku := range opts.KeyUsages {
+		smKeyUsages = append(smKeyUsages, smx509.ExtKeyUsage(ku))
+	}
+
 	smOpts := smx509.VerifyOptions{
-		DNSName: opts.DNSName,
+		DNSName:   opts.DNSName,
+		KeyUsages: smKeyUsages,
 	}
 
 	if opts.Roots != nil && opts.Roots.Len() > 0 {

@@ -298,7 +298,15 @@ func ExtractPublicKey(priv any) (crypto.PublicKey, error) {
 // CheckCertificateRequestSignature verifies a CSR signature, handling SM2 automatically.
 func CheckCertificateRequestSignature(csr *x509.CertificateRequest) error {
 	if err := csr.CheckSignature(); err != nil {
-		// stdlib failed (e.g. SM2 OID) — retry via smx509 using a DER round-trip.
+		// stdlib can handle RSA/ECDSA/Ed25519 CSR signatures. It only fails for
+		// SM2 because stdlib does not recognize the SM2 signature OID. Retry via
+		// gmsm/smx509 only in that case — a blanket retry would mask genuine
+		// signature verification failures (e.g. a corrupted in-memory Signature
+		// field would be recovered from the valid DER in Raw, hiding the error).
+		if !errors.Is(err, x509.ErrUnsupportedAlgorithm) {
+			return err
+		}
+		// SM2 OID not recognized by stdlib — retry via smx509 using a DER round-trip.
 		// Since gmsm v0.44 the direct struct cast smx509.CertificateRequest(*csr)
 		// is invalid (smx509 is a clean fork, no longer struct-compatible).
 		smCSR, err := toSMX509CertificateRequest(csr)

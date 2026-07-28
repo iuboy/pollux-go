@@ -216,36 +216,8 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	return nil
 }
 
-// establishKeys derives the traffic keys from the master secret and stages them
-// on the in (server→client) and out (client→server) halfConns.
-func (c *tlcpConn) establishKeys(suite *tlcpCipherSuite, masterSecret, clientRandom, serverRandom []byte) error {
-	km := tlcpKeysFromMaster(masterSecret, clientRandom, serverRandom, suite.macLen, suite.keyLen, suite.ivLen)
-
-	if suite.isAEAD() {
-		clientAEAD, err := newTLCPAEADSM4GCM(km.clientKey, km.clientIV)
-		if err != nil {
-			return err
-		}
-		serverAEAD, err := newTLCPAEADSM4GCM(km.serverKey, km.serverIV)
-		if err != nil {
-			return err
-		}
-		c.in.prepareCipherSpec(c.vers, nil, serverAEAD, nil, nil)
-		c.out.prepareCipherSpec(c.vers, nil, clientAEAD, nil, nil)
-	} else {
-		// CBC: halfConn stores the key and rebuilds the mode per record (TLCP
-		// carries a fresh IV in each record). macSize feeds the constant-time
-		// padding/MAC verification.
-		c.in.prepareCipherSpec(c.vers, km.serverKey, nil, hmacSM3Size{}, km.serverMAC)
-		c.out.prepareCipherSpec(c.vers, km.clientKey, nil, hmacSM3Size{}, km.clientMAC)
-	}
-	return nil
-}
-
-// hmacSM3Size satisfies the tlcpMAC interface (Size() int) for CBC suites.
-type hmacSM3Size struct{}
-
-func (hmacSM3Size) Size() int { return 32 }
+// establishKeys and hmacSM3Size are defined in engine_conn.go (shared by
+// client + server handshake drivers).
 
 // readServerCCSAndFinished reads the server's ChangeCipherSpec (switching the
 // input cipher) and Finished message, verifying the server's verify_data.

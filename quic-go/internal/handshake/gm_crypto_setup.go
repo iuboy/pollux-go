@@ -425,9 +425,35 @@ func (g *GMCryptoSetup) Get1RTTSealer() (ShortHeaderSealer, error) {
 	return g.oneRTTSealer, nil
 }
 
-// 0-RTT is not supported in P0.
-func (g *GMCryptoSetup) Get0RTTOpener() (LongHeaderOpener, error) { return nil, ErrKeysNotYetAvailable }
-func (g *GMCryptoSetup) Get0RTTSealer() (LongHeaderSealer, error) { return nil, ErrKeysNotYetAvailable }
+// Get0RTTOpener returns the 0-RTT packet opener (server side): the early
+// traffic keys derived from the accepted resumption PSK, used to decrypt the
+// client's 0-RTT data. Available after HandleClientHello accepted a PSK
+// ClientHello carrying early_data (serverHs.Secrets().ClientEarlyKeys set).
+func (g *GMCryptoSetup) Get0RTTOpener() (LongHeaderOpener, error) {
+	if g.perspective != protocol.PerspectiveServer {
+		return nil, ErrKeysNotYetAvailable
+	}
+	earlyKeys := g.serverHs.Secrets().ClientEarlyKeys
+	if earlyKeys == nil {
+		return nil, ErrKeysNotYetAvailable
+	}
+	return newGMLongOpener(earlyKeys)
+}
+
+// Get0RTTSealer returns the 0-RTT packet sealer (client side): the early
+// traffic keys derived from the resumption PSK, used to encrypt 0-RTT data
+// before the server responds. Available after ClientHello in PSK mode
+// (clientHs.Secrets().ClientEarlyKeys set).
+func (g *GMCryptoSetup) Get0RTTSealer() (LongHeaderSealer, error) {
+	if g.perspective != protocol.PerspectiveClient {
+		return nil, ErrKeysNotYetAvailable
+	}
+	earlyKeys := g.clientHs.Secrets().ClientEarlyKeys
+	if earlyKeys == nil {
+		return nil, ErrKeysNotYetAvailable
+	}
+	return newGMLongSealer(earlyKeys)
+}
 
 // --- lifecycle ---
 

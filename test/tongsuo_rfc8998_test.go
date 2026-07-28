@@ -197,6 +197,17 @@ func trafficAEAD(secret []byte) (*tls13gm.AEAD, error) {
 // server's Finished is verified and the client's Finished has been sent. If
 // resumeIdentity/resumePSK are non-nil, the client attempts a PSK resumption.
 func dialRFC8998(conn net.Conn, serverName string, resumeIdentity, resumePSK []byte, obfAge uint32) (*tls13gm.ClientHandshaker, []byte, error) {
+	hs, cr, _, err := dialRFC8998EarlyData(conn, serverName, resumeIdentity, resumePSK, obfAge, nil)
+	return hs, cr, err
+}
+
+// dialRFC8998EarlyData is dialRFC8998 with optional 0-RTT (RFC 8446 §2.3):
+// when earlyData is non-nil the client offers early_data in the resume
+// ClientHello and sends the payload as a 0-RTT application-data record under
+// the client_early_traffic_secret before reading the server flight.
+// acceptedEarly reports whether the server echoed early_data in
+// EncryptedExtensions (i.e. accepted the 0-RTT).
+func dialRFC8998EarlyData(conn net.Conn, serverName string, resumeIdentity, resumePSK []byte, obfAge uint32, earlyData []byte) (*tls13gm.ClientHandshaker, []byte, bool, error) {
 	hs, err := tls13gm.NewClientHandshakerWithConfig(tls13gm.ClientConfig{
 		DCID:                          []byte("tls-interop-dummy"), // QUIC-only field; unused in TLS record mode
 		ServerName:                    serverName,
@@ -204,14 +215,15 @@ func dialRFC8998(conn net.Conn, serverName string, resumeIdentity, resumePSK []b
 		ResumptionIdentity:            resumeIdentity,
 		ResumptionPSK:                 resumePSK,
 		ResumptionObfuscatedTicketAge: obfAge,
+		EarlyData:                     len(earlyData) > 0,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("new handshaker: %w", err)
+		return nil, nil, false, fmt.Errorf("new handshaker: %w", err)
 	}
 
 	ch, err := hs.ClientHello()
 	if err != nil {
-		return nil, nil, fmt.Errorf("ClientHello: %w", err)
+		return nil, nil, false, fmt.Errorf("ClientHello: %w", err)
 	}
 	// ch = handshake header(4) || legacy_version(2) || random(32); the random
 	// keys the NSS keylog entries for cross-checking with the peer.
@@ -220,13 +232,39 @@ func dialRFC8998(conn net.Conn, serverName string, resumeIdentity, resumePSK []b
 		clientRandom = append(clientRandom, ch[6:38]...)
 	}
 	if err := writeRecord(conn, recTypeHandshake, ch); err != nil {
-		return nil, nil, fmt.Errorf("write ClientHello: %w", err)
+		return nil, nil, false, fmt.Errorf("write ClientHello: %w", err)
 	}
 	// ChangeCipherSpec (middlebox compatibility, RFC 8446 §5): a single-byte
 	// record signaling the switch to encrypted records. Tongsuo emits one and
 	// expects the client to echo it before its first encrypted record.
 	if err := writeRecord(conn, recTypeCCS, []byte{0x01}); err != nil {
-		return nil, nil, fmt.Errorf("write CCS: %w", err)
+		return nil, nil, false, fmt.Errorf("write CCS: %w", err)
+	}
+
+	// 0-RTT (RFC 8446 §2.3): when offering early data, send it under the
+	// client_early_traffic_secret before reading the server flight. The
+	// transcript hash here is Hash(ClientHello2). pollux's DeriveEarlyTrafficKeys
+	// returns QUIC packet keys; for the TLS record key we derive the secret and
+	// feed it through trafficAEAD.
+	acceptedEarly := false
+	if len(earlyData) > 0 {
+		earlySecret := tls13gm.DeriveEarlySecret(resumePSK)
+		chHash := sm3.Sum(ch)
+		earlyTraffic, err := tls13gm.DeriveSecret(earlySecret, tls13gm.LabelClientEarlyTraffic, chHash[:])
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("derive early traffic secret: %w", err)
+		}
+		earlyAEAD, err := trafficAEAD(earlyTraffic)
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("early traffic AEAD: %w", err)
+		}
+		sealed, err := sealRecord(earlyAEAD, 0, recTypeAppData, earlyData)
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("seal 0-RTT: %w", err)
+		}
+		if err := writeRecord(conn, recTypeAppData, sealed); err != nil {
+			return nil, nil, false, fmt.Errorf("write 0-RTT: %w", err)
+		}
 	}
 
 	hr := &handshakeReader{}
@@ -239,7 +277,7 @@ func dialRFC8998(conn net.Conn, serverName string, resumeIdentity, resumePSK []b
 	for {
 		rtype, frag, err := readRecord(conn)
 		if err != nil {
-			return nil, nil, fmt.Errorf("read record: %w", err)
+			return nil, nil, false, fmt.Errorf("read record: %w", err)
 		}
 		switch {
 		case rtype == recTypeCCS:
@@ -247,11 +285,11 @@ func dialRFC8998(conn net.Conn, serverName string, resumeIdentity, resumePSK []b
 		case rtype == recTypeHandshake && !hsKeysReady:
 			// Plaintext ServerHello.
 			if err := hs.HandleServerHello(frag); err != nil {
-				return nil, nil, fmt.Errorf("HandleServerHello: %w", err)
+				return nil, nil, false, fmt.Errorf("HandleServerHello: %w", err)
 			}
 			srvHSRead, err = trafficAEAD(hs.Secrets().ServerHandshakeTrafficSecret)
 			if err != nil {
-				return nil, nil, fmt.Errorf("server hs key: %w", err)
+				return nil, nil, false, fmt.Errorf("server hs key: %w", err)
 			}
 			hsKeysReady = true
 		case hsKeysReady:
@@ -259,7 +297,7 @@ func dialRFC8998(conn net.Conn, serverName string, resumeIdentity, resumePSK []b
 			plaintext, err := openRecord(srvHSRead, srvHSReadSeq, rtype, frag)
 			srvHSReadSeq++
 			if err != nil {
-				return nil, nil, fmt.Errorf("open handshake record: %w", err)
+				return nil, nil, false, fmt.Errorf("open handshake record: %w", err)
 			}
 			// TLSInnerPlaintext = content || ContentType; strip the trailing
 			// content-type byte so it doesn't pollute handshake-message parsing
@@ -269,10 +307,10 @@ func dialRFC8998(conn net.Conn, serverName string, resumeIdentity, resumePSK []b
 			}
 		default:
 			if rtype == 21 && len(frag) >= 2 {
-				return nil, nil, fmt.Errorf("server alert before ServerHello: level=%d desc=%d (%s)",
+				return nil, nil, false, fmt.Errorf("server alert before ServerHello: level=%d desc=%d (%s)",
 					frag[0], frag[1], alertDesc(frag[1]))
 			}
-			return nil, nil, fmt.Errorf("unexpected record type %d before ServerHello", rtype)
+			return nil, nil, false, fmt.Errorf("unexpected record type %d before ServerHello", rtype)
 		}
 
 		// Drain reassembled handshake messages until Finished.
@@ -285,26 +323,29 @@ func dialRFC8998(conn net.Conn, serverName string, resumeIdentity, resumePSK []b
 			switch mt {
 			case tls13gm.HandshakeTypeEncryptedExtensions:
 				if err := hs.HandleEncryptedExtensions(msg); err != nil {
-					return nil, nil, err
+					return nil, nil, false, err
+				}
+				if hs.EarlyDataAccepted() {
+					acceptedEarly = true
 				}
 			case tls13gm.HandshakeTypeCertificate:
 				if err := hs.HandleCertificate(msg); err != nil {
-					return nil, nil, err
+					return nil, nil, false, err
 				}
 			case tls13gm.HandshakeTypeCertificateVerify:
 				if err := hs.HandleCertificateVerify(msg); err != nil {
-					return nil, nil, err
+					return nil, nil, false, err
 				}
 			case tls13gm.HandshakeTypeFinished:
 				if err := hs.HandleServerFinished(msg); err != nil {
-					return nil, nil, fmt.Errorf("HandleServerFinished: %w", err)
+					return nil, nil, false, fmt.Errorf("HandleServerFinished: %w", err)
 				}
 				if err := finishClientFlight(conn, hs); err != nil {
-					return nil, nil, err
+					return nil, nil, false, err
 				}
-				return hs, clientRandom, nil
+				return hs, clientRandom, acceptedEarly, nil
 			default:
-				return nil, nil, fmt.Errorf("unexpected handshake msg type %d", mt)
+				return nil, nil, false, fmt.Errorf("unexpected handshake msg type %d", mt)
 			}
 		}
 	}
@@ -378,6 +419,13 @@ func startTongsuoServer(t *testing.T, ts, cert, key string, rev bool) (*exec.Cmd
 // startTongsuoServerN is like startTongsuoServer but with a configurable
 // -naccept count (for multi-connection scenarios like PSK resumption).
 func startTongsuoServerN(t *testing.T, ts, cert, key string, naccept int) (*exec.Cmd, int, string, string) {
+	return startTongsuoServerNOpts(t, ts, cert, key, naccept, 0)
+}
+
+// startTongsuoServerNOpts is startTongsuoServerN with optional 0-RTT: when
+// maxEarlyData > 0 the server advertises it in tickets and reads early data.
+// -no_anti_replay keeps the interop test deterministic (no replay-window rejection).
+func startTongsuoServerNOpts(t *testing.T, ts, cert, key string, naccept, maxEarlyData int) (*exec.Cmd, int, string, string) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -396,6 +444,10 @@ func startTongsuoServerN(t *testing.T, ts, cert, key string, naccept int) (*exec
 		"-groups", "SM2",
 		"-naccept", fmt.Sprintf("%d", naccept), "-quiet",
 		"-keylogfile", keylogPath,
+	}
+	if maxEarlyData > 0 {
+		args = append(args, "-max_early_data", fmt.Sprintf("%d", maxEarlyData),
+			"-early_data", "-no_anti_replay")
 	}
 	cmd := exec.Command(ts, args...)
 	cmd.Stdout = logFile
@@ -751,6 +803,62 @@ func TestRFC8998_Tongsuo_PSKResume(t *testing.T) {
 	// Reaching here means the server accepted our PSK (binder verified against
 	// the PSK it reconstructed from the ticket) and completed a PSK-mode
 	// handshake. pollux-go is now RFC 8446 resumption-interoperable.
+}
+
+
+// TestRFC8998_Tongsuo_0RTT verifies 0-RTT interop: pollux client offers
+// early_data on PSK resumption, sends 0-RTT application data under the
+// client_early_traffic_secret, and Tongsuo s_server accepts it (echoes
+// early_data in EncryptedExtensions) and completes the PSK-mode handshake.
+func TestRFC8998_Tongsuo_0RTT(t *testing.T) {
+	ts, ok := tongsuoBinary()
+	if !ok {
+		t.Skip("Tongsuo/BabaSSL not found; skipping RFC 8998 interop gate")
+	}
+	cert, key := tongsuoGenSM2Cert(t, ts)
+	// -max_early_data 1024 + -early_data + -no_anti_replay (deterministic, no
+	// replay-window rejection).
+	cmd, port, srvLog, _ := startTongsuoServerNOpts(t, ts, cert, key, 2, 1024)
+	defer func() {
+		cmd.Process.Kill()
+		cmd.Wait()
+	}()
+
+	// Phase 1: full handshake; harvest resumption PSK + identity.
+	conn1, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("dial1: %v", err)
+	}
+	hs1, _, err := dialRFC8998(conn1, "localhost", nil, nil, 0)
+	if err != nil {
+		dumpServerLog(t, srvLog)
+		t.Fatalf("handshake1: %v", err)
+	}
+	identity, psk, ageAdd, err := readNewSessionTicket(conn1, hs1)
+	if err != nil {
+		t.Fatalf("read NST: %v", err)
+	}
+	conn1.Close()
+
+	// Phase 2: PSK resumption WITH 0-RTT (early_data in ClientHello + 0-RTT
+	// application-data record under client_early_traffic_secret).
+	conn2, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("dial2: %v", err)
+	}
+	defer conn2.Close()
+	earlyData := []byte("pollux-0rtt-payload")
+	_, _, acceptedEarly, err := dialRFC8998EarlyData(conn2, "localhost", identity, psk, ageAdd, earlyData)
+	if err != nil {
+		dumpServerLog(t, srvLog)
+		t.Fatalf("0-RTT resumption failed: %v", err)
+	}
+	if !acceptedEarly {
+		dumpServerLog(t, srvLog)
+		t.Fatal("server did not accept 0-RTT (no early_data echo in EncryptedExtensions)")
+	}
+	// Reaching here: Tongsuo accepted pollux's 0-RTT (early_data echoed in EE)
+	// and completed the PSK-mode handshake. pollux-go 0-RTT is RFC 8998 interop.
 }
 
 // TestRFC8998_DialFixed dials a Tongsuo s_server at the port in $POLLUX_FIXED_PORT

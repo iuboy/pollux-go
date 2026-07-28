@@ -93,14 +93,19 @@ pollux↔Tongsuo PSK resume / 0-RTT 已打通：
   binder 全链）定位：两端 SM3(transcript1)/RMS/binder_transcript_hash 字节级一致，
   仅 PSK 派生的 HKDF-Expand-Label label 不同 → PSK 不同 → binder 不匹配。pollux
   适配 `"resumption"` 互通；pollux↔pollux 两端同 label 仍一致。
-- **验证**：`TestRFC8998_Tongsuo_PSKResume` PASS（pollux client resume Tongsuo
-  s_server，binder 验证通过，PSK-mode 握手完成）；pollux↔pollux PSK resume + 0-RTT
-  + TEK 轮换全绿（`quicgm` 端到端：`Test0RTT_TicketHarvest`、`Test0RTT_DialEarly`、
-  `Test0RTT_TEKRotation`）。
+- **验证**：
+  - `TestRFC8998_Tongsuo_PSKResume` PASS（pollux client resume Tongsuo s_server，
+    binder 验证通过，PSK-mode 握手完成）。
+  - `TestRFC8998_Tongsuo_0RTT` PASS（pollux client 0-RTT：CH2 含 early_data +
+    0-RTT app data 在 `client_early_traffic_secret` 下加密发送；Tongsuo s_server
+    `-max_early_data -early_data` 接受并在 EncryptedExtensions echo early_data，
+    PSK-mode 握手完成）。
+  - pollux↔pollux PSK resume + 0-RTT + TEK 轮换全绿（`quicgm` 端到端：
+    `Test0RTT_TicketHarvest`、`Test0RTT_DialEarly`、`Test0RTT_TEKRotation`）。
 
 ## 已知差距
 
-（无。pollux↔Tongsuo 1-RTT 握手 + 应用数据回显 + PSK resumption 全部互通。）
+（无。pollux↔Tongsuo 1-RTT 握手 + 应用数据回显 + PSK resumption + 0-RTT 全部互通。）
 
 ## 环境
 

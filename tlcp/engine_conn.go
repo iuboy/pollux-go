@@ -620,8 +620,8 @@ func (c *tlcpConn) writeRecord(typ tlcpRecordType, payload []byte) error {
 
 	c.out.mu.Lock()
 	record, err := c.out.encrypt(header, payload)
-	c.out.mu.Unlock()
 	if err != nil {
+		c.out.mu.Unlock()
 		return err
 	}
 
@@ -630,19 +630,21 @@ func (c *tlcpConn) writeRecord(typ tlcpRecordType, payload []byte) error {
 	// following record (Finished) is then encrypted with the new keys. This must
 	// happen whether or not writes are buffered.
 	if typ == tlcpRecordChangeCipherSpec {
-		c.out.mu.Lock()
-		err = c.out.changeCipherSpec()
-		c.out.mu.Unlock()
-		if err != nil {
+		if err = c.out.changeCipherSpec(); err != nil {
+			c.out.mu.Unlock()
 			return err
 		}
 	}
 
+	// The encrypt + write must be one atomic unit so concurrent Write calls
+	// do not interleave encrypted records on the wire.
 	if c.buffering {
 		c.sendBuf.Write(record)
+		c.out.mu.Unlock()
 		return nil
 	}
 	_, err = c.conn.Write(record)
+	c.out.mu.Unlock()
 	return err
 }
 

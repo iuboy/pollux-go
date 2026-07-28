@@ -216,6 +216,13 @@ type ClientOptions struct {
 
 // buildTLCPClientConfig builds a tlcp.Config for client use.
 func (o *ClientOptions) buildTLCPClientConfig() (*tlcp.Config, error) {
+	// Fail-closed: a TLCP client without any root CAs, client certificates,
+	// or explicit InsecureSkipVerify would fall back to the system cert store
+	// (non-deterministic across environments) — effectively unauthenticated
+	// by accident. Require at least one trust anchor or explicit opt-in.
+	if o.SignRootCAs == nil && o.EncRootCAs == nil && len(o.Certificates) == 0 && !o.InsecureSkipVerify {
+		return nil, errors.New("pollux/http: at least one certificate, root pool, or InsecureSkipVerify is required")
+	}
 	cfg := &tlcp.Config{
 		SignCertificate:    o.SignCert,
 		EncCertificate:     o.EncCert,

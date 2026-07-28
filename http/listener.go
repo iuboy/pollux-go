@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/iuboy/pollux-go/tlcp"
@@ -79,6 +80,7 @@ type hybridListener struct {
 	net.Listener
 	tlcpCfg          *tlcp.Config
 	tlsCfg           *tls.Config
+	mu               sync.Mutex
 	handshakeTimeout time.Duration
 	protocolMask     ProtocolMask
 }
@@ -109,12 +111,16 @@ func NewHybridListener(inner net.Listener, tlcpCfg *tlcp.Config, tlsCfg *tls.Con
 // WARNING: This method is NOT safe to call concurrently with Accept.
 // Set timeout parameters before calling Accept.
 func (l *hybridListener) SetHandshakeTimeout(d time.Duration) {
+	l.mu.Lock()
 	l.handshakeTimeout = d
+	l.mu.Unlock()
 }
 
 // SetProtocolMask sets which protocol versions are allowed.
 func (l *hybridListener) SetProtocolMask(mask ProtocolMask) {
+	l.mu.Lock()
 	l.protocolMask = mask
+	l.mu.Unlock()
 }
 
 func (l *hybridListener) Accept() (net.Conn, error) {
@@ -123,9 +129,15 @@ func (l *hybridListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 
-	// Apply read deadline for handshake phase
-	if l.handshakeTimeout > 0 {
-		if err := conn.SetReadDeadline(time.Now().Add(l.handshakeTimeout)); err != nil {
+	// Apply both read+write deadline for the handshake phase. A read-only
+	// deadline does not protect against clients that stall reads during the
+	// server's handshake writes (ServerHello, Certificate, etc.).
+	l.mu.Lock()
+	timeout := l.handshakeTimeout
+	mask := l.protocolMask
+	l.mu.Unlock()
+	if timeout > 0 {
+		if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 			conn.Close()
 			return nil, err
 		}
@@ -151,7 +163,7 @@ func (l *hybridListener) Accept() (net.Conn, error) {
 	var useTLCP bool
 	switch version {
 	case tlcpVersion11:
-		if !l.protocolMask.AllowTLCP {
+		if !mask.AllowTLCP {
 			conn.Close()
 			return nil, errProtocolNotAllowed
 		}
@@ -159,7 +171,7 @@ func (l *hybridListener) Accept() (net.Conn, error) {
 	default:
 		// Accept all 0x03xx as TLS (covers TLS 1.0/1.1/1.2/1.3 record headers)
 		if version >= minTLSVersion && version <= maxTLSVersion {
-			if !l.protocolMask.AllowTLS {
+			if !mask.AllowTLS {
 				conn.Close()
 				return nil, errProtocolNotAllowed
 			}
@@ -190,9 +202,9 @@ func (l *hybridListener) Accept() (net.Conn, error) {
 		resultConn = tc
 	}
 
-	// Clear the read deadline after successful handshake
-	if l.handshakeTimeout > 0 {
-		if err := resultConn.SetReadDeadline(time.Time{}); err != nil {
+	// Clear the deadline after successful handshake.
+	if timeout > 0 {
+		if err := resultConn.SetDeadline(time.Time{}); err != nil {
 			resultConn.Close()
 			return nil, err
 		}

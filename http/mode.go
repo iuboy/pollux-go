@@ -49,7 +49,9 @@ func DetectMode(signCert *tls.Certificate) Mode {
 	case *sm2.PrivateKey:
 		return ModeTLCP
 	case *ecdsa.PrivateKey:
-		if pub.Curve == sm2.P256() {
+		// Guard against typed nil (e.g. var k *ecdsa.PrivateKey; cert.PrivateKey = k)
+		// which would panic on pub.Curve access.
+		if pub != nil && pub.Curve == sm2.P256() {
 			return ModeTLCP
 		}
 	}

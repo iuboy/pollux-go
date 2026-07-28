@@ -32,6 +32,12 @@ func DeriveHandshakeSecret(earlySecret, sharedSecret []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: derive handshake derived secret: %w", err)
 	}
+	// Per RFC 8446 §7.1, when (EC)DHE is not in use (PSK-only key exchange),
+	// the IKM for the handshake secret is a string of Hash.length zero bytes,
+	// not an empty string.
+	if len(sharedSecret) == 0 {
+		sharedSecret = make([]byte, sm3.Size)
+	}
 	return sm3.HKDFExtract(derivedSecret, sharedSecret), nil
 }
 

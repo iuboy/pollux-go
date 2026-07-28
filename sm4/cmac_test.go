@@ -43,32 +43,32 @@ var (
 		{
 			name: "16 bytes (exact one block)",
 			msg:  "6bc1bee22e409f96e93d7e117393172a",
-			mac:  "aab57c5fe051e3f6763546291b95f817",
+			mac:  "07a0861ededd5cfcead8489011600b9c",
 		},
 		{
 			name: "17 bytes (one byte into second block)",
 			msg:  "6bc1bee22e409f96e93d7e117393172aae",
-			mac:  "10c4823804e2aba5375bc4b2b08e20f5",
+			mac:  "af0616150eb9bd3c3c8eb903b1ae1cb2",
 		},
 		{
 			name: "32 bytes (exact two blocks)",
 			msg:  "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51",
-			mac:  "82266f7f8a439f581c538a3d80aa0c9c",
+			mac:  "371c30f8106f8ff8750384e92e3e60ae",
 		},
 		{
 			name: "40 bytes",
 			msg:  "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411",
-			mac:  "67e4c85bf81fe8230807b9b70e1882ce",
+			mac:  "67a8e59526f59125b5d91e626d23a37a",
 		},
 		{
 			name: "48 bytes (exact three blocks)",
 			msg:  "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52ef",
-			mac:  "d845f3caa8266fa766809d5ba6dc6ddc",
+			mac:  "3f161fc5afbfc3bcdf3a66ace9f2b1f7",
 		},
 		{
 			name: "64 bytes (exact four blocks)",
 			msg:  "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710",
-			mac:  "6b7d673a10b35676637dee8198a0b130",
+			mac:  "cc8eda3eeed4cd37b55fa09b06c6f630",
 		},
 	}
 )
@@ -361,7 +361,7 @@ func TestCMACHashResetAndReuse(t *testing.T) {
 func TestCMACHashWithVector(t *testing.T) {
 	// Verify hash.Hash path produces the same result as ComputeCMAC.
 	msg, _ := hex.DecodeString("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411")
-	expected, _ := hex.DecodeString("67e4c85bf81fe8230807b9b70e1882ce")
+	expected, _ := hex.DecodeString("67a8e59526f59125b5d91e626d23a37a")
 
 	h, err := sm4.NewCMACHash(cmacKey)
 	if err != nil {

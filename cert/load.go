@@ -12,10 +12,24 @@ import (
 )
 
 // LoadKeyPairPEM loads a TLS certificate from PEM-encoded cert and key.
-// Supports RSA, ECDSA, Ed25519, and SM2 keys.
+// Supports SM2 keys. The cert PEM may contain a full chain (leaf + intermediate
+// CA certificates); all CERTIFICATE blocks are collected so the complete chain
+// is sent during the TLS/TLCP handshake.
 func LoadKeyPairPEM(certPEM, keyPEM []byte) (tls.Certificate, error) {
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
+	var chain [][]byte
+	rest := certPEM
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		chain = append(chain, block.Bytes)
+	}
+	if len(chain) == 0 {
 		return tls.Certificate{}, ErrInvalidPEM
 	}
 
@@ -25,7 +39,7 @@ func LoadKeyPairPEM(certPEM, keyPEM []byte) (tls.Certificate, error) {
 	}
 
 	return tls.Certificate{
-		Certificate: [][]byte{block.Bytes},
+		Certificate: chain,
 		PrivateKey:  key,
 	}, nil
 }

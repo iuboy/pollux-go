@@ -24,9 +24,9 @@ func ZeroBytes(data []byte) {
 	}
 
 	// Layer 1: subtle.XORBytes is recognized by the Go compiler as security-sensitive.
-	// The compiler will not optimize it away.
-	zeros := make([]byte, len(data))
-	subtle.XORBytes(data, data, zeros)
+	// XOR data with itself so values self-cancel to zero — the compiler will
+	// not optimize this away.
+	subtle.XORBytes(data, data, data)
 
 	// Layer 2: unsafe pointer write as additional guarantee.
 	for i := range data {
@@ -56,12 +56,9 @@ func ZeroUint32(data []uint32) {
 		return
 	}
 	byteLen := len(data) * 4
-	zeros := make([]byte, byteLen)
-	subtle.XORBytes(
-		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen), // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
-		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen), // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
-		zeros,
-	)
+	view := unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen) // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
+	// XOR with itself so values self-cancel to zero.
+	subtle.XORBytes(view, view, view)
 
 	// Layer 2: direct write.
 	for i := range data {
@@ -84,12 +81,9 @@ func ZeroUint64(data []uint64) {
 		return
 	}
 	byteLen := len(data) * 8
-	zeros := make([]byte, byteLen)
-	subtle.XORBytes(
-		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen), // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
-		unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen), // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
-		zeros,
-	)
+	view := unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen) // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
+	// XOR with itself so values self-cancel to zero.
+	subtle.XORBytes(view, view, view)
 
 	// Layer 2: direct write.
 	for i := range data {

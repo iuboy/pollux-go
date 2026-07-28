@@ -453,4 +453,117 @@ func TestServerHandshake_VerifyPSKBinder(t *testing.T) {
 	}
 }
 
+// TestHandshake_PSKResumption is the full P2 round-trip: a normal handshake
+// yields a NewSessionTicket; the client then resumes with the ticket's PSK and
+// the second handshake completes in PSK mode (no Certificate/CertificateVerify)
+// with matching client/server keys.
+func TestHandshake_PSKResumption(t *testing.T) {
+	dcid1 := []byte{0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8}
+	dcid2 := []byte{0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8}
+	cert, serverKey := generateTestSM2Cert(t)
+
+	// 1. Initial (full) handshake to obtain a resumption ticket.
+	server1, err := NewServerHandshakerWithConfig(ServerConfig{DCID: dcid1, Certificate: cert, PrivateKey: serverKey})
+	if err != nil {
+		t.Fatalf("server1: %v", err)
+	}
+	client1, err := NewClientHandshakerWithConfig(ClientConfig{DCID: dcid1, InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatalf("client1: %v", err)
+	}
+	ch1, err := client1.ClientHello()
+	if err != nil {
+		t.Fatalf("ClientHello1: %v", err)
+	}
+	if err := server1.HandleClientHello(ch1); err != nil {
+		t.Fatalf("server1 HandleClientHello: %v", err)
+	}
+	sh1, ee1, cert1, cv1, fin1, err := server1.ServerFlight()
+	if err != nil {
+		t.Fatalf("server1 ServerFlight: %v", err)
+	}
+	if err := client1.HandleServerFlight(sh1, ee1, cert1, cv1, fin1); err != nil {
+		t.Fatalf("client1 HandleServerFlight: %v", err)
+	}
+	cf1, err := client1.ClientFinished()
+	if err != nil {
+		t.Fatalf("ClientFinished1: %v", err)
+	}
+	if err := server1.HandleClientFinished(cf1); err != nil {
+		t.Fatalf("server1 HandleClientFinished: %v", err)
+	}
+	ticketMsg, err := server1.NewSessionTicket(7200, 0x12345678)
+	if err != nil {
+		t.Fatalf("NewSessionTicket: %v", err)
+	}
+	_, ticketBody, _, err := ReadHandshakeMessage(ticketMsg)
+	if err != nil {
+		t.Fatalf("read ticket: %v", err)
+	}
+	var nst NewSessionTicketMsg
+	if err := nst.unmarshalBody(ticketBody); err != nil {
+		t.Fatalf("unmarshal ticket: %v", err)
+	}
+	psk := nst.Ticket
+
+	// 2. PSK resumption handshake.
+	server2, err := NewServerHandshakerWithConfig(ServerConfig{
+		DCID:           dcid2,
+		Certificate:    cert,
+		PrivateKey:     serverKey,
+		ResumptionPSKs: [][]byte{psk},
+	})
+	if err != nil {
+		t.Fatalf("server2: %v", err)
+	}
+	client2, err := NewClientHandshakerWithConfig(ClientConfig{
+		DCID:                          dcid2,
+		InsecureSkipVerify:            true,
+		ResumptionPSK:                 psk,
+		ResumptionObfuscatedTicketAge: 1,
+	})
+	if err != nil {
+		t.Fatalf("client2: %v", err)
+	}
+	ch2, err := client2.ClientHello()
+	if err != nil {
+		t.Fatalf("ClientHello2: %v", err)
+	}
+	if err := server2.HandleClientHello(ch2); err != nil {
+		t.Fatalf("server2 HandleClientHello (PSK): %v", err)
+	}
+	sh2, ee2, cert2, cv2, fin2, err := server2.ServerFlight()
+	if err != nil {
+		t.Fatalf("server2 ServerFlight (PSK): %v", err)
+	}
+	// PSK mode: server omits Certificate/CertificateVerify.
+	if cert2 != nil || cv2 != nil {
+		t.Fatal("PSK-mode ServerFlight emitted Certificate/CertificateVerify")
+	}
+	if err := client2.HandleServerFlight(sh2, ee2, nil, nil, fin2); err != nil {
+		t.Fatalf("client2 HandleServerFlight (PSK): %v", err)
+	}
+	cf2, err := client2.ClientFinished()
+	if err != nil {
+		t.Fatalf("ClientFinished2: %v", err)
+	}
+	if err := server2.HandleClientFinished(cf2); err != nil {
+		t.Fatalf("server2 HandleClientFinished: %v", err)
+	}
+
+	// Both sides must agree on the Handshake and Application keys.
+	cs := client2.Secrets()
+	ss := server2.Secrets()
+	for _, p := range [][2]*QUICPacketKeys{
+		{cs.ClientHandshakeKeys, ss.ClientHandshakeKeys},
+		{cs.ServerHandshakeKeys, ss.ServerHandshakeKeys},
+		{cs.ClientApplicationKeys, ss.ClientApplicationKeys},
+		{cs.ServerApplicationKeys, ss.ServerApplicationKeys},
+	} {
+		if !bytes.Equal(p[0].AEADKey, p[1].AEADKey) || !bytes.Equal(p[0].AEADIV, p[1].AEADIV) {
+			t.Fatalf("PSK resumption keys mismatch: client %x/%x server %x/%x", p[0].AEADKey, p[0].AEADIV, p[1].AEADKey, p[1].AEADIV)
+		}
+	}
+}
+
 

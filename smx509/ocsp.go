@@ -45,12 +45,18 @@ func ParseOCSPResponse(data []byte) (*ocsp.Response, error) {
 
 // ParseOCSPResponseWithIssuer parses and verifies a DER-encoded OCSP response.
 // The issuer certificate is used to verify the OCSP response signature.
-// For SM2-signed responses, pass the SM2 issuer certificate.
+//
+// For SM2-signed responses, the SM2-aware verification path is used (the
+// stdlib ocsp.ParseResponse rejects sm2.P256() with "unsupported elliptic
+// curve"); for standard algorithms, it delegates to ocsp.ParseResponse.
 //
 // Returns an error if issuer is nil, as signature verification would be skipped.
 func ParseOCSPResponseWithIssuer(data []byte, issuer *x509.Certificate) (*ocsp.Response, error) {
 	if issuer == nil {
 		return nil, errors.New("smx509: issuer certificate is required for OCSP response verification")
+	}
+	if isSM2OCSPResponse(data) {
+		return parseSM2OCSPResponse(data, issuer)
 	}
 	return ocsp.ParseResponse(data, issuer)
 }

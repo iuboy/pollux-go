@@ -7,6 +7,7 @@ GEMINI.md
 .cursorrules
 .cursor/
 .github/copilot-instructions.md
+.zcode/
 
 # Test coverage artifacts
 coverage.out

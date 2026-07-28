@@ -52,7 +52,7 @@ func TestS2_H1_KeyExchange_Typography(t *testing.T) {
 	}
 
 	// Alice (initiator) computes shared key using Bob's ephemeral key and signature
-	aliceShared, err := alice.ComputeSharedSecretAsInitiator(bobEph, bobSig)
+	aliceShared, _, err := alice.ComputeSharedSecretAsInitiator(bobEph, bobSig)
 	if err != nil {
 		t.Fatalf("Alice ComputeSharedSecretAsInitiator: %v", err)
 	}

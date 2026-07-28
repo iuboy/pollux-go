@@ -13,6 +13,8 @@ type EIA = gmsmZUC.EIA
 
 // NewCipher creates a ZUC stream cipher with the given key and IV.
 // Key must be 16 bytes (ZUC-128) or 32 bytes (ZUC-256).
+// IV must be 16 bytes (ZUC-128) or 23 bytes (ZUC-256), matching the key variant;
+// gmsm rejects a mismatched IV length.
 //
 // SECURITY WARNING: Reusing the same key+IV pair produces identical keystream,
 // enabling XOR-based plaintext recovery (two-time pad attack). Each call must

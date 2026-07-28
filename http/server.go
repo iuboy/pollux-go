@@ -124,12 +124,37 @@ func wrapListener(ln net.Listener, opts *ServerOptions, mode Mode) (net.Listener
 	}
 }
 
+// Conservative server timeouts applied when the caller does not set them.
+// They match the values hardcoded by serveTLCP/serveTLS, keeping the
+// ListenAndServe/Serve convenience path consistent and preventing
+// Slowloris-style resource exhaustion from slow clients.
+const (
+	defaultReadTimeout  = 30 * time.Second
+	defaultWriteTimeout = 30 * time.Second
+	defaultIdleTimeout  = 120 * time.Second
+)
+
 func buildHTTPServer(opts *ServerOptions) *http.Server {
+	// Zero-valued durations mean "no timeout". Fill conservative defaults so
+	// the main ListenAndServe/Serve path is not left unprotected, mirroring the
+	// TLCP/TLS convenience servers. opts itself is not mutated.
+	readTimeout := opts.ReadTimeout
+	if readTimeout == 0 {
+		readTimeout = defaultReadTimeout
+	}
+	writeTimeout := opts.WriteTimeout
+	if writeTimeout == 0 {
+		writeTimeout = defaultWriteTimeout
+	}
+	idleTimeout := opts.IdleTimeout
+	if idleTimeout == 0 {
+		idleTimeout = defaultIdleTimeout
+	}
 	return &http.Server{
 		Handler:      opts.Handler,
-		ReadTimeout:  opts.ReadTimeout,
-		WriteTimeout: opts.WriteTimeout,
-		IdleTimeout:  opts.IdleTimeout,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout,
+		IdleTimeout:  idleTimeout,
 	}
 }
 

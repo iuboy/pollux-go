@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/iuboy/pollux-go/internal/memsecure"
 	"github.com/iuboy/pollux-go/sm2"
@@ -449,12 +450,26 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 	if err := sh.unmarshalBody(shBody); err != nil {
 		return fmt.Errorf("tls13gm: ServerHello: %w", err)
 	}
+	// Verify the server actually negotiated the GM cipher suite. pollux only
+	// implements TLS_SM4_GCM_SM3; a server selecting anything else is a
+	// downgrade attempt we reject (defense in depth; the Finished transcript
+	// binding would also catch it).
+	if sh.CipherSuite != TLS_SM4_GCM_SM3 {
+		return fmt.Errorf("tls13gm: ServerHello negotiated cipher suite %#x, expected TLS_SM4_GCM_SM3", sh.CipherSuite)
+	}
 	if sh.Random == helloRetryRequestRandom {
 		// This is a HelloRetryRequest (a ServerHello carrying the sentinel
 		// random), not a real ServerHello. Do not derive keys or advance the
 		// transcript; the caller must run HandleHelloRetryRequest and resend
 		// ClientHello2 before re-invoking HandleServerHello.
 		return ErrHelloRetryRequest
+	}
+	// RFC 8446 §4.1.3: a real (non-HRR) ServerHello MUST carry supported_versions
+	// == 0x0304. Checked after the HRR sentinel check so a HelloRetryRequest
+	// (sentinel random) is routed to its own path without requiring the extension.
+	sv := findExtension(sh.Extensions, ExtensionTypeSupportedVersions)
+	if len(sv) != 2 || uint16(sv[0])<<8|uint16(sv[1]) != uint16(VersionTLS13) {
+		return errors.New("tls13gm: ServerHello did not negotiate TLS 1.3")
 	}
 	if findExtension(sh.Extensions, ExtensionTypePreSharedKey) != nil {
 		// Server selected our PSK (psk_dhe_ke): derive the early secret from
@@ -814,6 +829,12 @@ type ServerHandshaker struct {
 	// pre_shared_key binder validates (PSK recovered by decrypting the ticket
 	// identity with the TEK); ServerFlight derives the early secret from it.
 	resumptionSelectedPSK []byte
+
+	// resumptionRealAge is the real ticket age reconstructed in verifyPSKBinder
+	// from the client obfuscated_ticket_age minus the ticket_age_add encoded in
+	// the ticket identity; consumed by EarlyDataAcceptor for 0-RTT anti-replay
+	// (RFC 8446 §8).
+	resumptionRealAge time.Duration
 	// ticketKeys returns the current TEK list (newest first) for stateless
 	// session-ticket encrypt/decrypt. Mirrors ServerConfig.SessionTicketKeys.
 	ticketKeys func() [][]byte
@@ -822,7 +843,7 @@ type ServerHandshaker struct {
 	allowEarlyData         bool
 	clientOfferedEarlyData bool
 	acceptedEarlyData      bool // set when the server echoes early_data in EE
-	earlyDataAcceptor      func([]byte) bool
+	earlyDataAcceptor      func([]byte, time.Duration) bool
 }
 
 // DiscardEarlyKeys clears the 0-RTT keys (called by the transport once the
@@ -873,7 +894,7 @@ type ServerConfig struct {
 	// suspected). If nil, AllowEarlyData alone decides. The psk argument is the
 	// recovered resumption PSK (decrypted from the client's ticket identity);
 	// the acceptor typically consults an AntiReplayCache.
-	EarlyDataAcceptor func(psk []byte) bool
+	EarlyDataAcceptor func(psk []byte, realAge time.Duration) bool
 }
 
 // NewServerHandshakerWithConfig prepares a server handshaker from an explicit
@@ -984,6 +1005,13 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 	// validate the binder against a known PSK. On success the selected PSK is
 	// recorded for ServerFlight to derive the early secret from.
 	if pskExt := findExtension(chMsg.Extensions, ExtensionTypePreSharedKey); pskExt != nil {
+		// RFC 8446 §4.2.9: the server MUST NOT select a key exchange mode the
+		// client did not offer. pollux servers only do psk_dhe_ke; if the client
+		// did not offer it (or omitted psk_key_exchange_modes), ignore the PSK
+		// offer and fall back to a full handshake.
+		if !offersPSKDHEKE(findExtension(chMsg.Extensions, ExtensionTypePSKKeyExchangeModes)) {
+			return nil
+		}
 		if err := s.verifyPSKBinder(&chMsg, pskExt); err != nil {
 			return err
 		}
@@ -994,7 +1022,7 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 			s.clientOfferedEarlyData = true
 			// Only derive 0-RTT keys when the server is willing to accept early
 			// data; otherwise the client's 0-RTT is rejected (no early_data in EE).
-			if s.allowEarlyData && (s.earlyDataAcceptor == nil || s.earlyDataAcceptor(s.resumptionSelectedPSK)) {
+			if s.allowEarlyData && (s.earlyDataAcceptor == nil || s.earlyDataAcceptor(s.resumptionSelectedPSK, s.resumptionRealAge)) {
 				s.secrets.ClientEarlyKeys, err = DeriveEarlyTrafficKeys(s.resumptionSelectedPSK, s.transcript.Sum())
 				if err != nil {
 					return fmt.Errorf("tls13gm: derive 0-RTT keys: %w", err)
@@ -1026,10 +1054,14 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 	// This is what makes a pollux-go server interoperable with any RFC 8446
 	// client and vice-versa: the identity is a self-contained encrypted ticket,
 	// not the bare PSK.
-	psk, err := DecryptSessionTicket(s.ticketKeys(), identities[0].Identity)
+	psk, ageAdd, err := DecryptSessionTicket(s.ticketKeys(), identities[0].Identity)
 	if err != nil {
 		return fmt.Errorf("tls13gm: client PSK identity not recognized: %w", err)
 	}
+	// Reconstruct the real ticket age from the obfuscated value the client
+	// reported and the ticket_age_add encoded in the ticket (RFC 8446
+	// §4.2.11.1); forwarded to EarlyDataAcceptor for 0-RTT anti-replay (§8).
+	s.resumptionRealAge = time.Duration(int64(identities[0].ObfuscatedTicketAge-ageAdd)) * time.Second
 	// Recompute the binder over the same transcript the client used: the
 	// ClientHello truncated just before the binders field (identities included,
 	// binders excluded, pre_shared_key ext_len kept full) — RFC 8446 §4.2.11.
@@ -1256,6 +1288,11 @@ func (c *ClientHandshaker) MasterSecret() []byte { return c.masterSecret }
 // client recovers the PSK itself from the resumption master secret and the
 // ticket nonce (RFC 8446 §4.6.1), so the server keeps no per-ticket state.
 func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32, ticketAgeAdd uint32) ([]byte, error) {
+	// RFC 8446 §4.6.1: ticket_lifetime MUST NOT exceed 604800 seconds (7 days).
+	const maxSessionTicketLifetime uint32 = 7 * 24 * 60 * 60
+	if ticketLifetime > maxSessionTicketLifetime {
+		ticketLifetime = maxSessionTicketLifetime
+	}
 	if s.resumptionMasterSecret == nil {
 		return nil, errors.New("tls13gm: HandleClientFinished must complete before NewSessionTicket")
 	}
@@ -1277,7 +1314,7 @@ func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32, ticketAgeAdd 
 	if len(keys) == 0 {
 		return nil, errors.New("tls13gm: session-ticket key list is empty")
 	}
-	ticket, err := EncryptSessionTicket(keys[0], psk)
+	ticket, err := EncryptSessionTicket(keys[0], psk, ticketAgeAdd)
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: encrypt session ticket: %w", err)
 	}
@@ -1287,6 +1324,26 @@ func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32, ticketAgeAdd 
 		TicketNonce:    nonce[:],
 		Ticket:         ticket,
 	})
+}
+
+// offersPSKDHEKE reports whether the client psk_key_exchange_modes
+// extension advertises psk_dhe_ke (PSK with (EC)DHE). pollux servers only
+// perform psk_dhe_ke, so a client offering only psk_ke (or omitting the
+// extension) forces a full handshake.
+func offersPSKDHEKE(modesExt []byte) bool {
+	if len(modesExt) == 0 {
+		return false
+	}
+	listLen := int(modesExt[0])
+	if 1+listLen > len(modesExt) {
+		return false
+	}
+	for _, m := range modesExt[1 : 1+listLen] {
+		if m == PSKKeyExchangeModeDHEKE {
+			return true
+		}
+	}
+	return false
 }
 
 // containsCipherSuite reports whether list offers the cipher suite want.

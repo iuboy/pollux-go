@@ -9,8 +9,7 @@
 closed enum that panics on RFC 8998 IDs). The fork adds a GM (RFC 8998)
 `CryptoSetup` implementation backed by `github.com/iuboy/pollux-go/tls13gm`
 (handshake engine) + `quicgm` (packet protection). See
-`docs/design/route-c-quic-gm.md` and the approved plan at
-`/Users/ycq/.claude/plans/vectorized-singing-hoare.md`.
+`docs/design/architecture.md`.
 
 ## Patch index
 

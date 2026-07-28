@@ -72,6 +72,13 @@ func Open1RTTPacket(keys *tls13gm.QUICPacketKeys, expectedDCID []byte, largestAc
 	// keys are caller-owned; not zeroed here.
 
 	dcidLen := len(expectedDCID)
+	// Symmetric with Seal1RTTPacket, which rejects an empty dcid: a zero-length
+	// expectedDCID would make the bytes.Equal below a no-op (comparing two empty
+	// slices is always true), silently skipping the connection-ID match and
+	// associating the packet with any 1-RTT short-header the attacker injects.
+	if dcidLen == 0 {
+		return 0, nil, errors.New("quicgm: 1-RTT packet requires a non-empty expected dcid")
+	}
 	if len(packet) < 1 {
 		return 0, nil, errors.New("quicgm: 1-RTT packet too short")
 	}

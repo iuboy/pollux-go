@@ -54,6 +54,14 @@ func (c *memoryAntiReplayCache) Check(digest []byte, age time.Duration) bool {
 	if age < 0 || age > c.maxAge {
 		return false // future or expired ticket
 	}
+	// An empty digest maps to the map key "" — every empty-digest attempt
+	// would collide on that single key, so the first would be accepted and all
+	// later ones (even from distinct legitimate connections) rejected as
+	// replays. Reject empty digests outright: a valid 0-RTT attempt always
+	// carries a non-empty (PSK-derived) digest.
+	if len(digest) == 0 {
+		return false
+	}
 	key := string(digest)
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -56,10 +56,17 @@ func ReadCryptoFrame(b []byte) (offset uint64, data []byte, n int, err error) {
 		return 0, nil, 0, fmt.Errorf("quicgm: read CRYPTO length: %w", err)
 	}
 	pos += m
+	// Guard against pos > len(b) before the uint64 subtraction below: an
+	// unsigned underflow would wrap to a huge value and bypass the bounds
+	// check. ReadVarint advances pos only by the bytes it consumed, so this
+	// cannot happen today, but the explicit check keeps the invariant local.
+	if pos > len(b) {
+		return 0, nil, 0, fmt.Errorf("quicgm: CRYPTO frame position %d exceeds buffer length %d", pos, len(b))
+	}
 	// Bounds-check in uint64 space to avoid int truncation on 32-bit platforms.
 	remaining := uint64(len(b) - pos)
 	if remaining < length {
-		return 0, nil, 0, fmt.Errorf("quicgm: CRYPTO length %d exceeds remaining %d bytes", length, len(b)-pos)
+		return 0, nil, 0, fmt.Errorf("quicgm: CRYPTO length %d exceeds remaining %d bytes", length, remaining)
 	}
 	end := pos + int(length)
 	data = make([]byte, length)

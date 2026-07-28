@@ -113,9 +113,19 @@ func tlcpECCProcessClientKeyExchange(decrypter crypto.Decrypter, ckePayload []by
 	}
 	// gotlcp trims trailing extra padding beyond the ASN1 sequence length; we do
 	// the same so a client that pads (or a non-conformant peer) does not break.
-	// Long-form length is bounded (0x8001..0x80FF), so one length byte suffices.
-	if len(ciphertext) >= 3 {
-		seqLen := 3 + int(ciphertext[2])
+	// Handle all DER length forms (short, 0x81, 0x82) robustly.
+	if len(ciphertext) >= 2 {
+		var seqLen int
+		switch {
+		case ciphertext[1] <= 0x7F: // short-form length
+			seqLen = 2 + int(ciphertext[1])
+		case ciphertext[1] == 0x81 && len(ciphertext) >= 3: // long-form, 1 byte
+			seqLen = 3 + int(ciphertext[2])
+		case ciphertext[1] == 0x82 && len(ciphertext) >= 4: // long-form, 2 bytes
+			seqLen = 4 + int(ciphertext[2])<<8 + int(ciphertext[3])
+		default:
+			seqLen = len(ciphertext) // unknown form; pass as-is to decrypter
+		}
 		if seqLen <= len(ciphertext) {
 			ciphertext = ciphertext[:seqLen]
 		}
@@ -214,7 +224,17 @@ func tlcpParseECDHEParams(data []byte) (paramsBytes []byte, pubKey *ecdhPublicKe
 	if len(data) < 4 {
 		return nil, nil, errors.New("tlcp: ECDHE params too short")
 	}
+	// Validate curve_type and named_curve per GB/T 38636.
+	if data[0] != tlcpECDHECurveTypeNamed {
+		return nil, nil, fmt.Errorf("tlcp: ECDHE unsupported curve_type %d", data[0])
+	}
+	if binary.BigEndian.Uint16(data[1:3]) != uint16(tlcpCurveSM2) {
+		return nil, nil, fmt.Errorf("tlcp: ECDHE unsupported named_curve %d", binary.BigEndian.Uint16(data[1:3]))
+	}
 	pubLen := int(data[3])
+	if pubLen != tlcpSM2PointLength {
+		return nil, nil, fmt.Errorf("tlcp: ECDHE unexpected point length %d", pubLen)
+	}
 	if len(data) < 4+pubLen {
 		return nil, nil, errors.New("tlcp: ECDHE params truncated")
 	}

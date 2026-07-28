@@ -1,5 +1,13 @@
 .claude
 
+# AI agent / assistant configs — local only, not tracked
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.cursorrules
+.cursor/
+.github/copilot-instructions.md
+
 # Test coverage artifacts
 coverage.out
 coverage.html

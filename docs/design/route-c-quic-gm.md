@@ -1,6 +1,6 @@
 # QUIC SM4-GCM Packet Protection 设计文档
 
-> 状态：**已实施（密码原语层 + transport 组装层 + Initial 包端到端 + packet-number 截断 + 性能基线）** | 路线：Route C (QUIC + RFC 8998) | 优先级：P2
+> 状态：**已实施 + 互通已验证**（密码原语层 + transport 组装层 + Initial 包端到端 + packet-number 截断 + 性能基线 + BabaSSL/Tongsuo 互操作 1-RTT/PSK resume/0-RTT） | 路线：Route C (QUIC + RFC 8998) | 优先级：P2
 >
 > **说明**: QUIC SM4-GCM Packet Protection 已按「tls13gm 密码原语层 + quicgm transport 组装层」分层实现，镜像 crypto/tls 与 quic-go 的关系。tls13gm 提供 QUIC 标签、`DeriveQUICPacketKeys`、`QUICKeyUpdate`、`HeaderProtectionMask` 原语；quicgm 消费这些原语组装 `QUICPacketProtector`（payload AEAD + header protection apply/remove）。注意：quicgm 已从 Route B（应用层 envelope）破坏性重构为 Route C（transport-level RFC 8998）。
 
@@ -262,7 +262,7 @@ const QUICVersion1 uint32 = 0x00000001
 
 **packet-number 截断**：`packetnumber.go` 提供 RFC 9000 §17.1 的完整截断原语：`ChoosePacketNumberLen`（发送端据 largestAcked 选最小字节数，阈值 `2^7/2^15/2^23/2^31`，nil 反馈→4 字节）、`TruncatePacketNumber`、`DecodePacketNumber`（接收端重建，int64 运算规避 uint64 下溢）、`AppendPacketNumber`（大端低 N 字节）。Initial 包因首个包无 ACK 反馈，始终用 4 字节（`ChoosePacketNumberLen(pn, nil)` 等价），其余加密级别（Handshake/1-RTT）由未来连接层在收到 ACK 后调用截断原语以节省字节。
 
-**注意**：此 API 覆盖 Initial 包的密码保护全链路（步骤 6a）+ packet-number 截断原语（步骤 6c）。步骤 6b 已补齐 TLS 1.3 GM 握手引擎（`tls13gm` 的协议常量/transcript/握手消息编解码/`ClientHandshaker`+`ServerHandshaker` 状态机）与 quicgm 的 CRYPTO frame + Handshake 长头部包 + 1-RTT 短头部包；握手产出 Initial/Handshake/Application 三级密钥，经 `NewQUICPacketProtectorFromKeys` 喂入对应加密级别的包保护器。仍留作后续迭代的是 QUIC 连接状态机（ACK/重传/流复用/拥塞，归 quic-go）与 TCP record layer/Dial/Listen（独立传输层）。
+**注意**：此 API 覆盖 Initial 包的密码保护全链路（步骤 6a）+ packet-number 截断原语（步骤 6c）。步骤 6b 已补齐 TLS 1.3 GM 握手引擎（`tls13gm` 的协议常量/transcript/握手消息编解码/`ClientHandshaker`+`ServerHandshaker` 状态机）与 quicgm 的 CRYPTO frame + Handshake 长头部包 + 1-RTT 短头部包；握手产出 Initial/Handshake/Application 三级密钥，经 `NewQUICPacketProtectorFromKeys` 喂入对应加密级别的包保护器。TCP TLS 1.3 record layer（互通测试 harness）已在 `test/tongsuo_rfc8998_test.go` 实现（`dialRFC8998`/`readRecord`/`writeRecord`），完成与 BabaSSL/Tongsuo 的全场景互通验证（步骤 8 / P4）。仍留作后续迭代的是 QUIC 连接状态机（ACK/重传/流复用/拥塞，归 quic-go）。
 
 ## 6. Key Update
 

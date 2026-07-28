@@ -57,22 +57,22 @@ QUIC TLS 1.3 传输安全
 - 适合上层协议（如 MBTA）在不依赖传输层国密标准的前提下使用国密算法。
 - 状态：✅ 生产可用。SM2/SM3/SM4 已标准化（ISO + GB/T），应用层 envelope 不依赖传输层标准。
 
-### 路线 C — RFC 8998 TLS 1.3 国密（实验）
+### 路线 C — RFC 8998 TLS 1.3 国密（已互通验证）
 
 ```
 TLS_SM4_GCM_SM3 + SM3 transcript + HKDF-SM3 + SM2-SM3 签名 + curveSM2 + SM4-GCM QUIC 包保护
 ```
 
 - 包：`tls13gm`（握手引擎 + 密码原语）、`quicgm`（RFC 9001 §5 packet protection）
-- 状态：🔬 **实验**。原语与握手引擎、QUIC packet protection 已完整实现（见
-  [`route-c-quic-gm.md`](route-c-quic-gm.md)），但 Go `crypto/tls` 与 `quic-go`
-  上游尚不原生支持 RFC 8998，生产部署前需独立的互通验证。
+- 状态：✅ **互通已验证**。原语、握手引擎、QUIC packet protection 完整实现，并已与
+  BabaSSL/Tongsuo 完成互通验证（1-RTT 握手 + 应用数据 + PSK resumption + 0-RTT），
+  见 [`interop-matrix.md`](../security/interop-matrix.md) 与
+  [`route-c-quic-gm.md`](route-c-quic-gm.md)。Go `crypto/tls` 与 `quic-go` 上游尚不
+  原生支持 RFC 8998，pollux-go 自带完整 `tls13gm` 握手引擎填补该空缺。
 
-> **演进说明**：路线 C 最初定位为「experimental 模型包，不提供完整 handshake」。
-> 实际实现已超越该定位——`tls13gm` 提供完整 TLS 1.3 GM 握手引擎
-> （`ClientHandshaker`/`ServerHandshaker`），`quicgm` 提供 transport-level
-> packet protection。两者构成完整的 RFC 8998 GM 栈，但仍保留 experimental 标签
-> 待互通验证与独立审计。
+> **演进说明**：路线 C 最初定位为「experimental 模型包，不提供完整 handshake」，
+> 后实现为完整 RFC 8998 GM 栈（`tls13gm` 握手引擎 + `quicgm` transport-level packet
+> protection），并完成与标准对端 BabaSSL/Tongsuo 的全场景互通验证。
 
 ## 4. 包职责
 
@@ -182,6 +182,6 @@ TLS_SM4_GCM_SM3 + SM3 transcript + HKDF-SM3 + SM2-SM3 签名 + curveSM2 + SM4-GC
 
 ## 9. 后续工作（非阻塞）
 
-- Route C 留待后续迭代：QUIC 连接状态机（ACK/重传/流复用/拥塞，归 quic-go）、
-  TCP record layer/Dial/Listen（独立传输层）。
-- 第三方安全审计、RFC 8998 互通测试、性能优化。
+- Route C 留待后续迭代：QUIC 连接状态机（ACK/重传/流复用/拥塞，归 quic-go）。
+  （TCP TLS record layer + RFC 8998 互通测试已完成，见 [`interop-matrix.md`](../security/interop-matrix.md)。）
+- 第三方安全审计、性能优化。

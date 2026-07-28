@@ -42,6 +42,10 @@ const (
 	ExtensionTypeALPN                uint16 = 16
 	ExtensionTypeKeyShare            uint16 = 40
 	ExtensionTypePreSharedKey        uint16 = 41
+	// ExtensionTypeEarlyData (RFC 8446 §4.2.10) marks 0-RTT data in a ClientHello
+	// and a ticket eligible for 0-RTT in a NewSessionTicket. P2 carries it in
+	// NewSessionTicket; P3 wires the ClientHello side.
+	ExtensionTypeEarlyData           uint16 = 42
 	ExtensionTypeSupportedVersions   uint16 = 43
 	// ExtensionTypeCookie (RFC 8446 §4.2.2) carries the server's stateless
 	// cookie in a HelloRetryRequest and the client's echo in ClientHello2.

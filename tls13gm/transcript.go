@@ -60,3 +60,20 @@ func (t *Transcript) Bytes() []byte {
 func (t *Transcript) Sum() []byte {
 	return t.h.Sum(nil)
 }
+
+// ResetForHelloRetry re-initializes the transcript for the HelloRetryRequest
+// case (RFC 8446 §4.4.1): the transcript becomes a synthetic message_hash
+// message carrying Hash(ClientHello1), followed by the HelloRetryRequest. The
+// caller then adds ClientHello2 and the rest of the handshake continues
+// normally. clientHello1 is the full ClientHello1 message (4-byte header +
+// body); hrr is the full HelloRetryRequest message (a ServerHello carrying the
+// sentinel random).
+func (t *Transcript) ResetForHelloRetry(clientHello1, hrr []byte) {
+	hash1 := sm3.Sum(clientHello1)
+	t.buf = t.buf[:0]
+	t.h.Reset()
+	t.AddMessage(HandshakeTypeMessageHash, hash1[:])
+	if len(hrr) >= 4 {
+		t.AddMessage(HandshakeTypeServerHello, hrr[4:])
+	}
+}

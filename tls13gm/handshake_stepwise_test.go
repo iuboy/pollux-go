@@ -2,6 +2,7 @@ package tls13gm
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -227,4 +228,94 @@ func TestHandshake_TransportParametersExchange(t *testing.T) {
 		t.Fatalf("client peer TP = %q, want %q", got, serverTP)
 	}
 }
+
+// buildTestHRR constructs a HelloRetryRequest (a ServerHello carrying the
+// sentinel random) with the given cookie, for client-side HRR tests.
+func buildTestHRR(t *testing.T, cookie []byte) []byte {
+	t.Helper()
+	hrr := &ServerHelloMsg{
+		LegacyVersion: uint16(VersionTLS13),
+		Random:        helloRetryRequestRandom,
+		CipherSuite:   TLS_SM4_GCM_SM3,
+		Extensions: []Extension{
+			{Type: ExtensionTypeSupportedVersions, Data: []byte{0x03, 0x03}},
+			{Type: ExtensionTypeCookie, Data: marshalCookieExtension(cookie)},
+		},
+	}
+	full, err := MarshalHandshakeMessage(hrr)
+	if err != nil {
+		t.Fatalf("marshal HRR: %v", err)
+	}
+	return full
+}
+
+// TestClientHandshake_HelloRetryRequest covers the client side of RFC 8446
+// §4.1.4: when the server replies with a HelloRetryRequest, HandleServerHello
+// signals ErrHelloRetryRequest, and HandleHelloRetryRequest produces
+// ClientHello2 echoing the cookie. The phase is then reset so the real
+// ServerHello can follow.
+//
+// It verifies message handling (HRR detection, cookie echo, phase reset). A
+// full transcript-consistent end-to-end test requires server-side HRR emission
+// (cookie generation/verification), which is out of scope for this test.
+func TestClientHandshake_HelloRetryRequest(t *testing.T) {
+	dcid := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03}
+	client, err := NewClientHandshakerWithConfig(ClientConfig{
+		DCID:               dcid,
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
+	}
+
+	ch1, err := client.ClientHello()
+	if err != nil {
+		t.Fatalf("ClientHello: %v", err)
+	}
+	if len(ch1) < 4 {
+		t.Fatal("ClientHello1 too short")
+	}
+
+	// Server sends a HelloRetryRequest with a cookie.
+	cookie := []byte("stateless-anti-dos-cookie")
+	hrr := buildTestHRR(t, cookie)
+
+	// HandleServerHello must detect the HRR and signal it (no key derivation).
+	if err := client.HandleServerHello(hrr); !errors.Is(err, ErrHelloRetryRequest) {
+		t.Fatalf("HandleServerHello(HRR) = %v, want ErrHelloRetryRequest", err)
+	}
+
+	// HandleHelloRetryRequest produces ClientHello2 echoing the cookie.
+	ch2, err := client.HandleHelloRetryRequest(hrr)
+	if err != nil {
+		t.Fatalf("HandleHelloRetryRequest: %v", err)
+	}
+	_, ch2Body, _, err := ReadHandshakeMessage(ch2)
+	if err != nil {
+		t.Fatalf("read ClientHello2: %v", err)
+	}
+	var ch2Msg ClientHelloMsg
+	if err := ch2Msg.unmarshalBody(ch2Body); err != nil {
+		t.Fatalf("ClientHello2 unmarshal: %v", err)
+	}
+	cookieExt := findExtension(ch2Msg.Extensions, ExtensionTypeCookie)
+	if cookieExt == nil {
+		t.Fatal("ClientHello2 missing cookie extension")
+	}
+	echoed, err := parseCookieExtension(cookieExt)
+	if err != nil {
+		t.Fatalf("parse echoed cookie: %v", err)
+	}
+	if !bytes.Equal(echoed, cookie) {
+		t.Fatalf("echoed cookie %x, want %x", echoed, cookie)
+	}
+
+	// Phase reset proof: HandleHelloRetryRequest returns the client to the
+	// "awaiting ServerHello" state, so HandleServerHello runs again (and still
+	// recognizes the same HRR) rather than erroring on the phase guard.
+	if err := client.HandleServerHello(hrr); !errors.Is(err, ErrHelloRetryRequest) {
+		t.Fatalf("post-HRR HandleServerHello = %v, want ErrHelloRetryRequest (phase not reset)", err)
+	}
+}
+
 

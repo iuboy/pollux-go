@@ -15,6 +15,7 @@ package handshake
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 
 	"github.com/iuboy/pollux-go/tls13gm"
@@ -198,6 +199,18 @@ func (g *GMCryptoSetup) handleOneClient(msgType uint8, msg []byte, encLevel prot
 			return fmt.Errorf("handshake: GM unexpected Initial message type %d", msgType)
 		}
 		if err := g.clientHs.HandleServerHello(msg); err != nil {
+			if errors.Is(err, tls13gm.ErrHelloRetryRequest) {
+				// Server sent a HelloRetryRequest (RFC 8446 §4.1.4): produce
+				// ClientHello2 (carrying the echoed cookie) and resend it on the
+				// Initial stream. The real ServerHello follows in another
+				// HandleMessage call.
+				ch2, hrrErr := g.clientHs.HandleHelloRetryRequest(msg)
+				if hrrErr != nil {
+					return hrrErr
+				}
+				g.enqueue(Event{Kind: EventWriteInitialData, Data: ch2})
+				return nil
+			}
 			return err
 		}
 		return g.installHandshakeKeys(g.clientHs.Secrets())

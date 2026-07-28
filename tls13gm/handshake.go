@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"crypto/x509"
+	"errors"
 	"fmt"
 
 	"github.com/iuboy/pollux-go/sm2"
@@ -46,6 +47,12 @@ func (h *HandshakeSecrets) Zero() {
 func equalConstantTime(a, b []byte) bool {
 	return subtle.ConstantTimeCompare(a, b) == 1
 }
+
+// ErrHelloRetryRequest is returned by HandleServerHello when the server replies
+// with a HelloRetryRequest (a ServerHello carrying the sentinel random) instead
+// of a real ServerHello. The caller should then call HandleHelloRetryRequest to
+// produce ClientHello2 and resend it on the Initial stream.
+var ErrHelloRetryRequest = errors.New("tls13gm: server sent HelloRetryRequest")
 
 // clientHandshakePhase tracks client-side handshake progress so the step-wise
 // Handle* methods enforce the RFC 8446 server-flight ordering (ServerHello,
@@ -105,6 +112,10 @@ type ClientHandshaker struct {
 	// peerTransportParams is the raw QUIC transport parameters received in the
 	// server's EncryptedExtensions. Available after HandleEncryptedExtensions.
 	peerTransportParams []byte
+	// clientHello1Full is the full ClientHello1 bytes (header + body), retained
+	// only between ClientHello() and a potential HelloRetryRequest so the
+	// transcript can be reset per RFC 8446 §4.4.1. Cleared after use.
+	clientHello1Full []byte
 }
 
 // PeerTransportParams returns the raw QUIC transport parameters received from
@@ -206,9 +217,26 @@ func NewClientHandshaker(dcid []byte, _ *x509.Certificate) (*ClientHandshaker, e
 // Secrets returns the packet-protection keys derived so far.
 func (c *ClientHandshaker) Secrets() HandshakeSecrets { return c.secrets }
 
-// ClientHello produces the ClientHello handshake message and records it in the
-// transcript. It must be called once before HandleServerFlight.
+// ClientHello produces the ClientHello1 handshake message, records it in the
+// transcript, and retains the full bytes in case the server replies with a
+// HelloRetryRequest (see HandleHelloRetryRequest). It must be called once before
+// HandleServerHello.
 func (c *ClientHandshaker) ClientHello() ([]byte, error) {
+	full, err := c.buildClientHello(nil)
+	if err != nil {
+		return nil, err
+	}
+	c.clientHello1Full = full
+	c.transcript.AddMessage(HandshakeTypeClientHello, full[4:])
+	c.phase = clientAfterClientHello
+	return full, nil
+}
+
+// buildClientHello marshals a ClientHello. A non-nil cookie produces
+// ClientHello2 — the second ClientHello carrying the server's cookie echoed
+// back from a HelloRetryRequest (RFC 8446 §4.1.4). The cookie extension is
+// placed before the QUIC transport-params extension.
+func (c *ClientHandshaker) buildClientHello(cookie []byte) ([]byte, error) {
 	var random [32]byte
 	if _, err := rand.Read(random[:]); err != nil {
 		return nil, err
@@ -228,16 +256,13 @@ func (c *ClientHandshaker) ClientHello() ([]byte, error) {
 			{Type: ExtensionTypeKeyShare, Data: marshalClientKeyShare(CurveSM2, sm2.MarshalUncompressed(pub))},
 		},
 	}
+	if cookie != nil {
+		ch.Extensions = append(ch.Extensions, Extension{Type: ExtensionTypeCookie, Data: marshalCookieExtension(cookie)})
+	}
 	if c.localTransportParams != nil {
 		ch.Extensions = append(ch.Extensions, Extension{Type: ExtensionTypeQUICTransportParams, Data: c.localTransportParams})
 	}
-	full, err := MarshalHandshakeMessage(ch)
-	if err != nil {
-		return nil, err
-	}
-	c.transcript.AddMessage(HandshakeTypeClientHello, full[4:])
-	c.phase = clientAfterClientHello
-	return full, nil
+	return MarshalHandshakeMessage(ch)
 }
 
 // HandleServerFlight processes the complete server flight (ServerHello,
@@ -281,6 +306,13 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 	if err := sh.unmarshalBody(shBody); err != nil {
 		return fmt.Errorf("tls13gm: ServerHello: %w", err)
 	}
+	if sh.Random == helloRetryRequestRandom {
+		// This is a HelloRetryRequest (a ServerHello carrying the sentinel
+		// random), not a real ServerHello. Do not derive keys or advance the
+		// transcript; the caller must run HandleHelloRetryRequest and resend
+		// ClientHello2 before re-invoking HandleServerHello.
+		return ErrHelloRetryRequest
+	}
 	ks := findExtension(sh.Extensions, ExtensionTypeKeyShare)
 	if ks == nil {
 		return fmt.Errorf("tls13gm: ServerHello missing key_share extension")
@@ -318,6 +350,56 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 	}
 	c.phase = clientAfterServerHello
 	return nil
+}
+
+// HandleHelloRetryRequest processes a HelloRetryRequest (a ServerHello carrying
+// the sentinel random): it extracts the server's cookie, resets the transcript
+// to message_hash(ClientHello1) || HRR (RFC 8446 §4.4.1), and produces
+// ClientHello2 with the cookie echoed back. The caller resends ClientHello2 on
+// the Initial stream and then feeds the real ServerHello to HandleServerHello.
+//
+// Since tls13gm speaks only curveSM2, HRR's key_share group selection is not
+// exercised; the cookie (stateless anti-DoS) path is the supported use.
+func (c *ClientHandshaker) HandleHelloRetryRequest(hrr []byte) ([]byte, error) {
+	if c.phase != clientAfterClientHello {
+		return nil, fmt.Errorf("tls13gm: HandleHelloRetryRequest called out of order (phase %d)", c.phase)
+	}
+	if c.clientHello1Full == nil {
+		return nil, fmt.Errorf("tls13gm: HandleHelloRetryRequest before ClientHello")
+	}
+	hrrType, hrrBody, _, err := ReadHandshakeMessage(hrr)
+	if err != nil {
+		return nil, fmt.Errorf("tls13gm: read HelloRetryRequest: %w", err)
+	}
+	if hrrType != HandshakeTypeServerHello {
+		return nil, fmt.Errorf("tls13gm: expected HelloRetryRequest (ServerHello), got type %d", hrrType)
+	}
+	var hrrMsg ServerHelloMsg
+	if err := hrrMsg.unmarshalBody(hrrBody); err != nil {
+		return nil, fmt.Errorf("tls13gm: HelloRetryRequest: %w", err)
+	}
+	if hrrMsg.Random != helloRetryRequestRandom {
+		return nil, fmt.Errorf("tls13gm: HandleHelloRetryRequest given a non-HRR ServerHello")
+	}
+	var cookie []byte
+	if cookieData := findExtension(hrrMsg.Extensions, ExtensionTypeCookie); cookieData != nil {
+		cookie, err = parseCookieExtension(cookieData)
+		if err != nil {
+			return nil, fmt.Errorf("tls13gm: HelloRetryRequest cookie: %w", err)
+		}
+	}
+	// RFC 8446 §4.4.1: transcript becomes message_hash(CH1) || HRR.
+	c.transcript.ResetForHelloRetry(c.clientHello1Full, hrr)
+	// ClientHello2 carries the echoed cookie. Single curveSM2 group: reuse the
+	// existing ephemeral (HRR does not select a different group here).
+	ch2, err := c.buildClientHello(cookie)
+	if err != nil {
+		return nil, err
+	}
+	c.transcript.AddMessage(HandshakeTypeClientHello, ch2[4:])
+	c.clientHello1Full = nil     // ClientHello1 consumed
+	c.phase = clientAfterClientHello // await the real ServerHello
+	return ch2, nil
 }
 
 // HandleEncryptedExtensions records EncryptedExtensions in the transcript. No

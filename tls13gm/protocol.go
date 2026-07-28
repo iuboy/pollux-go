@@ -28,6 +28,9 @@ const (
 	HandshakeTypeCertificateVerify   uint8 = 15
 	HandshakeTypeFinished            uint8 = 20
 	HandshakeTypeKeyUpdate           uint8 = 24
+	// HandshakeTypeMessageHash (254) is the synthetic message placed first in
+	// the transcript when a HelloRetryRequest occurs (RFC 8446 §4.4.1).
+	HandshakeTypeMessageHash         uint8 = 254
 )
 
 // TLS extension types (RFC 8446 §4.2). Only the subset needed by the RFC 8998
@@ -40,6 +43,9 @@ const (
 	ExtensionTypeKeyShare            uint16 = 40
 	ExtensionTypePreSharedKey        uint16 = 41
 	ExtensionTypeSupportedVersions   uint16 = 43
+	// ExtensionTypeCookie (RFC 8446 §4.2.2) carries the server's stateless
+	// cookie in a HelloRetryRequest and the client's echo in ClientHello2.
+	ExtensionTypeCookie              uint16 = 44
 	ExtensionTypePSKKeyExchangeModes uint16 = 45
 	// ExtensionTypeQUICTransportParams (RFC 9001 §8) carries the QUIC transport
 	// parameters in ClientHello (client) / EncryptedExtensions (server). The value
@@ -69,3 +75,13 @@ const (
 	AlertCertificateRequired    uint8 = 116
 	AlertNoApplicationProtocol  uint8 = 120
 )
+
+// helloRetryRequestRandom is the sentinel ServerHello.random value that marks
+// the message as a HelloRetryRequest rather than a real ServerHello
+// (RFC 8446 §4.1.3).
+var helloRetryRequestRandom = [32]byte{
+	0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11,
+	0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xBC, 0xB9,
+	0xEA, 0x86, 0x85, 0x8F, 0x27, 0x64, 0xA8, 0xAD,
+	0x90, 0xC2, 0xAB, 0x3D, 0xCC, 0xE1, 0x0E, 0x33,
+}

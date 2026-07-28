@@ -21,7 +21,7 @@ require (
 
 // Route C: vendored quic-go fork. Adds a GMCryptoSetup implementation of the
 // (internal) CryptoSetup interface driven by pollux-go's tls13gm handshake
-// engine + quicgm packet protection. Fork source kept under third_party/quic-go
-// with the upstream module name preserved so internal imports are unchanged.
-// See third_party/quic-go/PATCHES.md for the patch set relative to upstream.
-replace github.com/quic-go/quic-go => ./third_party/quic-go
+// engine + quicgm packet protection. Fork source kept under quic-go/ at the
+// repo root (git subtree of upstream, see quic-go/PATCHES.md). The upstream
+// module name is preserved so internal imports are unchanged.
+replace github.com/quic-go/quic-go => ./quic-go

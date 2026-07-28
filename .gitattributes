@@ -1,4 +1,4 @@
 # The vendored quic-go fork is third-party source (patched upstream), not
 # pollux-go's own code. Mark it vendored so GitHub language stats and tooling
 # exclude it from the project's code metrics.
-third_party/quic-go/** linguist-vendored
+quic-go/** linguist-vendored

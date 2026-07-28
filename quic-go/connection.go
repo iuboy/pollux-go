@@ -355,18 +355,31 @@ var newConnection = func(
 	if s.qlogger != nil {
 		s.qlogTransportParameters(params, protocol.PerspectiveServer, false)
 	}
-	cs := handshake.NewCryptoSetupServer(
-		clientDestConnID,
-		conn.LocalAddr(),
-		conn.RemoteAddr(),
-		params,
-		tlsConf,
-		conf.Allow0RTT,
-		s.rttStats,
-		s.qlogger,
-		logger,
-		s.version,
-	)
+	var cs handshake.CryptoSetup
+	if conf.GMSM4GCM {
+		// Route C: RFC 8998 GM handshake driven by pollux-go tls13gm. tlsConf is
+		// ignored; the GM server config carries the certificate/key.
+		gmCS, err := handshake.NewGMCryptoSetupServer(clientDestConnID, conf.GMHandshakeConfig.Server, params, logger, s.version)
+		if err != nil {
+			// Configuration errors (missing GM server config / ECDHE keygen) are
+			// caller bugs; surface them loudly like a bad *tls.Config would.
+			panic("quic-go: GM server CryptoSetup init failed: " + err.Error())
+		}
+		cs = gmCS
+	} else {
+		cs = handshake.NewCryptoSetupServer(
+			clientDestConnID,
+			conn.LocalAddr(),
+			conn.RemoteAddr(),
+			params,
+			tlsConf,
+			conf.Allow0RTT,
+			s.rttStats,
+			s.qlogger,
+			logger,
+			s.version,
+		)
+	}
 	s.cryptoStreamHandler = cs
 	s.packer = newPacketPacker(srcConnID, s.connIDManager.Get, s.initialStream, s.handshakeStream, s.sentPacketHandler, s.retransmissionQueue, cs, s.framer, &s.receivedPacketHandler, s.datagramQueue, s.perspective)
 	s.unpacker = newPacketUnpacker(cs, s.srcConnIDLen)
@@ -481,16 +494,26 @@ var newClientConnection = func(
 	if s.qlogger != nil {
 		s.qlogTransportParameters(params, protocol.PerspectiveClient, false)
 	}
-	cs := handshake.NewCryptoSetupClient(
-		destConnID,
-		params,
-		tlsConf,
-		enable0RTT,
-		s.rttStats,
-		s.qlogger,
-		logger,
-		s.version,
-	)
+	var cs handshake.CryptoSetup
+	if conf.GMSM4GCM {
+		// Route C: RFC 8998 GM handshake driven by pollux-go tls13gm.
+		gmCS, err := handshake.NewGMCryptoSetupClient(destConnID, conf.GMHandshakeConfig.Client, params, logger, s.version)
+		if err != nil {
+			panic("quic-go: GM client CryptoSetup init failed: " + err.Error())
+		}
+		cs = gmCS
+	} else {
+		cs = handshake.NewCryptoSetupClient(
+			destConnID,
+			params,
+			tlsConf,
+			enable0RTT,
+			s.rttStats,
+			s.qlogger,
+			logger,
+			s.version,
+		)
+	}
 	s.cryptoStreamHandler = cs
 	s.cryptoStreamManager = newCryptoStreamManager(s.initialStream, s.handshakeStream, oneRTTStream)
 	s.unpacker = newPacketUnpacker(cs, s.srcConnIDLen)

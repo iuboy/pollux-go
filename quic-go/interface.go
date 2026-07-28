@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/iuboy/pollux-go/tls13gm"
 	"github.com/quic-go/quic-go/internal/handshake"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/qlogwriter"
@@ -177,6 +178,25 @@ type Config struct {
 	EnableStreamResetPartialDelivery bool
 
 	Tracer func(ctx context.Context, isClient bool, connID ConnectionID) qlogwriter.Trace
+
+	// GMSM4GCM enables the RFC 8998 SM4-GCM-SM3 cipher suite via pollux-go's
+	// tls13gm handshake engine. When true, the connection builds a GM
+	// CryptoSetup (handshake.GMCryptoSetup) instead of the crypto/tls-backed
+	// one, and TLSConfig is ignored (pass nil). Experimental; for Route C.
+	GMSM4GCM bool
+	// GMHandshakeConfig carries the tls13gm client/server configuration when
+	// GMSM4GCM is true. Set the Client field for Dial, the Server field for
+	// Listen. The tls13gm DCID field is overwritten by the QUIC transport with
+	// the connection's destination connection ID. Required when GMSM4GCM is true.
+	GMHandshakeConfig *GMHandshakeConfig
+}
+
+// GMHandshakeConfig carries pollux-go tls13gm handshake configuration for a
+// Config with GMSM4GCM enabled. Exactly one of Client or Server should be set,
+// matching whether the Config is used for Dial (Client) or Listen (Server).
+type GMHandshakeConfig struct {
+	Client *tls13gm.ClientConfig
+	Server *tls13gm.ServerConfig
 }
 
 // ClientInfo contains information about an incoming connection attempt.

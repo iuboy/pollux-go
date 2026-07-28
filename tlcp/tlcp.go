@@ -243,7 +243,15 @@ func verifyDualPeerCertificates(rawCerts [][]byte, _ [][]*gmsmSmx509.Certificate
 	if err != nil {
 		return fmt.Errorf("tlcp: parse peer encrypt certificate: %w", err)
 	}
-	if err := polluxsmx509.VerifyDualCerts(signSm.ToX509(), encSm.ToX509()); err != nil {
+	signStd, err := smX509ToStd(signSm)
+	if err != nil {
+		return fmt.Errorf("tlcp: convert peer sign certificate: %w", err)
+	}
+	encStd, err := smX509ToStd(encSm)
+	if err != nil {
+		return fmt.Errorf("tlcp: convert peer encrypt certificate: %w", err)
+	}
+	if err := polluxsmx509.VerifyDualCerts(signStd, encStd); err != nil {
 		return err
 	}
 	return nil
@@ -261,6 +269,17 @@ func buildSMX509CertPool(certs []*x509.Certificate) (*gmsmSmx509.CertPool, error
 		pool.AddCert(smCert)
 	}
 	return pool, nil
+}
+
+// smX509ToStd converts a gmsm *smx509.Certificate to a stdlib *x509.Certificate.
+// Required since gmsm v0.44 removed the ToX509() bridge. Uses pollux's
+// ParseCertificate (reflection field copy) rather than stdlib re-parse, because
+// SM2 DER cannot be parsed by stdlib (unsupported elliptic curve).
+func smX509ToStd(cert *gmsmSmx509.Certificate) (*x509.Certificate, error) {
+	if cert == nil {
+		return nil, nil
+	}
+	return polluxsmx509.ParseCertificate(cert.Raw)
 }
 
 // LoadCertificates loads dual certificates from files
@@ -377,7 +396,9 @@ func parsePEMCertificates(pemData []byte) []*x509.Certificate {
 			continue
 		}
 		if smCert, err := gmsmSmx509.ParseCertificate(pemBlock.Bytes); err == nil {
-			certs = append(certs, smCert.ToX509())
+			if stdCert, err := smX509ToStd(smCert); err == nil {
+				certs = append(certs, stdCert)
+			}
 			continue
 		}
 		if cert, err := x509.ParseCertificate(pemBlock.Bytes); err == nil {

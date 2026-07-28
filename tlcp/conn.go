@@ -9,6 +9,7 @@ import (
 
 	gotlcp "gitee.com/Trisia/gotlcp/tlcp"
 	"github.com/iuboy/pollux-go/internal/panicsafe"
+	polluxsmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 // Conn represents a TLCP secure connection, implements net.Conn interface.
@@ -171,7 +172,10 @@ func (c *Conn) NetConn() net.Conn {
 }
 
 // convertConnectionState converts gotlcp.ConnectionState to pollux ConnectionState.
-// Primary work is converting gmsm/smx509.Certificate to crypto/x509.Certificate.
+//
+// gotlcp aliases gmsm/smx509 as x509, so PeerCertificates/VerifiedChains are
+// []*smx509.Certificate. pollux exposes stdlib *x509.Certificate, so each cert
+// is converted via a DER round-trip (gmsm v0.44 removed the ToX509() bridge).
 func convertConnectionState(cs gotlcp.ConnectionState) ConnectionState {
 	result := ConnectionState{
 		Version:           cs.Version,
@@ -180,9 +184,12 @@ func convertConnectionState(cs gotlcp.ConnectionState) ConnectionState {
 		ServerName:        cs.ServerName,
 	}
 
-	// Convert peer certificates: gmsm smx509.Certificate -> stdlib x509.Certificate
+	// Convert peer certificates: gmsm smx509.Certificate -> stdlib x509.Certificate.
+	// Use pollux's ParseCertificate (field copy) — stdlib cannot parse SM2 DER.
 	for _, cert := range cs.PeerCertificates {
-		result.PeerCertificates = append(result.PeerCertificates, cert.ToX509())
+		if stdCert, err := polluxsmx509.ParseCertificate(cert.Raw); err == nil {
+			result.PeerCertificates = append(result.PeerCertificates, stdCert)
+		}
 	}
 
 	// TLCP convention: PeerCertificates[0]=signing certificate, [1]=encryption certificate
@@ -193,11 +200,13 @@ func convertConnectionState(cs gotlcp.ConnectionState) ConnectionState {
 		result.PeerEncCert = result.PeerCertificates[1]
 	}
 
-	// Convert verification chains
+	// Convert verification chains (gmsm smx509 -> stdlib via field copy).
 	for _, chain := range cs.VerifiedChains {
 		var stdChain []*x509.Certificate
 		for _, cert := range chain {
-			stdChain = append(stdChain, cert.ToX509())
+			if stdCert, err := polluxsmx509.ParseCertificate(cert.Raw); err == nil {
+				stdChain = append(stdChain, stdCert)
+			}
 		}
 		result.VerifiedChains = append(result.VerifiedChains, stdChain)
 	}

@@ -6,10 +6,7 @@ require github.com/emmansun/gmsm v0.44.0
 
 require golang.org/x/crypto v0.53.0
 
-require (
-	gitee.com/Trisia/gotlcp v1.4.5
-	github.com/quic-go/quic-go v0.60.0
-)
+require github.com/quic-go/quic-go v0.60.0
 
 require (
 	golang.org/x/net v0.56.0 // indirect

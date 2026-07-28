@@ -2,20 +2,17 @@ package tlcp
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 	"net"
 	"time"
 
-	gotlcp "gitee.com/Trisia/gotlcp/tlcp"
 	"github.com/iuboy/pollux-go/internal/panicsafe"
-	polluxsmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 // Conn represents a TLCP secure connection, implements net.Conn interface.
-// Delegates to gotlcp.Conn internally for the TLCP protocol.
+// It wraps the native pollux TLCP engine (tlcpConn).
 type Conn struct {
-	inner    *gotlcp.Conn
+	inner    *tlcpConn
 	config   *Config
 	rawConn  net.Conn
 	isClient bool
@@ -26,12 +23,12 @@ type Conn struct {
 // Follows the pattern of tls.Client(conn, config).
 func Client(conn net.Conn, config *Config) *Conn {
 	c := &Conn{config: config, rawConn: conn, isClient: true}
-	gc, err := configToGotlcp(config)
+	nc, err := configToNative(config, true)
 	if err != nil {
 		c.initErr = err
 		return c
 	}
-	c.inner = gotlcp.Client(conn, gc)
+	c.inner = newTLCPConn(conn, nc, true)
 	return c
 }
 
@@ -39,12 +36,12 @@ func Client(conn net.Conn, config *Config) *Conn {
 // Follows the pattern of tls.Server(conn, config).
 func Server(conn net.Conn, config *Config) *Conn {
 	c := &Conn{config: config, rawConn: conn, isClient: false}
-	gc, err := configToGotlcp(config)
+	nc, err := configToNative(config, false)
 	if err != nil {
 		c.initErr = err
 		return c
 	}
-	c.inner = gotlcp.Server(conn, gc)
+	c.inner = newTLCPConn(conn, nc, false)
 	return c
 }
 
@@ -155,12 +152,26 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 }
 
 // ConnectionState returns the connection's security parameters.
-// Converts gotlcp gmsm certificate types to stdlib certificate types.
 func (c *Conn) ConnectionState() ConnectionState {
 	if c.inner == nil {
 		return ConnectionState{}
 	}
-	return convertConnectionState(c.inner.ConnectionState())
+	es := c.inner.ConnectionState()
+	result := ConnectionState{
+		Version:           es.Version,
+		HandshakeComplete: es.HandshakeComplete,
+		CipherSuite:       es.CipherSuite,
+		ServerName:        es.ServerName,
+		PeerCertificates:  es.PeerCertificates,
+	}
+	// TLCP convention: [0]=signing, [1]=encryption.
+	if len(result.PeerCertificates) > 0 {
+		result.PeerSignCert = result.PeerCertificates[0]
+	}
+	if len(result.PeerCertificates) > 1 {
+		result.PeerEncCert = result.PeerCertificates[1]
+	}
+	return result
 }
 
 // NetConn returns the underlying connection.
@@ -169,47 +180,4 @@ func (c *Conn) NetConn() net.Conn {
 		return c.inner.NetConn()
 	}
 	return c.rawConn
-}
-
-// convertConnectionState converts gotlcp.ConnectionState to pollux ConnectionState.
-//
-// gotlcp aliases gmsm/smx509 as x509, so PeerCertificates/VerifiedChains are
-// []*smx509.Certificate. pollux exposes stdlib *x509.Certificate, so each cert
-// is converted via a DER round-trip (gmsm v0.44 removed the ToX509() bridge).
-func convertConnectionState(cs gotlcp.ConnectionState) ConnectionState {
-	result := ConnectionState{
-		Version:           cs.Version,
-		HandshakeComplete: cs.HandshakeComplete,
-		CipherSuite:       cs.CipherSuite,
-		ServerName:        cs.ServerName,
-	}
-
-	// Convert peer certificates: gmsm smx509.Certificate -> stdlib x509.Certificate.
-	// Use pollux's ParseCertificate (field copy) — stdlib cannot parse SM2 DER.
-	for _, cert := range cs.PeerCertificates {
-		if stdCert, err := polluxsmx509.ParseCertificate(cert.Raw); err == nil {
-			result.PeerCertificates = append(result.PeerCertificates, stdCert)
-		}
-	}
-
-	// TLCP convention: PeerCertificates[0]=signing certificate, [1]=encryption certificate
-	if len(result.PeerCertificates) > 0 {
-		result.PeerSignCert = result.PeerCertificates[0]
-	}
-	if len(result.PeerCertificates) > 1 {
-		result.PeerEncCert = result.PeerCertificates[1]
-	}
-
-	// Convert verification chains (gmsm smx509 -> stdlib via field copy).
-	for _, chain := range cs.VerifiedChains {
-		var stdChain []*x509.Certificate
-		for _, cert := range chain {
-			if stdCert, err := polluxsmx509.ParseCertificate(cert.Raw); err == nil {
-				stdChain = append(stdChain, stdCert)
-			}
-		}
-		result.VerifiedChains = append(result.VerifiedChains, stdChain)
-	}
-
-	return result
 }

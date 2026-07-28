@@ -1,5 +1,3 @@
-//go:build tlcp_native
-
 package tlcp
 
 import (

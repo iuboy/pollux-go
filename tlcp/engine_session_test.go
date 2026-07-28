@@ -1,5 +1,3 @@
-//go:build tlcp_native && integration
-
 package tlcp
 
 import (
@@ -10,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	gotlcp "gitee.com/Trisia/gotlcp/tlcp"
 	polluxSM2 "github.com/iuboy/pollux-go/sm2"
 )
 
@@ -118,96 +115,5 @@ func TestNative_Resume_NativeServer(t *testing.T) {
 		t.Errorf("resume echo mismatch")
 	}
 	conn2.Close()
-	<-serverDone
-}
-
-// TestNative_Resume_GotlcpClient verifies a gotlcp client can resume against a
-// native server when both share a session cache populated by a prior full
-// handshake.
-func TestNative_Resume_GotlcpClient(t *testing.T) {
-	signCert, encCert := generateTestCertPair(t)
-	signPriv := signCert.PrivateKey.(*polluxSM2.PrivateKey)
-	encPriv := encCert.PrivateKey.(*polluxSM2.PrivateKey)
-
-	serverCache := NewTLCPLRUSessionCache(8)
-	serverConfig := &tlcpEngineConfig{
-		rand:         rand.Reader,
-		cipherSuites: []uint16{SuiteECC_SM2_SM4_GCM_SM3},
-		serverCerts: &tlcpServerCerts{
-			signCertDER:  signCert.Certificate[0],
-			encCertDER:   encCert.Certificate[0],
-			signSigner:   signPriv,
-			encDecrypter: encPriv,
-		},
-		sessionCache: serverCache,
-	}
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer ln.Close()
-
-	serverDone := make(chan struct{}, 2)
-	serve := func() {
-		rawConn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer rawConn.Close()
-		rawConn.SetDeadline(time.Now().Add(10 * time.Second))
-		conn := newTLCPConn(rawConn, serverConfig, false)
-		if err := conn.Handshake(); err != nil {
-			t.Errorf("server handshake: %v", err)
-			return
-		}
-		buf := make([]byte, 4096)
-		n, _ := conn.Read(buf)
-		conn.Write(buf[:n])
-		serverDone <- struct{}{}
-	}
-	go serve()
-	go serve()
-
-	// gotlcp client uses its own SessionCache (gotlcp's LRU).
-	gotlcpCache := gotlcp.NewLRUSessionCache(8)
-
-	// First: full handshake.
-	c1, err := gotlcp.Dial("tcp", ln.Addr().String(), &gotlcp.Config{
-		CipherSuites:       []uint16{gotlcp.ECC_SM4_GCM_SM3},
-		InsecureSkipVerify: true,
-		SessionCache:       gotlcpCache,
-	})
-	if err != nil {
-		t.Fatalf("gotlcp dial 1: %v", err)
-	}
-	c1.SetDeadline(time.Now().Add(10 * time.Second))
-	c1.Write([]byte("full"))
-	echo := make([]byte, 4)
-	io.ReadFull(c1, echo)
-	c1.Close()
-	<-serverDone
-
-	// Second: should resume (both sides have the session cached).
-	c2, err := gotlcp.Dial("tcp", ln.Addr().String(), &gotlcp.Config{
-		CipherSuites:       []uint16{gotlcp.ECC_SM4_GCM_SM3},
-		InsecureSkipVerify: true,
-		SessionCache:       gotlcpCache,
-	})
-	if err != nil {
-		t.Fatalf("gotlcp dial 2: %v", err)
-	}
-	c2.SetDeadline(time.Now().Add(10 * time.Second))
-	if !c2.ConnectionState().DidResume {
-		t.Error("gotlcp client did not resume on second connection")
-	}
-	msg := []byte("resumed!")
-	c2.Write(msg)
-	echo2 := make([]byte, len(msg))
-	io.ReadFull(c2, echo2)
-	if !bytes.Equal(echo2, msg) {
-		t.Error("resume echo mismatch")
-	}
-	c2.Close()
 	<-serverDone
 }

@@ -1,5 +1,3 @@
-//go:build tlcp_native
-
 package tlcp
 
 // This file defines TLCP protocol constants and auxiliary types shared by the

@@ -1,10 +1,10 @@
-//go:build tlcp_native
-
 package tlcp
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	polluxsmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
 // cryptoRandReader is the default RNG (crypto/rand) for record IVs.
@@ -416,6 +418,47 @@ func (c *tlcpConn) Handshake() error {
 	return c.handshakeErr
 }
 
+// HandshakeContext drives the handshake, honoring context cancellation. The
+// native engine does not yet support mid-handshake cancellation; the context is
+// best-effort (the underlying conn deadline should be set for hard timeouts).
+func (c *tlcpConn) HandshakeContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.Handshake()
+}
+
+// NetConn returns the underlying transport connection.
+func (c *tlcpConn) NetConn() net.Conn { return c.rawConn }
+
+// ConnectionState returns the negotiated security parameters. Peer certificates
+// are parsed from their DER via polluxsmx509 (SM2-aware).
+func (c *tlcpConn) ConnectionState() tlcpEngineConnectionState {
+	st := tlcpEngineConnectionState{
+		Version:           c.vers,
+		HandshakeComplete: atomic.LoadUint32(&c.handshakeStatus) == 1,
+		CipherSuite:       c.cipherSuite,
+		ServerName:        c.serverName,
+	}
+	for _, der := range c.peerCertificates {
+		if cert, err := polluxsmx509.ParseCertificate(der); err == nil {
+			st.PeerCertificates = append(st.PeerCertificates, cert)
+		}
+	}
+	return st
+}
+
+// tlcpEngineConnectionState is the engine-level connection state, carrying
+// stdlib *x509.Certificate peer certs. The public ConnectionState type (in
+// tlcp.go) mirrors these fields.
+type tlcpEngineConnectionState struct {
+	Version           uint16
+	HandshakeComplete bool
+	CipherSuite       uint16
+	ServerName        string
+	PeerCertificates  []*x509.Certificate
+}
+
 // Read reads decrypted application data.
 func (c *tlcpConn) Read(b []byte) (int, error) {
 	if atomic.LoadUint32(&c.handshakeStatus) == 0 {
@@ -470,11 +513,20 @@ func (c *tlcpConn) Write(b []byte) (int, error) {
 	return total, nil
 }
 
-// Close sends close_notify and closes the underlying connection.
+// Close sends a best-effort close_notify alert and closes the underlying
+// connection. The alert write is non-blocking: if the peer isn't reading (e.g.
+// a net.Pipe with no consumer), Close still terminates promptly.
 func (c *tlcpConn) Close() error {
-	// Best-effort close_notify alert.
-	_ = c.writeRecord(tlcpRecordAlert, []byte{1, 0}) // warning level, close_notify
-	return c.conn.Close()
+	// Send close_notify in a goroutine so a blocked write can't prevent Close.
+	done := make(chan struct{})
+	go func() {
+		_ = c.writeRecord(tlcpRecordAlert, []byte{1, 0}) // warning, close_notify
+		close(done)
+	}()
+	// Close the underlying transport; the goroutine's write will error out.
+	err := c.conn.Close()
+	<-done // wait for the write attempt to finish so we don't leak the goroutine
+	return err
 }
 
 func (c *tlcpConn) LocalAddr() net.Addr  { return c.conn.LocalAddr() }

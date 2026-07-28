@@ -52,32 +52,36 @@ func BuildCertificateVerifyInput(context string, transcriptHash []byte) []byte {
 
 // SignCertificateVerify signs the CertificateVerify message using SM2-SM3.
 //
-// The caller provides the raw handshake transcript. This function:
+// The caller provides the SM3 transcript-hash digest (a Transcript.Sum()
+// snapshot), NOT the raw transcript bytes — the hash is taken once at the
+// call site so signing and verification share the same digest. This function:
 //  1. Constructs the signed content per RFC 8446 §4.4.3
-//     (64 × 0x20 + context + 0x00 + SM3(transcript)).
+//     (64 × 0x20 + context + 0x00 + transcriptHash). The digest is appended
+//     verbatim; no additional SM3 is applied here.
 //  2. Signs with SM2 using the identifier "TLSv1.3+GM+Cipher+Suite"
 //     as required by RFC 8998 §3.2.1 (ZA computation is performed internally).
-func SignCertificateVerify(privateKey *sm2.PrivateKey, context string, transcript []byte) ([]byte, error) {
+func SignCertificateVerify(privateKey *sm2.PrivateKey, context string, transcriptHash []byte) ([]byte, error) {
 	if privateKey == nil {
 		return nil, errors.New("tls13gm: privateKey is nil")
 	}
 
-	message := BuildCertificateVerifyInput(context, transcript)
+	message := BuildCertificateVerifyInput(context, transcriptHash)
 	opts := sm2.NewSM2SignerOption(true, []byte(SM2IDTLS13KeyExchange))
 	return sm2.SignASN1(rand.Reader, privateKey, message, opts)
 }
 
 // VerifyCertificateVerify verifies an SM2-SM3 CertificateVerify signature.
 //
-// It reconstructs the signed content from the context and transcript, then
-// verifies the signature using the SM2 identifier "TLSv1.3+GM+Cipher+Suite"
-// as required by RFC 8998 §3.2.1.
-func VerifyCertificateVerify(publicKey *ecdsa.PublicKey, context string, transcript, signature []byte) bool {
+// It reconstructs the signed content from the context and transcriptHash (the
+// SM3 transcript-hash digest, not raw transcript bytes — see
+// SignCertificateVerify), then verifies the signature using the SM2 identifier
+// "TLSv1.3+GM+Cipher+Suite" as required by RFC 8998 §3.2.1.
+func VerifyCertificateVerify(publicKey *ecdsa.PublicKey, context string, transcriptHash, signature []byte) bool {
 	if publicKey == nil {
 		return false
 	}
 
-	message := BuildCertificateVerifyInput(context, transcript)
+	message := BuildCertificateVerifyInput(context, transcriptHash)
 	return sm2.VerifyWithSM2(publicKey, []byte(SM2IDTLS13KeyExchange), message, signature)
 }
 

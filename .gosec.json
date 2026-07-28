@@ -3,6 +3,7 @@
     "enabled": true
   },
   "exclude": [
+    "G104",
     "G402",
     "G304",
     "G115",

@@ -21,7 +21,9 @@
 //
 // Reusing a nonce (GCM) or IV (CBC, CTR, CFB) with the same key is
 // catastrophic:
-//   - GCM: nonce reuse allows key recovery and message forgery.
+//   - GCM: nonce reuse exposes the GHASH authentication subkey H (enabling
+//     message forgery) and produces a two-time pad on the CTR keystream. It
+//     does not recover the AES key itself.
 //   - CTR: reuse produces a two-time pad, leaking plaintext via XOR.
 //   - CBC/CFB: reuse reveals whether two plaintexts share a prefix.
 //

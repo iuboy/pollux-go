@@ -32,7 +32,14 @@ func marshalPreSharedKeyExtension(identities []PskIdentity, binders [][]byte) ([
 			return nil, fmt.Errorf("tls13gm: psk identity length %d exceeds 16 bits", len(id.Identity))
 		}
 	}
-	idVec := make([]byte, 0, 16+len(identities)*len(identities))
+	// Each identity encodes as 2-byte length + identity + 4-byte obfuscated
+	// age = 6 + len(Identity) bytes; the list carries a 2-byte total length
+	// prefix. Pre-size to the exact total to avoid regrowth.
+	idCap := 2
+	for _, id := range identities {
+		idCap += 6 + len(id.Identity)
+	}
+	idVec := make([]byte, 0, idCap)
 	for _, id := range identities {
 		idVec = append(idVec, byte(len(id.Identity)>>8), byte(len(id.Identity)))
 		idVec = append(idVec, id.Identity...)

@@ -204,12 +204,12 @@ func (hc *tlcpHalfConn) encrypt(record []byte, payload []byte) ([]byte, error) {
 		full := append(record[:tlcpRecordHeaderLen], explicitNonce...)
 		full = append(full, ct...)
 		binary.BigEndian.PutUint16(full[3:5], uint16(len(explicitNonce)+len(ct)))
-			if err := hc.incSeq(); err != nil {
-				return nil, err
-			}
-			return full, nil
+		if err := hc.incSeq(); err != nil {
+			return nil, err
+		}
+		return full, nil
 
-		case hc.cbcKey != nil:
+	case hc.cbcKey != nil:
 		// CBC + MAC: MAC = HMAC(seq || header || payload); then pad.
 		macH := tlcpHMACSM3(hc.macKeyBytes)
 		mac := tlcpRecordMAC(macH, nil, hc.seq[:], record[:tlcpRecordHeaderLen], payload)
@@ -236,11 +236,11 @@ func (hc *tlcpHalfConn) encrypt(record []byte, payload []byte) ([]byte, error) {
 		mode.CryptBlocks(ciphertext, padded)
 		out := append(record[:tlcpRecordHeaderLen], iv...)
 		out = append(out, ciphertext...)
-			binary.BigEndian.PutUint16(out[3:5], uint16(len(iv)+len(ciphertext)))
-			if err := hc.incSeq(); err != nil {
-				return nil, err
-			}
-			return out, nil
+		binary.BigEndian.PutUint16(out[3:5], uint16(len(iv)+len(ciphertext)))
+		if err := hc.incSeq(); err != nil {
+			return nil, err
+		}
+		return out, nil
 	}
 	return nil, errors.New("tlcp: no cipher configured")
 }
@@ -273,12 +273,12 @@ func (hc *tlcpHalfConn) decrypt(record []byte) ([]byte, tlcpRecordType, error) {
 		aad := tlcpAEADAdditionalData(hc.seq[:], record, plaintextLen)
 		plaintext, err := hc.aead.Open(nil, explicitNonce, ct, aad)
 		if err != nil {
-				return nil, 0, errors.New("tlcp: bad record MAC (AEAD authentication failed)")
-			}
-			if err := hc.incSeq(); err != nil {
-				return nil, 0, err
-			}
-			return plaintext, typ, nil
+			return nil, 0, errors.New("tlcp: bad record MAC (AEAD authentication failed)")
+		}
+		if err := hc.incSeq(); err != nil {
+			return nil, 0, err
+		}
+		return plaintext, typ, nil
 
 	case hc.cbcKey != nil:
 		const blockSize = 16
@@ -316,14 +316,14 @@ func (hc *tlcpHalfConn) decrypt(record []byte) ([]byte, tlcpRecordType, error) {
 		localMAC := tlcpRecordMAC(tlcpHMACSM3(hc.macKeyBytes), nil, hc.seq[:], macHeader, plain[:dataLen])
 		macGood := constantTimeEq(localMAC, remoteMAC)
 		if macGood == 0 || paddingGood == 0 {
-				return nil, 0, errors.New("tlcp: bad record MAC")
-			}
-			if err := hc.incSeq(); err != nil {
-				return nil, 0, err
-			}
-			return plain[:dataLen], typ, nil
+			return nil, 0, errors.New("tlcp: bad record MAC")
+		}
+		if err := hc.incSeq(); err != nil {
+			return nil, 0, err
+		}
+		return plain[:dataLen], typ, nil
 	}
-		return nil, 0, errors.New("tlcp: no cipher configured")
+	return nil, 0, errors.New("tlcp: no cipher configured")
 }
 
 // --- Conn: the TLCP connection ---
@@ -347,7 +347,7 @@ type tlcpConn struct {
 	// Decrypted handshake bytes awaiting parse, and decrypted app data awaiting Read.
 	hand      bytes.Buffer
 	input     bytes.Buffer
-	buffering atomic.Bool  // coalesce handshake writes; atomic for race-safety with Close()'s alert path
+	buffering atomic.Bool // coalesce handshake writes; atomic for race-safety with Close()'s alert path
 	sendBuf   bytes.Buffer
 	rawConn   net.Conn // net.Conn accessor
 

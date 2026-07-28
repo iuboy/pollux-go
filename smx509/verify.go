@@ -114,6 +114,20 @@ func verifySM2(cert *x509.Certificate, opts VerifyOptions) error {
 		smOpts.Roots = smRoots
 	}
 
+	// Thread the caller-supplied intermediates into the gmsm path. Without this
+	// a 3-tier chain (Root→Intermediate→Leaf) cannot verify for SM2 leaves,
+	// pushing callers to add the intermediate to Roots (incorrectly elevating
+	// an untrusted CA to a trust anchor) as a workaround.
+	if opts.Intermediates != nil && opts.Intermediates.Len() > 0 {
+		smIntermediates := smx509.NewCertPool()
+		for _, raw := range opts.Intermediates.RawDER() {
+			if smIC, parseErr := smx509.ParseCertificate(raw); parseErr == nil {
+				smIntermediates.AddCert(smIC)
+			}
+		}
+		smOpts.Intermediates = smIntermediates
+	}
+
 	chains, err := smCert.Verify(smOpts)
 	if err != nil {
 		return err

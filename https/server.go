@@ -45,8 +45,9 @@ func ListenAndServeTLCP(addr string, handler http.Handler, config *tlcp.Config) 
 	if err != nil {
 		return err
 	}
-	defer ln.Close()
-
+	// Do NOT defer ln.Close() here. serveTLCP hands ln to http.Server.Serve,
+	// which closes the (wrapped) listener on return — see serveTLCP. An extra
+	// defer would double-close ln. Matches the ListenAndServe pattern below.
 	return serveTLCP(ln, handler, config)
 }
 
@@ -56,8 +57,7 @@ func ListenAndServeTLSNat(addr string, handler http.Handler, config *tls.Config)
 	if err != nil {
 		return err
 	}
-	defer ln.Close()
-
+	// See ListenAndServeTLCP: Serve closes the wrapped listener; no defer here.
 	return serveTLS(ln, handler, config)
 }
 
@@ -138,7 +138,10 @@ func wrapListener(ln net.Listener, opts *ServerOptions, mode Mode) (net.Listener
 		return NewHybridListener(ln, tlcpCfg, tlsCfg), nil
 
 	default:
-		return nil, errMissingCertificate
+		// DetectMode only returns ModeTLS/ModeTLCP (ModeHybrid is caller-set),
+		// so reaching default means the mode field is uninitialized or invalid —
+		// a configuration problem, not a missing-certificate problem.
+		return nil, errUnsupportedMode
 	}
 }
 

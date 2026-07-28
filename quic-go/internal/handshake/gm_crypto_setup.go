@@ -14,7 +14,9 @@ package handshake
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -534,7 +536,18 @@ func (g *GMCryptoSetup) GetSessionTicket() ([]byte, error) {
 	if g.perspective != protocol.PerspectiveServer || g.serverHs == nil {
 		return nil, nil
 	}
-	return g.serverHs.NewSessionTicket(7200, 0)
+	// RFC 8446 §4.6.1: ticket_age_add MUST be a fresh random per ticket so that
+	// the obfuscated_ticket_age the client later sends does not reveal the real
+	// ticket age to an on-path observer, AND so a malicious client cannot forge
+	// a small age to bypass the server's anti-replay/expiry gate (the server
+	// reconstructs realAge = obfuscated_ticket_age - ticket_age_add). A constant
+	// 0 here made both protections no-ops.
+	var ageAddBytes [4]byte
+	if _, err := rand.Read(ageAddBytes[:]); err != nil {
+		return nil, fmt.Errorf("gm_crypto_setup: generate ticket_age_add: %w", err)
+	}
+	ticketAgeAdd := binary.BigEndian.Uint32(ageAddBytes[:])
+	return g.serverHs.NewSessionTicket(7200, ticketAgeAdd)
 }
 
 // ClientSessionTicket returns the opaque ticket identity, the derived

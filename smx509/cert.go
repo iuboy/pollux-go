@@ -609,6 +609,12 @@ func decryptBlock(es pkix.AlgorithmIdentifier, key, ciphertext []byte) ([]byte, 
 			// padding-related (padding-oracle hardening).
 			return nil, errDecryptFailed
 		}
+		// cipher.NewCBCDecrypter panics (not returns error) when the IV length
+		// != block size. The IV comes from attacker-controlled ASN.1, so guard
+		// explicitly to turn a process crash into an opaque decrypt error.
+		if len(iv) != blockCipher.BlockSize() {
+			return nil, errDecryptFailed
+		}
 		plaintext := make([]byte, len(ciphertext))
 		cipher.NewCBCDecrypter(blockCipher, iv).CryptBlocks(plaintext, ciphertext)
 		unpadded, err := pkcs7Unpad(plaintext, blockCipher.BlockSize())
@@ -721,6 +727,11 @@ func decryptLegacyPEM(block *pem.Block, password []byte) ([]byte, error) {
 	}
 
 	if len(block.Bytes)%blockCipher.BlockSize() != 0 {
+		return nil, errDecryptFailed
+	}
+	// cipher.NewCBCDecrypter panics when len(iv) != block size; the IV comes
+	// from the attacker-controlled DEK-Info header. Guard explicitly.
+	if len(iv) != blockCipher.BlockSize() {
 		return nil, errDecryptFailed
 	}
 	plaintext := make([]byte, len(block.Bytes))

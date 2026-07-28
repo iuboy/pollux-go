@@ -177,12 +177,21 @@ func (s *sm2SignerVerifier) Verify(tokenString string, v Claims) error {
 	return nil
 }
 
-// Zeroize securely clears the SM2 private key held by the SignerVerifier.
-// Consistent with the hmacSignerVerifier.Zeroize and the memsecure convention
-// used throughout pollux-go (aes, sm4 packages).
+// Zeroize clears the SM2 private key scalar held by the SignerVerifier.
+//
+// NOTE: math/big.Int does not expose its internal nat words, so a fully secure
+// overwrite of the backing array is not possible from outside the type. The
+// previous implementation called memsecure.ZeroBytes(s.priv.D.Bytes()), but
+// D.Bytes() returns a FRESH copy of the scalar — zeroing that copy left the
+// actual private key intact (a silent no-op). SetInt64(0) at least zeroes the
+// logical scalar value so the key is no longer usable or directly readable.
+// This matches the best-effort convention Go's crypto/ecdsa itself documents
+// for big.Int-backed keys. For keys requiring stronger guarantees, callers
+// should keep the raw key bytes and zero those directly (see
+// sm2.PrivateKeyToBytesSecure).
 func (s *sm2SignerVerifier) Zeroize() {
-	if s.priv != nil {
-		memsecure.ZeroBytes(s.priv.D.Bytes())
+	if s.priv != nil && s.priv.D != nil {
+		s.priv.D.SetInt64(0)
 	}
 }
 

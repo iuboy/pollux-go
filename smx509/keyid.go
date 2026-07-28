@@ -107,6 +107,25 @@ func AddRFC5280KeyIdentifiers(
 		return errNilTemplate
 	}
 
+	// RFC 5280 §4.2: an extension MUST NOT appear more than once in a
+	// certificate. Scan both ExtraExtensions (caller-set) and Extensions
+	// (populated by a prior CreateCertificate / previous AddRFC5280 call) and
+	// skip any identifier already present, so re-calling this helper on a
+	// template that already carries SKI/AKI does not inject duplicates.
+	hasExt := func(oid asn1.ObjectIdentifier) bool {
+		for _, ext := range template.ExtraExtensions {
+			if ext.Id.Equal(oid) {
+				return true
+			}
+		}
+		for _, ext := range template.Extensions {
+			if ext.Id.Equal(oid) {
+				return true
+			}
+		}
+		return false
+	}
+
 	extensions := make([]pkix.Extension, 0, 2)
 
 	if len(subjectKeyID) == 0 && template.PublicKey != nil {
@@ -116,7 +135,7 @@ func AddRFC5280KeyIdentifiers(
 		}
 		subjectKeyID = ski
 	}
-	if len(subjectKeyID) > 0 {
+	if len(subjectKeyID) > 0 && !hasExt(OIDSubjectKeyIdentifier) {
 		extensions = append(extensions, CreateSubjectKeyIdentifierExtension(subjectKeyID))
 	}
 
@@ -127,7 +146,7 @@ func AddRFC5280KeyIdentifiers(
 		}
 		authorityKeyID = aki
 	}
-	if len(authorityKeyID) > 0 {
+	if len(authorityKeyID) > 0 && !hasExt(OIDAuthorityKeyIdentifier) {
 		extensions = append(extensions, CreateAuthorityKeyIdentifierExtension(authorityKeyID))
 	}
 

@@ -15,8 +15,14 @@ import (
 )
 
 var (
-	errMissingAddr        = errors.New("pollux/https: addr is required")
-	errMissingCertificate = errors.New("pollux/https: certificate is required")
+	errMissingAddr = errors.New("pollux/https: addr is required")
+	// Distinct sentinels per config path so a caller can tell from the error
+	// message WHICH certificate is missing (TLCP needs a sign+enc pair; TLS
+	// needs a standard cert chain). The previous single errMissingCertificate
+	// was reused across all three paths and gave no diagnostic signal.
+	errMissingTLCPCertificate = errors.New("pollux/https: TLCP sign and enc certificates are required")
+	errMissingTLSCertificate  = errors.New("pollux/https: TLS certificate is required")
+	errUnsupportedMode        = errors.New("pollux/https: unsupported or undetected crypto mode")
 )
 
 // defaultTLSCurvePreferences restricts the (key-exchange) curves negotiated by
@@ -134,7 +140,7 @@ func (o *ServerOptions) DetectMode() Mode {
 // buildTLCPConfig converts options into a tlcp.Config.
 func (o *ServerOptions) buildTLCPConfig() (*tlcp.Config, error) {
 	if o.SignCert == nil || o.EncCert == nil {
-		return nil, errMissingCertificate
+		return nil, errMissingTLCPCertificate
 	}
 	cfg := &tlcp.Config{
 		SignCertificate:    o.SignCert,
@@ -174,7 +180,7 @@ func (o *ServerOptions) buildTLSConfig() (*tls.Config, error) {
 		cfg.ClientCAs = o.ClientCAs.ToStandardPool()
 	}
 	if len(cfg.Certificates) == 0 {
-		return nil, errMissingCertificate
+		return nil, errMissingTLSCertificate
 	}
 	return cfg, nil
 }
@@ -252,12 +258,12 @@ type ClientOptions struct {
 // buildTLCPClientConfig builds a tlcp.Config for client use.
 func (o *ClientOptions) buildTLCPClientConfig() (*tlcp.Config, error) {
 	// Fail-closed: a TLCP client without any root CAs, client certificates,
-		// or explicit InsecureSkipVerify would fall back to the system cert store
-		// (non-deterministic across environments) — effectively unauthenticated
-		// by accident. Require at least one trust anchor or explicit opt-in.
-		// TLCP client auth uses SignCert/EncCert, not Certificates (which is TLS field).
-		if o.SignRootCAs == nil && o.EncRootCAs == nil &&
-			(o.SignCert == nil && o.EncCert == nil) && !o.InsecureSkipVerify {
+	// or explicit InsecureSkipVerify would fall back to the system cert store
+	// (non-deterministic across environments) — effectively unauthenticated
+	// by accident. Require at least one trust anchor or explicit opt-in.
+	// TLCP client auth uses SignCert/EncCert, not Certificates (which is TLS field).
+	if o.SignRootCAs == nil && o.EncRootCAs == nil &&
+		(o.SignCert == nil && o.EncCert == nil) && !o.InsecureSkipVerify {
 		return nil, errors.New("pollux/https: at least one certificate, root pool, or InsecureSkipVerify is required")
 	}
 	cfg := &tlcp.Config{

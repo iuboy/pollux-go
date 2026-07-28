@@ -30,7 +30,7 @@ COVER_HTML ?= coverage.html
 # Listed on the command line because gosec dev ignores the config's "exclude" key.
 GOSEC_EXCLUDE ?= G104,G115,G304,G401,G402,G405,G501,G502,G505
 
-.PHONY: test test-unit test-integration cover cover-html vet gosec build clean fmt doc
+.PHONY: test test-unit test-integration cover cover-html vet gosec build clean fmt fmt-check doc
 
 ## build: compile all packages
 build:
@@ -101,6 +101,17 @@ cover-html: cover
 ## fmt: format all Go sources
 fmt:
 	$(GO) fmt ./...
+
+## fmt-check: verify all sources are gofmt-clean (CI gate, non-destructive).
+## Lists any files needing formatting; exits non-zero on drift. The vendored
+## quic-go/ fork is excluded (upstream code, PATCHES.md), matching the CI
+## gosec/staticcheck exclusions. Run before pushing to catch the same drift
+## CI's gofmt step would flag.
+fmt-check:
+	@if diff=$$(gofmt -l . | grep -v '^quic-go/'); then \
+		echo "gofmt drift in:"; echo "$$diff"; \
+		echo "fix with: make fmt  (or gofmt -w <file>)"; exit 1; \
+	fi
 
 ## clean: remove coverage artifacts
 clean:

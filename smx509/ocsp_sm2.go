@@ -166,10 +166,10 @@ func createSM2OCSPResponse(issuer, responderCert *x509.Certificate, template ocs
 
 	response := sm2BasicResponse{
 		TBSResponseData: tbsResponseData,
-			SignatureAlgorithm: pkix.AlgorithmIdentifier{
-				Algorithm: oidSignatureSM2WithSM3,
-				Parameters: asn1.RawValue{Tag: 5}, // ASN.1 NULL
-			},
+		SignatureAlgorithm: pkix.AlgorithmIdentifier{
+			Algorithm:  oidSignatureSM2WithSM3,
+			Parameters: asn1.RawValue{Tag: 5}, // ASN.1 NULL
+		},
 		Signature: asn1.BitString{
 			Bytes:     signature,
 			BitLength: 8 * len(signature),

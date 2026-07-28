@@ -155,10 +155,14 @@ func PKCS7Unpad(data []byte, blockSize int) ([]byte, error) {
 // Encrypt encrypts plaintext using the specified SM4 mode.
 // Supported modes: ModeGCM (recommended), ModeCBC, ModeCTR, ModeCFB, ModeECB (deprecated).
 //
-//   - If iv is nil or empty, a random 12-byte nonce is generated and prepended to the ciphertext.
-//   - If iv is provided, it is used directly and NOT prepended to the ciphertext.
+//   - GCM: if iv is nil or empty, a random 12-byte nonce is generated and
+//     prepended to the ciphertext; if iv is provided it is used directly and
+//     NOT prepended (and must be exactly GCMNonceSize bytes).
+//   - CBC/CTR/CFB: iv is the IV and MUST be BlockSize (16) bytes; an empty or
+//     wrong-length iv returns errInvalidIVLen (no auto-generation).
+//   - ECB: iv is ignored.
 //
-// For CBC/CTR/CFB, iv is the IV. ECB ignores iv. GCM includes authentication.
+// GCM includes authentication; the others do not.
 // WARNING: for GCM mode, never reuse a nonce with the same key.
 func Encrypt(key, plaintext []byte, mode Mode, iv []byte) ([]byte, error) {
 	switch mode {
@@ -288,6 +292,11 @@ func encryptGCM(key, plaintext, nonce []byte) ([]byte, error) {
 			return nil, err
 		}
 		noncePrepended = true
+	} else if len(nonce) != aead.NonceSize() {
+		// cipher.NewGCM's Seal/Open panic (not return error) on a wrong-length
+		// nonce; guard explicitly so a malformed caller nonce becomes a
+		// returned error instead of a process-wide panic.
+		return nil, errInvalidIVLen
 	}
 	sealed := aead.Seal(nil, nonce, plaintext, nil)
 	if noncePrepended {
@@ -314,6 +323,10 @@ func decryptGCM(key, ciphertext, nonce []byte) ([]byte, error) {
 		}
 		nonce = ciphertext[:aead.NonceSize()]
 		ciphertext = ciphertext[aead.NonceSize():]
+	} else if len(nonce) != aead.NonceSize() {
+		// See encryptGCM: guard against cipher.AEAD.Open panicking on a
+		// wrong-length nonce.
+		return nil, errInvalidIVLen
 	}
 	return aead.Open(nil, nonce, ciphertext, nil)
 }

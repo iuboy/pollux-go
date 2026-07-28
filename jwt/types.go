@@ -48,6 +48,13 @@ type Verifier interface {
 	// Verify parses tokenString and writes the validated claims into v.
 	// Returns an error if the signature is invalid, the alg header does not
 	// match, or the token is malformed.
+	//
+	// v MUST be a non-nil POINTER to a claims struct (e.g. *RegisteredClaims
+	// or *MyCustomClaims). Verify internally calls jwt.ParseWithClaims, which
+	// JSON-deserializes the token payload into v via json.Decode; passing a
+	// non-pointer value (MyClaims{}) leaves v unpopulated and returns no
+	// explicit error — claims silently stay zero. The pointer requirement
+	// matches golang-jwt/jwt/v5's ParseWithClaims contract.
 	Verify(tokenString string, v Claims) error
 }
 

@@ -40,10 +40,13 @@ func DeriveQUICPacketKeys(trafficSecret []byte) (*QUICPacketKeys, error) {
 	}
 	iv, err := HKDFExpandLabel(trafficSecret, LabelQUICIV, nil, quicAEADIVLen)
 	if err != nil {
+		memsecure.ZeroBytes(key)
 		return nil, fmt.Errorf("tls13gm: derive QUIC AEAD IV: %w", err)
 	}
 	hp, err := HKDFExpandLabel(trafficSecret, LabelQUICHP, nil, quicHeaderKeyLen)
 	if err != nil {
+		memsecure.ZeroBytes(key)
+		memsecure.ZeroBytes(iv)
 		return nil, fmt.Errorf("tls13gm: derive QUIC header protection key: %w", err)
 	}
 	return &QUICPacketKeys{AEADKey: key, AEADIV: iv, HeaderKey: hp}, nil
@@ -67,7 +70,15 @@ func QUICKeyUpdate(trafficSecret []byte) ([]byte, error) {
 	if len(trafficSecret) == 0 {
 		return nil, errors.New("tls13gm: QUIC traffic secret must not be empty")
 	}
-	return HKDFExpandLabel(trafficSecret, LabelQUICKU, nil, len(trafficSecret))
+	out, err := HKDFExpandLabel(trafficSecret, LabelQUICKU, nil, len(trafficSecret))
+	if err != nil {
+		return nil, err
+	}
+	if len(out) != len(trafficSecret) {
+		memsecure.ZeroBytes(out)
+		return nil, fmt.Errorf("tls13gm: QUIC key update produced %d bytes, expected %d", len(out), len(trafficSecret))
+	}
+	return out, nil
 }
 
 // Zero securely zeroes all key material in a QUICPacketKeys using
@@ -115,12 +126,18 @@ func DeriveQUICInitialSecrets(destinationConnectionID []byte) (clientIn, serverI
 	if err != nil {
 		return nil, nil, err
 	}
+	// initialSecret is an intermediate HKDF-Extract output; zero it before
+	// returning so it does not linger on the heap (defense in depth — it is
+	// derived from the public DCID + public RFC 9001 salt, but keep style
+	// consistent with the QUICPacketKeys.Zero / HandshakeSecrets.ZeroAll paths).
+	defer memsecure.ZeroBytes(initialSecret)
 	clientIn, err = HKDFExpandLabel(initialSecret, LabelQUICClientIn, nil, sm3.Size)
 	if err != nil {
 		return nil, nil, fmt.Errorf("tls13gm: derive QUIC client initial secret: %w", err)
 	}
 	serverIn, err = HKDFExpandLabel(initialSecret, LabelQUICServerIn, nil, sm3.Size)
 	if err != nil {
+		memsecure.ZeroBytes(clientIn)
 		return nil, nil, fmt.Errorf("tls13gm: derive QUIC server initial secret: %w", err)
 	}
 	return clientIn, serverIn, nil

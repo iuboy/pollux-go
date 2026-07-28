@@ -3,6 +3,7 @@ package sm9
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"testing"
 )
 
@@ -37,13 +38,23 @@ func TestSignVerify(t *testing.T) {
 		t.Fatal("signature should not be empty")
 	}
 
-	if !Verify(master.PublicKey(), uid, msg, sig) {
-		t.Error("Verify should succeed for valid signature")
+	if err := Verify(master.PublicKey(), uid, msg, sig); err != nil {
+		t.Errorf("Verify should succeed for valid signature, got: %v", err)
 	}
 
-	// wrong message should fail
-	if Verify(master.PublicKey(), uid, []byte("wrong"), sig) {
+	// wrong message should fail with ErrSignatureInvalid
+	if err := Verify(master.PublicKey(), uid, []byte("wrong"), sig); err == nil {
 		t.Error("Verify should fail for wrong message")
+	} else if !errors.Is(err, ErrSignatureInvalid) {
+		t.Errorf("Verify wrong-message: expected ErrSignatureInvalid, got: %v", err)
+	}
+
+	// VerifyBool should mirror the new Verify
+	if !VerifyBool(master.PublicKey(), uid, msg, sig) {
+		t.Error("VerifyBool should succeed for valid signature")
+	}
+	if VerifyBool(master.PublicKey(), uid, []byte("wrong"), sig) {
+		t.Error("VerifyBool should fail for wrong message")
 	}
 }
 
@@ -199,8 +210,22 @@ func TestUIDEmptyValidation(t *testing.T) {
 	if _, err := GenerateEncryptUserKey(encMaster, nil); err == nil {
 		t.Error("GenerateEncryptUserKey: expected error for nil uid")
 	}
-	if Verify(signMaster.PublicKey(), nil, []byte("data"), []byte("sig")) {
-		t.Error("Verify: expected false for nil uid")
+	if err := Verify(signMaster.PublicKey(), nil, []byte("data"), []byte("sig")); err == nil {
+		t.Error("Verify: expected error for nil uid")
+	} else if errors.Is(err, ErrSignatureInvalid) {
+		t.Error("Verify nil-uid: should be input-validation error, not ErrSignatureInvalid")
+	}
+	// nil publicKey should be input-validation error
+	if err := Verify(nil, []byte("uid"), []byte("data"), []byte("sig")); err == nil {
+		t.Error("Verify: expected error for nil publicKey")
+	} else if errors.Is(err, ErrSignatureInvalid) {
+		t.Error("Verify nil-key: should be input-validation error, not ErrSignatureInvalid")
+	}
+	// empty sig should be input-validation error
+	if err := Verify(signMaster.PublicKey(), []byte("uid"), []byte("data"), nil); err == nil {
+		t.Error("Verify: expected error for empty sig")
+	} else if errors.Is(err, ErrSignatureInvalid) {
+		t.Error("Verify empty-sig: should be input-validation error, not ErrSignatureInvalid")
 	}
 	if _, err := Encrypt(encMaster.PublicKey(), nil, []byte("pt"), nil); err == nil {
 		t.Error("Encrypt: expected error for nil uid")

@@ -17,7 +17,13 @@
 // implementation serves both. The caller supplies h:
 //
 //	// GM
-//	dk, _ := kdf.PBKDF2(pwd, salt, 200_000, 32, sm3.New)
+//	dk, err := kdf.PBKDF2(pwd, salt, 200_000, 32, sm3.New)
+//	if err != nil { /* handle invalid params: iter<=0, keyLen<=0, iter>10M, ... */ }
 //	// international
-//	dk, _ := kdf.PBKDF2(pwd, salt, 600_000, 32, sha256.New)
+//	dk, err = kdf.PBKDF2(pwd, salt, 600_000, 32, sha256.New)
+//	if err != nil { /* ... */ }
+//
+// Always check the returned error: PBKDF2 rejects invalid parameters
+// (iter<=0, keyLen<=0, iter>10M, keyLen>1MiB, nil hash) with a descriptive
+// error rather than silently producing a degenerate key.
 package kdf

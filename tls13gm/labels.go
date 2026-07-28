@@ -12,6 +12,12 @@ const (
 	// LabelResumption derives the resumption PSK from the resumption master
 	// secret: HKDF-Expand-Label(RMS, LabelResumption, ticket_nonce, Hash.length).
 	//
+	// Naming note: this is "LabelResumption" (not "LabelResPsk") for historical
+	// readability; it does NOT correspond to LabelResumptionMaster ("res master")
+	// — the two operate at different stages of the key schedule. If you see
+	// "LabelResumption" in code, it means the PSK derivation step; if you see
+	// "LabelResumptionMaster", it means the RMS derivation step.
+	//
 	// ⚠ NON-STANDARD — BabaSSL/Tongsuo deviation from RFC 8446 §7.1.
 	// RFC 8446 §7.1 specifies "res psk":
 	//   PSK = HKDF-Expand-Label(RMS, "res psk", ticket_nonce, Hash.length)

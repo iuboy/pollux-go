@@ -1,4 +1,4 @@
-package http
+package https
 
 import (
 	"crypto/tls"
@@ -17,17 +17,23 @@ func ListenAndServe(opts *ServerOptions) error {
 	}
 
 	mode := opts.DetectMode()
-	ln, err := net.Listen("tcp", opts.Addr)
-	if err != nil {
-		return err
-	}
-	defer ln.Close()
-
-	ln, err = wrapListener(ln, opts, mode)
+	rawLn, err := net.Listen("tcp", opts.Addr)
 	if err != nil {
 		return err
 	}
 
+	ln, err := wrapListener(rawLn, opts, mode)
+	if err != nil {
+		rawLn.Close() // wrap failed; clean up the raw TCP listener
+		return err
+	}
+
+	// http.Server.Serve closes the passed Listener when it returns (Go stdlib
+	// documented behavior). We must NOT defer rawLn.Close() here — that would
+	// race with Serve's close of the wrapper (which closes the underlying
+	// raw listener transitively), causing a double-close on the raw TCP
+	// socket. If Serve fails to close the wrapper for any reason, the
+	// wrapper's own Close path still reaches rawLn.
 	srv := buildHTTPServer(opts)
 	return srv.Serve(ln)
 }
@@ -72,6 +78,12 @@ func Serve(ln net.Listener, opts *ServerOptions) error {
 	return srv.Serve(wrapped)
 }
 
+// serveTLCP runs an HTTP server on a pre-wrapped TLCP listener.
+//
+// The 30s/120s timeouts are hardcoded for the convenience API. Callers
+// needing custom timeouts should use ListenAndServe with ServerOptions
+// (which exposes ReadTimeout/WriteTimeout/IdleTimeout fields), or
+// construct an *http.Server directly.
 func serveTLCP(ln net.Listener, handler http.Handler, config *tlcp.Config) error {
 	srv := &http.Server{
 		Handler:      handler,
@@ -79,9 +91,13 @@ func serveTLCP(ln net.Listener, handler http.Handler, config *tlcp.Config) error
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
+	// http.Server.Serve closes the passed listener (tlcp.NewListener wraps
+	// ln) when it returns — the caller must NOT also close ln.
 	return srv.Serve(tlcp.NewListener(ln, config))
 }
 
+// serveTLS runs an HTTP server on a pre-wrapped standard TLS listener.
+// See serveTLCP for the timeout/customization note.
 func serveTLS(ln net.Listener, handler http.Handler, config *tls.Config) error {
 	srv := &http.Server{
 		Handler:      handler,
@@ -89,6 +105,8 @@ func serveTLS(ln net.Listener, handler http.Handler, config *tls.Config) error {
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
+	// http.Server.Serve closes the passed listener (tls.NewListener wraps
+	// ln) when it returns — the caller must NOT also close ln.
 	return srv.Serve(tls.NewListener(ln, config))
 }
 
@@ -124,10 +142,12 @@ func wrapListener(ln net.Listener, opts *ServerOptions, mode Mode) (net.Listener
 	}
 }
 
-// Conservative server timeouts applied when the caller does not set them.
-// They match the values hardcoded by serveTLCP/serveTLS, keeping the
-// ListenAndServe/Serve convenience path consistent and preventing
-// Slowloris-style resource exhaustion from slow clients.
+// Conservative server timeouts applied when the caller leaves the
+// corresponding *time.Duration field nil. They match the values hardcoded by
+// serveTLCP/serveTLS, keeping the ListenAndServe/Serve convenience path
+// consistent and preventing Slowloris-style resource exhaustion from slow
+// clients. Callers can opt out per-field via NoTimeout() (NOT recommended
+// outside a reverse-proxy front-end).
 const (
 	defaultReadTimeout  = 30 * time.Second
 	defaultWriteTimeout = 30 * time.Second
@@ -135,26 +155,16 @@ const (
 )
 
 func buildHTTPServer(opts *ServerOptions) *http.Server {
-	// Zero-valued durations mean "no timeout". Fill conservative defaults so
-	// the main ListenAndServe/Serve path is not left unprotected, mirroring the
-	// TLCP/TLS convenience servers. opts itself is not mutated.
-	readTimeout := opts.ReadTimeout
-	if readTimeout == 0 {
-		readTimeout = defaultReadTimeout
-	}
-	writeTimeout := opts.WriteTimeout
-	if writeTimeout == 0 {
-		writeTimeout = defaultWriteTimeout
-	}
-	idleTimeout := opts.IdleTimeout
-	if idleTimeout == 0 {
-		idleTimeout = defaultIdleTimeout
-	}
+	// *time.Duration pointer semantics:
+	//   - nil           → conservative default (Slowloris protection)
+	//   - non-nil zero  → explicitly no timeout (opt-out; risky)
+	//   - non-nil value → use it
+	// See ServerOptions docs and Duration()/NoTimeout() helpers.
 	return &http.Server{
 		Handler:      opts.Handler,
-		ReadTimeout:  readTimeout,
-		WriteTimeout: writeTimeout,
-		IdleTimeout:  idleTimeout,
+		ReadTimeout:  resolveTimeout(opts.ReadTimeout, defaultReadTimeout),
+		WriteTimeout: resolveTimeout(opts.WriteTimeout, defaultWriteTimeout),
+		IdleTimeout:  resolveTimeout(opts.IdleTimeout, defaultIdleTimeout),
 	}
 }
 

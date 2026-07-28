@@ -154,6 +154,15 @@ func (p Argon2idParams) validateDecoded(saltLen, keyLen int) error {
 		return fmt.Errorf("%w: iterations must be positive", ErrMalformedHash)
 	case p.Parallelism == 0:
 		return fmt.Errorf("%w: parallelism must be positive", ErrMalformedHash)
+	case p.Memory < uint32(8*p.Parallelism):
+		// RFC 9106 §3: memory MUST be ≥ 8*p; golang.org/x/crypto/argon2 panics
+		// on memory < threads*2 (its own lower bound). Enforce the RFC floor so
+		// attacker-crafted PHC strings cannot reach the panic path.
+		return fmt.Errorf("%w: memory %d KiB below RFC 9106 minimum (8*parallelism=%d)", ErrMalformedHash, p.Memory, 8*p.Parallelism)
+	case p.Memory > maxArgon2Memory:
+		return fmt.Errorf("%w: memory %d KiB exceeds safe upper bound", ErrMalformedHash, p.Memory)
+	case p.Parallelism > maxArgon2Parallelism:
+		return fmt.Errorf("%w: parallelism %d exceeds safe upper bound", ErrMalformedHash, p.Parallelism)
 	case keyLen == 0:
 		return fmt.Errorf("%w: hash must be non-empty", ErrMalformedHash)
 	case saltLen < minSaltLength:

@@ -6,6 +6,11 @@ import (
 	"errors"
 )
 
+// keyWrapIV is the RFC 3394 §2.2.3.1 default IV: 0xA6 repeated 8 times.
+// Promoted from a per-call []byte literal to a package-level array so
+// KeyWrap/KeyUnwrap do not allocate it on every invocation.
+var keyWrapIV = [8]byte{0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6}
+
 // KeyWrap implements the AES Key Wrap algorithm (RFC 3394) adapted for SM4.
 //
 // SM4 has a 128-bit block size like AES, so the algorithm is identical.
@@ -27,11 +32,10 @@ func KeyWrap(kek, plaintextKey []byte) ([]byte, error) {
 	n := len(plaintextKey) / 8 // number of 64-bit semiblocks
 
 	// RFC 3394 Section 2.2.3.1
-	// Set A = IV (0xA6 repeated 8 times)
+	// Set A = IV (0xA6 repeated 8 times) — use the package-level keyWrapIV
+	// constant instead of a per-call loop.
 	A := make([]byte, 8)
-	for i := range A {
-		A[i] = 0xA6
-	}
+	copy(A, keyWrapIV[:])
 
 	// Copy plaintext semiblocks into R[1..n]
 	R := make([][]byte, n+1)
@@ -117,9 +121,10 @@ func KeyUnwrap(kek, ciphertext []byte) ([]byte, error) {
 		}
 	}
 
-	// Check IV (constant-time comparison to prevent timing side channels)
-	expectedIV := []byte{0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6}
-	if subtle.ConstantTimeCompare(A, expectedIV) != 1 {
+	// Check IV (constant-time comparison to prevent timing side channels).
+	// keyWrapIV is the RFC 3394 default IV — promoted to a package-level
+	// var so KeyUnwrap does not allocate a fresh []byte on every call.
+	if subtle.ConstantTimeCompare(A, keyWrapIV[:]) != 1 {
 		return nil, errors.New("sm4/keywrap: integrity check failed")
 	}
 

@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"strings"
 
 	gmsmSM2 "github.com/emmansun/gmsm/sm2"
@@ -12,10 +13,18 @@ import (
 )
 
 var (
-	errNotSM2Key  = errors.New("sm2: key is not SM2")
+	// ErrNotSM2Key is returned by ParsePrivateKeyFromPEM when the PEM block
+	// parses successfully but the encoded key is not on the SM2 P256 curve.
+	// It is the sentinel smx509 uses to decide whether to fall through to the
+	// standard-library private-key parsers.
+	ErrNotSM2Key = errors.New("sm2: key is not SM2")
 	errPEMDecode  = errors.New("sm2: failed to decode PEM block")
 	errNoKeyInPEM = errors.New("sm2: no key found in PEM data")
 )
+
+// errNotSM2Key preserved as an alias for internal callers; new code should
+// prefer the exported ErrNotSM2Key for errors.Is compatibility.
+var errNotSM2Key = ErrNotSM2Key
 
 // ParsePrivateKeyFromPEM 解析 PEM 编码的 SM2 私钥。
 // 支持 PKCS#8 和 EC PRIVATE KEY 格式。
@@ -62,10 +71,14 @@ func ParsePrivateKeyFromPEM(pemData []byte) (*PrivateKey, error) {
 }
 
 // ParsePublicKeyFromPEM 解析 PEM 编码的 SM2 公钥。
+// 仅接受 "PUBLIC KEY" 块类型；拒绝其他类型（如 PRIVATE KEY）以防误用。
 func ParsePublicKeyFromPEM(pemData []byte) (*ecdsa.PublicKey, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
 		return nil, errPEMDecode
+	}
+	if block.Type != "PUBLIC KEY" {
+		return nil, fmt.Errorf("sm2: unexpected PEM block type %q, want PUBLIC KEY", block.Type)
 	}
 
 	pub, err := gmsmSMX509.ParsePKIXPublicKey(block.Bytes)

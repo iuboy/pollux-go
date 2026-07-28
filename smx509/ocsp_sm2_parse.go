@@ -20,8 +20,26 @@ var sm2HashOIDs = map[crypto.Hash]asn1.ObjectIdentifier{
 	crypto.SHA512: asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 3},
 }
 
-// parseSM2OCSPResponse parses an OCSP response signed with SM2+SM3, verifying
-// the signature against the issuer's SM2 public key. It mirrors the structure
+// sm3HashOID is the SM3 hash algorithm OID (GM/T 0009-2012).
+var sm3HashOID = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 401}
+
+// sm2HashOIDLookup maps OIDs to crypto.Hash for CertID decoding.
+// SM3 maps to crypto.SHA256 for OCSP response digest identification since
+// crypto.Hash has no SM3 constant; the actual SM3 hashing is done by sm3.New().
+var sm2HashOIDLookup = buildHashOIDMap()
+
+func buildHashOIDMap() map[string]crypto.Hash {
+	m := make(map[string]crypto.Hash, len(sm2HashOIDs)+1)
+	for h, oid := range sm2HashOIDs {
+		m[oid.String()] = h
+	}
+	return m
+}
+
+// defaultSM2UID is the default SM2 user identifier per GM/T 0009-2012.
+// Used explicitly (rather than nil) to avoid implicit dependency on gmsm's
+// default-UID fallback which may change across gmsm releases.
+var defaultSM2UID = []byte("1234567812345678")
 // of ocsp.ParseResponseForCert but replaces stdlib x509.CheckSignature (which
 // rejects sm2.P256()) with sm2.VerifyASN1WithSM2.
 //
@@ -91,7 +109,7 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate) (*ocsp.Response
 		if !ok {
 			return errors.New("smx509: responder public key is not ECDSA (SM2)")
 		}
-		if !sm2.VerifyWithSM2(pub, nil, ret.TBSResponseData, ret.Signature) {
+		if !sm2.VerifyWithSM2(pub, defaultSM2UID, ret.TBSResponseData, ret.Signature) {
 			return errors.New("smx509: bad SM2 OCSP signature")
 		}
 		return nil
@@ -130,12 +148,17 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate) (*ocsp.Response
 		}
 	}
 
-	// CertID hash algorithm.
+	// CertID hash algorithm. Check SM3 first (GM-specific), then fall back to
+	// the standard crypto.Hash OIDs.
 	certIDHashOID := singleResp.CertID.HashAlgorithm.Algorithm
-	for h, oid := range sm2HashOIDs {
-		if certIDHashOID.Equal(oid) {
-			ret.IssuerHash = h
-			break
+	if certIDHashOID.Equal(sm3HashOID) {
+		ret.IssuerHash = crypto.SHA256 // map SM3 to SHA256 (no crypto.Hash constant for SM3)
+	} else {
+		for h, oid := range sm2HashOIDs {
+			if certIDHashOID.Equal(oid) {
+				ret.IssuerHash = h
+				break
+			}
 		}
 	}
 	if ret.IssuerHash == 0 {

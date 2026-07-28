@@ -18,6 +18,11 @@ func hkdfExtract(salt, ikm []byte) []byte {
 
 // hkdfExpand implements HKDF-Expand (RFC 5869 Section 2.3) using SHA-256.
 // T(i) = HMAC(PRK, T(i-1) || info || i), where T(0) = empty string.
+//
+// Concurrency note: byte(i) in the loop is safe because RFC 5869 caps the
+// iteration counter at 255 (n ≤ ceil(length/HashLen) ≤ 255 once the length
+// guard above rejects length > 255*Size). If the length cap is ever relaxed
+// the byte(i) narrowing would silently wrap; the guard is the contract.
 func hkdfExpand(prk, info []byte, length int) ([]byte, error) {
 	if length > 255*Size {
 		return nil, errors.New("sha/hkdf: length too large")
@@ -34,6 +39,10 @@ func hkdfExpand(prk, info []byte, length int) ([]byte, error) {
 		h := NewHMAC(prk)
 		h.Write(prev)
 		h.Write(info)
+		// byte(i) is safe: n ≤ 255 once the length guard above holds. The
+		// narrowing to a single byte is intentional — RFC 5869's T(i)
+		// construction places the counter as one octet at the end of the
+		// HMAC input.
 		h.Write([]byte{byte(i)})
 		prev = h.Sum(nil)
 		result = append(result, prev...)

@@ -15,6 +15,14 @@ var (
 	errNilSignPriv     = errors.New("sm9: nil signing private key")
 	errNilEncPriv      = errors.New("sm9: nil encryption private key")
 	errNilEncMasterPub = errors.New("sm9: nil encryption master public key")
+	errNilSignMasterPub = errors.New("sm9: nil signing master public key")
+	errSigEmpty        = errors.New("sm9: empty signature")
+
+	// ErrSignatureInvalid is returned by Verify when signature verification
+	// fails. It is distinct from input-validation errors (nil key, empty uid,
+	// empty signature), which indicate caller misuse rather than an invalid
+	// signature. Use errors.Is to distinguish the two classes.
+	ErrSignatureInvalid = errors.New("sm9: signature verification failed")
 )
 
 // DefaultSignHID is the default signing HID per GM/T 0005-2012.
@@ -86,13 +94,47 @@ func Sign(privateKey *SignPrivateKey, data []byte) ([]byte, error) {
 	return gmsmSM9.SignASN1(rand.Reader, privateKey, data)
 }
 
-// Verify verifies an SM9 signature on data. The data parameter must match what was
-// passed to Sign (the original message, not a hash).
-func Verify(publicKey *SignMasterPublicKey, uid []byte, data, sig []byte) bool {
-	if publicKey == nil || len(uid) == 0 {
-		return false
+// Verify verifies an SM9 signature on data. The data parameter must match what
+// was passed to Sign (the original message, not a hash).
+//
+// It returns nil if the signature is valid, or an error describing the
+// failure otherwise. Input-validation errors (nil publicKey, empty uid, empty
+// signature) are returned separately from ErrSignatureInvalid so callers can
+// distinguish caller misuse from a genuine verification failure via errors.Is:
+//
+//	if err := sm9.Verify(pub, uid, msg, sig); err != nil {
+//	    if errors.Is(err, sm9.ErrSignatureInvalid) {
+//	        // signature genuinely invalid
+//	    } else {
+//	        // input misuse (nil key, empty uid/sig)
+//	    }
+//	}
+//
+// NOTE: this is a breaking API change from the previous bool-returning Verify.
+// Callers that want the legacy boolean behavior should use VerifyBool.
+func Verify(publicKey *SignMasterPublicKey, uid, data, sig []byte) error {
+	if publicKey == nil {
+		return errNilSignMasterPub
 	}
-	return gmsmSM9.VerifyASN1(publicKey, uid, DefaultSignHID, data, sig)
+	if len(uid) == 0 {
+		return errUIDEmpty
+	}
+	if len(sig) == 0 {
+		return errSigEmpty
+	}
+	if !gmsmSM9.VerifyASN1(publicKey, uid, DefaultSignHID, data, sig) {
+		return ErrSignatureInvalid
+	}
+	return nil
+}
+
+// VerifyBool is the legacy boolean variant of Verify. It returns true if and
+// only if the signature is valid; any error (nil key, empty uid, malformed
+// signature) returns false. New code should prefer Verify for richer error
+// information. VerifyBool is retained for callers that chain directly into
+// if/else branches and for backward compatibility with the pre-v2 API.
+func VerifyBool(publicKey *SignMasterPublicKey, uid, data, sig []byte) bool {
+	return Verify(publicKey, uid, data, sig) == nil
 }
 
 // Encrypt encrypts plaintext using SM9 with the specified options.
@@ -146,12 +188,17 @@ func WrapKeyASN1(publicKey *EncryptMasterPublicKey, uid []byte, keyLen int) ([]b
 }
 
 // UnwrapKey decapsulates a key from SM9 key encapsulation.
+// keyLen is validated for the same 1..1024 range as WrapKey/WrapKeyASN1 to
+// mirror the wrap-side contract and prevent gmsm panic on illegal lengths.
 func UnwrapKey(privateKey *EncryptPrivateKey, uid, cipher []byte, keyLen int) ([]byte, error) {
 	if privateKey == nil {
 		return nil, errNilEncPriv
 	}
 	if len(uid) == 0 {
 		return nil, errUIDEmpty
+	}
+	if keyLen <= 0 || keyLen > 1024 {
+		return nil, errors.New("sm9: keyLen must be between 1 and 1024")
 	}
 	return gmsmSM9.UnwrapKey(privateKey, uid, cipher, keyLen)
 }

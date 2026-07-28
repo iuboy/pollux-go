@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/binary"
 	"errors"
@@ -171,15 +172,17 @@ func (hc *tlcpHalfConn) changeCipherSpec() error {
 	return nil
 }
 
-// incSeq advances the 64-bit sequence number. It does NOT wrap (matching TLS
-// behavior: a connection must be renegotiated before seq overflows).
-func (hc *tlcpHalfConn) incSeq() {
+// incSeq advances the 64-bit sequence number. Returns an error if the sequence
+// number overflows (all bytes wrap to zero), which requires connection closure per
+// TLS/TLCP spec (sequence numbers MUST NOT wrap).
+func (hc *tlcpHalfConn) incSeq() error {
 	for i := len(hc.seq) - 1; i >= 0; i-- {
 		hc.seq[i]++
 		if hc.seq[i] != 0 {
-			return
+			return nil
 		}
 	}
+	return errors.New("tlcp: sequence number overflow, connection must be terminated")
 }
 
 // encrypt seals a plaintext record payload into the on-wire ciphertext record.
@@ -201,10 +204,12 @@ func (hc *tlcpHalfConn) encrypt(record []byte, payload []byte) ([]byte, error) {
 		full := append(record[:tlcpRecordHeaderLen], explicitNonce...)
 		full = append(full, ct...)
 		binary.BigEndian.PutUint16(full[3:5], uint16(len(explicitNonce)+len(ct)))
-		hc.incSeq()
-		return full, nil
+			if err := hc.incSeq(); err != nil {
+				return nil, err
+			}
+			return full, nil
 
-	case hc.cbcKey != nil:
+		case hc.cbcKey != nil:
 		// CBC + MAC: MAC = HMAC(seq || header || payload); then pad.
 		macH := tlcpHMACSM3(hc.macKeyBytes)
 		mac := tlcpRecordMAC(macH, nil, hc.seq[:], record[:tlcpRecordHeaderLen], payload)
@@ -231,9 +236,11 @@ func (hc *tlcpHalfConn) encrypt(record []byte, payload []byte) ([]byte, error) {
 		mode.CryptBlocks(ciphertext, padded)
 		out := append(record[:tlcpRecordHeaderLen], iv...)
 		out = append(out, ciphertext...)
-		binary.BigEndian.PutUint16(out[3:5], uint16(len(iv)+len(ciphertext)))
-		hc.incSeq()
-		return out, nil
+			binary.BigEndian.PutUint16(out[3:5], uint16(len(iv)+len(ciphertext)))
+			if err := hc.incSeq(); err != nil {
+				return nil, err
+			}
+			return out, nil
 	}
 	return nil, errors.New("tlcp: no cipher configured")
 }
@@ -266,10 +273,12 @@ func (hc *tlcpHalfConn) decrypt(record []byte) ([]byte, tlcpRecordType, error) {
 		aad := tlcpAEADAdditionalData(hc.seq[:], record, plaintextLen)
 		plaintext, err := hc.aead.Open(nil, explicitNonce, ct, aad)
 		if err != nil {
-			return nil, 0, errors.New("tlcp: bad record MAC (AEAD authentication failed)")
-		}
-		hc.incSeq()
-		return plaintext, typ, nil
+				return nil, 0, errors.New("tlcp: bad record MAC (AEAD authentication failed)")
+			}
+			if err := hc.incSeq(); err != nil {
+				return nil, 0, err
+			}
+			return plaintext, typ, nil
 
 	case hc.cbcKey != nil:
 		const blockSize = 16
@@ -307,19 +316,15 @@ func (hc *tlcpHalfConn) decrypt(record []byte) ([]byte, tlcpRecordType, error) {
 		localMAC := tlcpRecordMAC(tlcpHMACSM3(hc.macKeyBytes), nil, hc.seq[:], macHeader, plain[:dataLen])
 		macGood := constantTimeEq(localMAC, remoteMAC)
 		if macGood == 0 || paddingGood == 0 {
-			return nil, 0, errors.New("tlcp: bad record MAC")
-		}
-		hc.incSeq()
-		return plain[:dataLen], typ, nil
+				return nil, 0, errors.New("tlcp: bad record MAC")
+			}
+			if err := hc.incSeq(); err != nil {
+				return nil, 0, err
+			}
+			return plain[:dataLen], typ, nil
 	}
-	return nil, 0, errors.New("tlcp: no cipher configured")
+		return nil, 0, errors.New("tlcp: no cipher configured")
 }
-
-// macKeyBytes holds the HMAC-SM3 key (CBC suites); nil for AEAD. Set during
-// establishKeys alongside prepareCipherSpec.
-type tlcpHalfConnMACKeyOwner = *tlcpHalfConn
-
-// extend tlcpHalfConn with macKeyBytes via a method-less field below.
 
 // --- Conn: the TLCP connection ---
 
@@ -342,8 +347,7 @@ type tlcpConn struct {
 	// Decrypted handshake bytes awaiting parse, and decrypted app data awaiting Read.
 	hand      bytes.Buffer
 	input     bytes.Buffer
-	rawInput  bytes.Buffer // pending raw record bytes (incomplete reads)
-	buffering bool         // coalesce handshake writes
+	buffering atomic.Bool  // coalesce handshake writes; atomic for race-safety with Close()'s alert path
 	sendBuf   bytes.Buffer
 	rawConn   net.Conn // net.Conn accessor
 
@@ -415,7 +419,7 @@ func (c *tlcpConn) Handshake() error {
 		// Flush any buffered handshake records and disable buffering so post-
 		// handshake application-data writes go straight to the wire.
 		_ = c.flush()
-		c.buffering = false
+		c.buffering.Store(false)
 		atomic.StoreUint32(&c.handshakeStatus, 1)
 	}
 	return c.handshakeErr
@@ -609,8 +613,13 @@ func (c *tlcpConn) writeRecord(typ tlcpRecordType, payload []byte) error {
 	header := make([]byte, tlcpRecordHeaderLen)
 	header[0] = byte(typ)
 	binary.BigEndian.PutUint16(header[3:5], uint16(len(payload)))
-	// Record-layer version: use the negotiated version once known, else the
-	// initial TLCP version (the ClientHello is sent before version negotiation).
+
+	c.out.mu.Lock()
+	// Record-layer version: read vers/haveVers under out.mu so they stay in
+	// sync with the handshake (which writes them under out.mu — see
+	// engine_handshake_{client,server}.go). Close()'s alert goroutine reaches
+	// here without handshakeMutex, so without this lock the reads would race
+	// with a concurrent Handshake().
 	recordVersion := c.vers
 	if !c.haveVers {
 		recordVersion = tlcpVersionTLCP
@@ -618,7 +627,6 @@ func (c *tlcpConn) writeRecord(typ tlcpRecordType, payload []byte) error {
 	header[1] = byte(recordVersion >> 8)
 	header[2] = byte(recordVersion)
 
-	c.out.mu.Lock()
 	record, err := c.out.encrypt(header, payload)
 	if err != nil {
 		c.out.mu.Unlock()
@@ -638,7 +646,7 @@ func (c *tlcpConn) writeRecord(typ tlcpRecordType, payload []byte) error {
 
 	// The encrypt + write must be one atomic unit so concurrent Write calls
 	// do not interleave encrypted records on the wire.
-	if c.buffering {
+	if c.buffering.Load() {
 		c.sendBuf.Write(record)
 		c.out.mu.Unlock()
 		return nil
@@ -654,7 +662,10 @@ func (c *tlcpConn) writeHandshakeRecord(msg tlcpHandshakeMessage, transcript *tl
 	type marshalable interface {
 		marshal() ([]byte, error)
 	}
-	mm := msg.(marshalable)
+	mm, ok := msg.(marshalable)
+	if !ok {
+		return errors.New("tlcp: handshake message does not implement marshalable")
+	}
 	data, err := mm.marshal()
 	if err != nil {
 		return err
@@ -698,16 +709,6 @@ func (c *tlcpConn) readHandshake(transcript *tlcpFinishedHash) ([]byte, error) {
 		transcript.Write(data)
 	}
 	return data, nil
-}
-
-// flushLocked sends all buffered records. Caller does not need the out lock.
-func (c *tlcpConn) flushLocked() error {
-	if c.sendBuf.Len() == 0 {
-		return nil
-	}
-	_, err := c.conn.Write(c.sendBuf.Bytes())
-	c.sendBuf.Reset()
-	return err
 }
 
 // flush sends all buffered records.
@@ -757,17 +758,7 @@ func tlcpExtractPadding(plaintext []byte, blockSize int) (paddingLen, paddingGoo
 
 // constantTimeEq returns 1 if a and b are equal, 0 otherwise (constant-time).
 func constantTimeEq(a, b []byte) int {
-	if len(a) != len(b) {
-		return 0
-	}
-	var v byte
-	for i := range a {
-		v |= a[i] ^ b[i]
-	}
-	if v == 0 {
-		return 1
-	}
-	return 0
+	return subtle.ConstantTimeCompare(a, b)
 }
 
 // randReader is the package-level RNG source used by encrypt for CBC IVs. It

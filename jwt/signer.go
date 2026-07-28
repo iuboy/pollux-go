@@ -92,6 +92,12 @@ func (h *hmacSignerVerifier) Sign(claims Claims) (string, error) {
 }
 
 func (h *hmacSignerVerifier) Verify(tokenString string, v Claims) error {
+	parserOpts := []jwt.ParserOption{
+		jwt.WithExpirationRequired(),
+	}
+	if h.issuer != "" {
+		parserOpts = append(parserOpts, jwt.WithIssuer(h.issuer))
+	}
 	parsed, err := jwt.ParseWithClaims(tokenString, v, func(t *jwt.Token) (any, error) {
 		if t.Method.Alg() != h.method.Alg() {
 			// Return only the sentinel — exposing the expected algorithm in a
@@ -100,7 +106,7 @@ func (h *hmacSignerVerifier) Verify(tokenString string, v Claims) error {
 			return nil, ErrAlgorithmMismatch
 		}
 		return h.secret, nil
-	})
+	}, parserOpts...)
 	if err != nil {
 		return err
 	}
@@ -149,13 +155,19 @@ func (s *sm2SignerVerifier) Verify(tokenString string, v Claims) error {
 	if s.pub == nil {
 		return errors.New("jwt/sm2sm3: Verify called on a sign-only instance (pub is nil)")
 	}
+	parserOpts := []jwt.ParserOption{
+		jwt.WithExpirationRequired(),
+	}
+	if s.issuer != "" {
+		parserOpts = append(parserOpts, jwt.WithIssuer(s.issuer))
+	}
 	parsed, err := jwt.ParseWithClaims(tokenString, v, func(t *jwt.Token) (any, error) {
 		if t.Method.Alg() != SigningMethodSM2SM3.Alg() {
 			// See hmacSignerVerifier.Verify: do not leak the expected alg.
 			return nil, ErrAlgorithmMismatch
 		}
 		return s.pub, nil
-	})
+	}, parserOpts...)
 	if err != nil {
 		return err
 	}
@@ -163,6 +175,15 @@ func (s *sm2SignerVerifier) Verify(tokenString string, v Claims) error {
 		return jwt.ErrTokenInvalidClaims
 	}
 	return nil
+}
+
+// Zeroize securely clears the SM2 private key held by the SignerVerifier.
+// Consistent with the hmacSignerVerifier.Zeroize and the memsecure convention
+// used throughout pollux-go (aes, sm4 packages).
+func (s *sm2SignerVerifier) Zeroize() {
+	if s.priv != nil {
+		memsecure.ZeroBytes(s.priv.D.Bytes())
+	}
 }
 
 // IssueWithExpiry is a convenience helper that builds standard

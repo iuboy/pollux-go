@@ -683,7 +683,7 @@ func TestInteropSM9_Sign_CrossVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gmsm SM9 SignASN1: %v", err)
 	}
-	if !polluxSM9.Verify(master.PublicKey(), uid, hash, sig) {
+	if !polluxSM9.VerifyBool(master.PublicKey(), uid, hash, sig) {
 		t.Error("pollux SM9 Verify failed for gmsm signature")
 	}
 

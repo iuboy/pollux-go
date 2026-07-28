@@ -81,6 +81,9 @@ type Conn struct {
 	// (Accept) where the Listener owns the socket.
 	udpConn *net.UDPConn
 
+	closeOnce sync.Once
+	closed    bool
+
 	ticketMu        sync.Mutex
 	sessionIdentity []byte
 	sessionPSK      []byte
@@ -183,14 +186,23 @@ func (c *Conn) AcceptStream(ctx context.Context) (*quic.Stream, error) {
 // Close closes the connection. For a client-side Conn it also closes the
 // underlying UDP socket, which quic-go does not close on its own (the Dial*
 // path passes createdConn=false to the internal Transport).
+//
+// Close is idempotent and safe for concurrent use: a sync.Once serializes the
+// QUIC close and UDP socket close so concurrent callers do not race on the
+// underlying CloseWithError / udpConn.Close (the second UDP close would return
+// net.ErrClosed and leak upward).
 func (c *Conn) Close() error {
-	err := c.inner.CloseWithError(0, "done")
-	if c.udpConn != nil {
-		// Best-effort: report the QUIC close error but always close the socket.
-		if uerr := c.udpConn.Close(); uerr != nil && err == nil {
-			err = uerr
+	var err error
+	c.closeOnce.Do(func() {
+		err = c.inner.CloseWithError(0, "done")
+		c.closed = true
+		if c.udpConn != nil {
+			// Best-effort: report the QUIC close error but always close the socket.
+			if uerr := c.udpConn.Close(); uerr != nil && err == nil {
+				err = uerr
+			}
 		}
-	}
+	})
 	return err
 }
 

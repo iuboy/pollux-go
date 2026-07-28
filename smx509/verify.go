@@ -99,10 +99,17 @@ func verifySM2(cert *x509.Certificate, opts VerifyOptions) error {
 
 	if opts.Roots != nil && opts.Roots.Len() > 0 {
 		smRoots := smx509.NewCertPool()
+		added := 0
 		for _, raw := range opts.Roots.RawDER() {
 			if smRC, parseErr := smx509.ParseCertificate(raw); parseErr == nil {
 				smRoots.AddCert(smRC)
+				added++
 			}
+		}
+		if added == 0 {
+			// Every root failed to parse — a non-empty Roots pool yielding an
+			// empty SM2 pool would silently fail every SM2 verification.
+			return errors.New("smx509: no SM2-parseable certificates in Roots pool")
 		}
 		smOpts.Roots = smRoots
 	}

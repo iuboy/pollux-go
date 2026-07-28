@@ -155,7 +155,11 @@ func copyCertFields(src, dst reflect.Value) {
 		// <-> []smx509.ExtKeyUsage): Go won't convert the slice types directly,
 		// so rebuild element by element. This is the case that matters for the
 		// enum-typed slices (ExtKeyUsage) shared between stdlib and smx509.
+		// Guard the dst kind + Elem() call: dstField.Type().Elem() panics if the
+		// destination is not Array/Chan/Map/Ptr/Slice (a cross-fork field-type
+		// drift would surface as a panic here without the kind check).
 		if (srcVal.Kind() == reflect.Slice || srcVal.Kind() == reflect.Array) &&
+			(dstField.Kind() == reflect.Slice || dstField.Kind() == reflect.Array) &&
 			srcVal.Type().Elem().ConvertibleTo(dstField.Type().Elem()) {
 			n := srcVal.Len()
 			out := reflect.MakeSlice(dstField.Type(), n, n)
@@ -181,14 +185,26 @@ func copyCertFields(src, dst reflect.Value) {
 // result is converted to stdlib via field copy (copyCertFields) rather than
 // re-parsing the DER through stdlib. gmsm v0.44 removed the ToX509() bridge,
 // so the conversion is done by reflection.
+//
+// On failure the returned error wraps BOTH the gmsm and stdlib parse errors
+// (joined via errors.Join) so a debugger can see why each backend rejected
+// the input without re-running the parsers manually. The two errors are also
+// distinguishable programmatically via errors.Is/as against the underlying
+// smx509 / x509 error types.
 func ParseCertificate(der []byte) (*x509.Certificate, error) {
-	if smCert, err := smx509.ParseCertificate(der); err == nil {
+	smCert, smErr := smx509.ParseCertificate(der)
+	if smErr == nil {
 		return smX509ToStdCertificate(smCert)
 	}
-	if cert, err := x509.ParseCertificate(der); err == nil {
-		return cert, nil
+	stdCert, stdErr := x509.ParseCertificate(der)
+	if stdErr == nil {
+		return stdCert, nil
 	}
-	return nil, errors.New("smx509: failed to parse certificate (gmsm and stdlib both rejected input)")
+	// Both parsers failed. Wrap both errors so the caller sees the full
+	// picture — previously only a generic 'both rejected' string was returned,
+	// hiding the underlying ASN.1 / signature / curve errors.
+	return nil, fmt.Errorf("smx509: failed to parse certificate (gmsm/smx509: %v; stdlib crypto/x509: %v)",
+		smErr, stdErr)
 }
 
 // smX509ToStdCertificate converts a gmsm *smx509.Certificate to a stdlib
@@ -207,10 +223,18 @@ func smX509ToStdCertificate(smCert *smx509.Certificate) (*x509.Certificate, erro
 }
 
 // ParseCertificatePEM parses a PEM-encoded certificate.
+//
+// Rejects non-CERTIFICATE PEM block types (e.g. PRIVATE KEY) up front rather
+// than feeding arbitrary block bytes to ParseCertificate and producing a
+// confusing ASN.1 error. Matches the ParseCertificatePEM contract in the
+// pollux cert package.
 func ParseCertificatePEM(pemData []byte) (*x509.Certificate, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
-		return nil, errors.New("pollux/smx509: failed to decode certificate PEM")
+		return nil, errors.New("smx509: failed to decode certificate PEM")
+	}
+	if block.Type != "CERTIFICATE" {
+		return nil, fmt.Errorf("smx509: unexpected PEM block type %q, want CERTIFICATE", block.Type)
 	}
 	return ParseCertificate(block.Bytes)
 }
@@ -219,16 +243,25 @@ func ParseCertificatePEM(pemData []byte) (*x509.Certificate, error) {
 // gmsm/smx509 is tried first (crypto/x509 superset), see ParseCertificate.
 // When smx509 succeeds, the result is field-copied to stdlib (smx509 CSRs with
 // SM2 keys cannot be re-parsed by stdlib); ToX509() bridge gone since gmsm v0.44.
+//
+// On failure the returned error wraps BOTH the gmsm and stdlib parse errors
+// (same pattern as ParseCertificate) so a debugger can see why each backend
+// rejected the input without re-running the parsers manually.
 func ParseCertificateRequest(der []byte) (*x509.CertificateRequest, error) {
-	if smCSR, err := smx509.ParseCertificateRequest(der); err == nil {
+	smCSR, smErr := smx509.ParseCertificateRequest(der)
+	if smErr == nil {
 		std := &x509.CertificateRequest{}
 		copyCertFields(reflect.ValueOf(smCSR).Elem(), reflect.ValueOf(std).Elem())
 		return std, nil
 	}
-	if csr, err := x509.ParseCertificateRequest(der); err == nil {
-		return csr, nil
+	stdCSR, stdErr := x509.ParseCertificateRequest(der)
+	if stdErr == nil {
+		return stdCSR, nil
 	}
-	return nil, errors.New("smx509: failed to parse certificate request (gmsm and stdlib both rejected input)")
+	// Both parsers failed. Wrap both errors so the caller sees the full
+	// picture — previously only a generic 'both rejected' string was returned.
+	return nil, fmt.Errorf("smx509: failed to parse certificate request (gmsm/smx509: %v; stdlib crypto/x509: %v)",
+		smErr, stdErr)
 }
 
 // SignatureAlgorithmForPrivateKey returns the appropriate signature algorithm

@@ -10,20 +10,34 @@
 //
 // # Sub-packages
 //
+// Primitive wrappers (delegate to gmsm, inherit its audit status):
 //   - sm2: SM2 digital signatures and key exchange (wraps gmsm/sm2)
 //   - sm3: SM3 hash function (wraps gmsm/sm3)
 //   - sm4: SM4 block cipher with GCM/CBC modes (wraps gmsm/sm4)
 //   - sm9: SM9 identity-based encryption (wraps gmsm/sm9)
 //   - zuc: ZUC stream cipher (wraps gmsm/zuc)
-//   - gmstd: GM/T standard helper functions
+//   - aes: AES-256-GCM convenience wrappers (international counterpart to sm4)
+//
+// Standard helpers and derivations:
+//   - gmstd: GM/T standard helper functions (hash, KDF, key generation)
+//   - kdf: Hash-agnostic PBKDF2 key derivation (SM3 or SHA-256)
+//   - sha: SHA-256/HKDF/HMAC wrappers (international counterpart to sm3)
+//   - jwt: JWT signing (SM2-SM3 and HMAC-SHA-256/512)
+//   - pwHash: PHC-format password hashing (argon2id and PBKDF2-SM3)
+//
+// Certificate and protocol integration:
 //   - smx509: SM2-aware X.509 certificate creation, parsing, and verification
 //   - cert: High-level certificate management facade
 //   - tls: TLS cipher suite registry (national suite IDs only)
-//   - tls13: Standard TLS 1.3 configuration builders (Route A)
+//   - tls13: Standard TLS 1.3 configuration builders
 //   - tlcp: TLCP 1.1 protocol (EXPERIMENTAL — pending security audit)
-//   - tls13gm: RFC 8998 TLS 1.3 GM cipher suites (interop-verified, Route C)
-//   - quicgm: RFC 9001 QUIC packet protection with SM4-GCM (Route C)
+//   - tls13gm: RFC 8998 TLS 1.3 GM cipher suites
+//   - quicgm: RFC 9001 QUIC packet protection with SM4-GCM
 //   - http: HTTP server/client helpers for TLS, TLCP, and hybrid
+//
+// Internal:
+//   - internal/memsecure: Secure memory operations for key material
+//   - internal/panicsafe: Panic-to-error conversion at API boundaries
 //
 // The primitive wrappers (sm2/sm3/sm4/sm9/zuc) delegate to gmsm and inherit
 // its audit status. TLCP is EXPERIMENTAL pending independent security audit.

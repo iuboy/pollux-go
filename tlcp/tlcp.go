@@ -296,13 +296,19 @@ func (c *Config) LoadRootCAsFromPEM(signRootPEM, encRootPEM []byte) error {
 	return nil
 }
 
-// createCertPoolAndCertsFromFile creates certificate pool and parses raw certificates from file
+// createCertPoolAndCertsFromFile creates certificate pool and parses raw certificates from file.
+// Error context includes the file path so a multi-file loader can attribute
+// the failure to the right file without the caller having to wrap further.
 func createCertPoolAndCertsFromFile(certFile string) (*x509.CertPool, []*x509.Certificate, error) {
 	pemData, err := os.ReadFile(certFile)
 	if err != nil {
-		return nil, nil, fmt.Errorf("tlcp: read certificate file: %w", err)
+		return nil, nil, fmt.Errorf("tlcp: read certificate file %q: %w", certFile, err)
 	}
-	return createCertPoolAndCertsFromPEM(pemData)
+	pool, certs, err := createCertPoolAndCertsFromPEM(pemData)
+	if err != nil {
+		return nil, nil, fmt.Errorf("tlcp: parse certificate file %q: %w", certFile, err)
+	}
+	return pool, certs, nil
 }
 
 // createCertPoolAndCertsFromPEM creates certificate pool and parses raw certificates from PEM data.
@@ -310,9 +316,16 @@ func createCertPoolAndCertsFromFile(certFile string) (*x509.CertPool, []*x509.Ce
 // rejects SM2 certificates; the pool field is retained for API compatibility while
 // actual SM2 verification uses the raw certificates via buildSMX509CertPool.
 func createCertPoolAndCertsFromPEM(pemData []byte) (*x509.CertPool, []*x509.Certificate, error) {
-	certs := parsePEMCertificates(pemData)
+	certs, skipped := parsePEMCertificates(pemData)
 	if len(certs) == 0 {
 		return nil, nil, errors.New("tlcp: parse certificate file")
+	}
+	if skipped > 0 {
+		// Surface skipped-block counts so a corrupt/misconfigured PEM does not
+		// silently produce a partial cert pool. We return an error rather than
+		// a warning because a partial root pool can cause verification
+		// false-negatives that are very hard to attribute to the PEM file.
+		return nil, nil, fmt.Errorf("tlcp: %d certificate block(s) failed to parse (SM2 and stdlib both rejected)", skipped)
 	}
 	pool := x509.NewCertPool()
 	for _, c := range certs {
@@ -325,8 +338,14 @@ func createCertPoolAndCertsFromPEM(pemData []byte) (*x509.CertPool, []*x509.Cert
 // SM2-aware: gmsm smx509 parses SM2 curves that the stdlib crypto/x509 rejects
 // ("unsupported elliptic curve"). DER is preserved via ToX509(), so downstream
 // buildSMX509CertPool can re-parse from Raw. Falls back to stdlib for non-SM2.
-func parsePEMCertificates(pemData []byte) []*x509.Certificate {
-	var certs []*x509.Certificate
+//
+// Returns (certs, skipped) where skipped is the count of CERTIFICATE-typed PEM
+// blocks that failed BOTH the SM2 and the stdlib parser. A non-zero skipped
+// count almost always indicates a corrupt or misconfigured PEM — the caller is
+// expected to surface it as a warning or error so the misconfiguration is not
+// silently masked. Non-CERTIFICATE PEM blocks (PRIVATE KEY, etc.) are NOT
+// counted as skipped — they are simply ignored, matching stdlib pool behavior.
+func parsePEMCertificates(pemData []byte) (certs []*x509.Certificate, skipped int) {
 	rest := pemData
 	for {
 		var pemBlock *pem.Block
@@ -343,9 +362,12 @@ func parsePEMCertificates(pemData []byte) []*x509.Certificate {
 		}
 		if cert, err := x509.ParseCertificate(pemBlock.Bytes); err == nil {
 			certs = append(certs, cert)
+			continue
 		}
+		// Both parsers failed — record the skip so the caller can surface it.
+		skipped++
 	}
-	return certs
+	return certs, skipped
 }
 
 // Validate validates TLCP configuration
@@ -430,6 +452,13 @@ func (c *Config) Clone() *Config {
 		copy(clone.CipherSuites, c.CipherSuites)
 	}
 
+	// SignRootCAs/EncRootCAs are *x509.CertPool. The stdlib CertPool is
+	// effectively immutable after construction (AddCert on a pool already in
+	// use by a tls.Config would be a caller bug, not a Clone concern), so
+	// sharing the pointer is safe and matches crypto/tls.Config.Clone's
+	// behavior (it also shares *CertPool pointers). If a future caller needs
+	// an independent root pool, deep-copy the source *CertPool before
+	// constructing the Config rather than relying on Clone.
 	if c.SignRootCAs != nil {
 		clone.SignRootCAs = c.SignRootCAs
 	}

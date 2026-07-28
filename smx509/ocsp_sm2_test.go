@@ -50,7 +50,7 @@ func TestCreateOCSPResponse_SM2(t *testing.T) {
 		Certificate:  caCert,
 	}
 
-	respBytes, err := CreateOCSPResponse(tmpl, caCert, caKey)
+	respBytes, err := CreateOCSPResponse(caCert, caCert, tmpl, caKey)
 	if err != nil {
 		t.Fatalf("CreateOCSPResponse SM2: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestCreateOCSPResponse_Revoked_SM2(t *testing.T) {
 		Certificate:      caCert,
 	}
 
-	respBytes, err := CreateOCSPResponse(tmpl, caCert, caKey)
+	respBytes, err := CreateOCSPResponse(caCert, caCert, tmpl, caKey)
 	if err != nil {
 		t.Fatalf("CreateOCSPResponse SM2 revoked: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestCreateOCSPResponse_ECDSA(t *testing.T) {
 		NextUpdate:   time.Now().Add(time.Hour).UTC(),
 		Certificate:  caCert,
 	}
-	respBytes, err := CreateOCSPResponse(tmpl, caCert, caKey)
+	respBytes, err := CreateOCSPResponse(caCert, caCert, tmpl, caKey)
 	if err != nil {
 		t.Fatalf("CreateOCSPResponse ECDSA: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestParseOCSPResponseWithIssuer_SM2(t *testing.T) {
 		NextUpdate:   time.Now().Add(time.Hour).UTC(),
 		Certificate:  caCert,
 	}
-	respBytes, err := CreateOCSPResponse(tmpl, caCert, caKey)
+	respBytes, err := CreateOCSPResponse(caCert, caCert, tmpl, caKey)
 	if err != nil {
 		t.Fatalf("CreateOCSPResponse SM2: %v", err)
 	}
@@ -214,9 +214,9 @@ func TestParseOCSPResponseWithIssuer_SM2(t *testing.T) {
 	if parsed.SerialNumber.Cmp(big.NewInt(42)) != 0 {
 		t.Errorf("serial = %v, want 42", parsed.SerialNumber)
 	}
-	if parsed.IssuerHash != crypto.SHA1 {
-		t.Errorf("IssuerHash = %v, want SHA1", parsed.IssuerHash)
-	}
+	if parsed.IssuerHash != crypto.SHA256 {
+			t.Errorf("IssuerHash = %v, want SHA256", parsed.IssuerHash)
+		}
 }
 
 // TestParseOCSPResponseWithIssuer_SM2_Revoked covers the Revoked branch.
@@ -242,7 +242,7 @@ func TestParseOCSPResponseWithIssuer_SM2_Revoked(t *testing.T) {
 		RevocationReason: ocsp.KeyCompromise,
 		Certificate:      caCert,
 	}
-	respBytes, _ := CreateOCSPResponse(tmpl, caCert, caKey)
+	respBytes, _ := CreateOCSPResponse(caCert, caCert, tmpl, caKey)
 
 	parsed, err := ParseOCSPResponseWithIssuer(respBytes, caCert)
 	if err != nil {
@@ -287,7 +287,7 @@ func TestParseOCSPResponseWithIssuer_Tampered(t *testing.T) {
 		NextUpdate:   time.Now().Add(time.Hour).UTC(),
 		Certificate:  caCert,
 	}
-	respBytes, _ := CreateOCSPResponse(tmpl, caCert, caKey)
+	respBytes, _ := CreateOCSPResponse(caCert, caCert, tmpl, caKey)
 
 	// Flip a byte near the end (likely in the signature region).
 	if len(respBytes) > 10 {

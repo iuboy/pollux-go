@@ -117,6 +117,14 @@ func tlcpKeysFromMaster(masterSecret, clientRandom, serverRandom []byte, macLen,
 // tlcpFinishedHash accumulates the SM3 hash of the handshake transcript and
 // produces the Finished verify_data. TLCP uses a single SM3 transcript hash
 // (unlike TLS 1.0/1.1's MD5+SHA1 pair).
+//
+// Concurrency: tlcpFinishedHash is NOT safe for concurrent use. The internal
+// hash.Hash maintains a running digest state that Write and Sum mutate without
+// synchronization — matching the standard library's hash.Hash contract (which
+// also does not require concurrency safety). The TLCP handshake drives a
+// single tlcpFinishedHash from the handshake goroutine under handshakeMutex,
+// so the no-concurrency contract is naturally satisfied. Callers that need
+// parallel transcript hashing must construct one tlcpFinishedHash per goroutine.
 type tlcpFinishedHash struct {
 	msgHash hash.Hash
 }

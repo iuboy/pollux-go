@@ -47,6 +47,14 @@ func (m *ServerHelloMsg) unmarshalBody(b []byte) error {
 	}
 	m.LegacyVersion = uint16(b[p])<<8 | uint16(b[p+1])
 	p += 2
+	// RFC 8446 §4.1.3: legacy_version MUST be 0x0303 (TLS 1.2). We warn-but-
+	// accept the 0x03xx family (TLS 1.0/1.1/1.2/1.3) for interop with peers
+	// that put 0x0303-equivalent values or even 0x0304 in this legacy field;
+	// the actual version is negotiated via the supported_versions extension.
+	// Truly foreign values (SSLv3 0x0300, TLCP 0x0101) are rejected.
+	if m.LegacyVersion < 0x0301 || m.LegacyVersion > 0x0304 {
+		return fmt.Errorf("tls13gm: ServerHello legacy_version %#x outside TLS legacy range", m.LegacyVersion)
+	}
 	copy(m.Random[:], b[p:p+32])
 	p += 32
 

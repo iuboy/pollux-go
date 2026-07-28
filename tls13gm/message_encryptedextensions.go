@@ -13,7 +13,9 @@ func (*EncryptedExtensionsMsg) msgType() uint8 { return HandshakeTypeEncryptedEx
 func (m *EncryptedExtensionsMsg) marshalBody() ([]byte, error) {
 	exts, err := marshalExtensions(m.Extensions)
 	if err != nil {
-		return nil, fmt.Errorf("tls13gm: EncryptedExtensions: %w", err)
+		// marshalExtensions errors already carry the 'tls13gm:' prefix;
+		// wrapping again would duplicate it. Add only the message-type context.
+		return nil, fmt.Errorf("EncryptedExtensions: %w", err)
 	}
 	return exts, nil
 }
@@ -21,7 +23,8 @@ func (m *EncryptedExtensionsMsg) marshalBody() ([]byte, error) {
 func (m *EncryptedExtensionsMsg) unmarshalBody(b []byte) error {
 	exts, n, err := parseExtensions(b)
 	if err != nil {
-		return fmt.Errorf("tls13gm: EncryptedExtensions: %w", err)
+		// parseExtensions errors already carry the 'tls13gm:' prefix.
+		return fmt.Errorf("EncryptedExtensions: %w", err)
 	}
 	if n != len(b) {
 		return fmt.Errorf("tls13gm: EncryptedExtensions has %d trailing bytes", len(b)-n)

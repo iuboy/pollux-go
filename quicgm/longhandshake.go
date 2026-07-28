@@ -109,7 +109,10 @@ func OpenHandshakePacket(keys *tls13gm.QUICPacketKeys, expectedDCID, packet []by
 		return 0, nil, 0, nil, err
 	}
 	if !bytes.Equal(gotDCID, expectedDCID) {
-		return 0, nil, 0, nil, fmt.Errorf("quicgm: dcid mismatch (got %d bytes, expected %d bytes)", len(gotDCID), len(expectedDCID))
+		// Include both length AND a hex preview of the actual bytes so a
+		// debugger can tell a length mismatch from a content mismatch without
+		// having to wire up a packet capture.
+		return 0, nil, 0, nil, fmt.Errorf("quicgm: dcid mismatch (got %d bytes %x, expected %d bytes)", len(gotDCID), previewHex(gotDCID), len(expectedDCID))
 	}
 	scid, pos, err = readCID(packet, pos, "scid")
 	if err != nil {
@@ -141,11 +144,18 @@ func OpenHandshakePacket(keys *tls13gm.QUICPacketKeys, expectedDCID, packet []by
 	if length > uint64(len(packet)-pnOffset) {
 		return 0, nil, 0, nil, fmt.Errorf("quicgm: declared length %d exceeds packet tail %d", length, len(packet)-pnOffset)
 	}
+	// Guard against int overflow on 32-bit platforms before the int(length)
+	// narrowing below. QUIC packet lengths are practically bounded well below
+	// 2^31, but as a library we defend the boundary explicitly.
+	if length > 1<<31-1 {
+		return 0, nil, 0, nil, fmt.Errorf("quicgm: declared length %d too large", length)
+	}
 	ctLen := int(length) - pnLen
 	headerEnd := pnOffset + pnLen
-	if headerEnd+ctLen > len(packet) {
-		return 0, nil, 0, nil, fmt.Errorf("quicgm: declared length %d exceeds packet tail %d", length, len(packet)-pnOffset)
-	}
+	// Note: the redundant 'headerEnd+ctLen > len(packet)' check that appeared
+	// here in earlier versions is subsumed by the uint64 bounds check above —
+	// length <= len(packet)-pnOffset and ctLen = length-pnLen implies
+	// headerEnd+ctLen = pnOffset+pnLen+(length-pnLen) = pnOffset+length <= len(packet).
 	headerAAD := packet[:headerEnd]
 	ciphertext := packet[headerEnd : headerEnd+ctLen]
 
@@ -154,4 +164,14 @@ func OpenHandshakePacket(keys *tls13gm.QUICPacketKeys, expectedDCID, packet []by
 		return 0, nil, 0, nil, err
 	}
 	return version, scid, pn, payload, nil
+}
+
+// previewHex returns up to 8 bytes of b as hex, for diagnostic error messages
+// where dumping the entire CID would be noisy. Returns the full hex form when
+// len(b) <= 8.
+func previewHex(b []byte) []byte {
+	if len(b) > 8 {
+		return b[:8]
+	}
+	return b
 }

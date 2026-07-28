@@ -117,7 +117,7 @@ func Test1RTTPacket_RoundTrip(t *testing.T) {
 	dcid := []byte{0xAA, 0xBB, 0xCC, 0xDD}
 	payload := []byte("1-RTT STREAM payload")
 
-	packet, err := Seal1RTTPacket(ap, dcid, 7, PacketNumberLen2, payload)
+	packet, err := Seal1RTTPacket(ap, dcid, 7, PacketNumberLen2, false, payload)
 	if err != nil {
 		t.Fatalf("Seal1RTTPacket: %v", err)
 	}
@@ -136,7 +136,7 @@ func Test1RTTPacket_RoundTrip(t *testing.T) {
 
 func Test1RTTPacket_RejectsTamper(t *testing.T) {
 	_, ap := deriveTwoLevels(t)
-	packet, err := Seal1RTTPacket(ap, []byte{1, 2, 3}, 1, PacketNumberLen1, []byte("payload"))
+	packet, err := Seal1RTTPacket(ap, []byte{1, 2, 3}, 1, PacketNumberLen1, false, []byte("payload"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func Test1RTTPacket_RejectsTamper(t *testing.T) {
 
 func Test1RTTPacket_RejectsWrongLevel(t *testing.T) {
 	hs, ap := deriveTwoLevels(t)
-	packet, err := Seal1RTTPacket(ap, []byte{1, 2, 3}, 1, PacketNumberLen1, []byte("payload"))
+	packet, err := Seal1RTTPacket(ap, []byte{1, 2, 3}, 1, PacketNumberLen1, false, []byte("payload"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func Test1RTTPacket_PacketNumberReconstruction(t *testing.T) {
 	const pn uint64 = 70000
 	largestAcked := uint64(69000)
 
-	packet, err := Seal1RTTPacket(ap, dcid, pn, PacketNumberLen2, []byte("reconstructed"))
+	packet, err := Seal1RTTPacket(ap, dcid, pn, PacketNumberLen2, false, []byte("reconstructed"))
 	if err != nil {
 		t.Fatalf("Seal1RTTPacket: %v", err)
 	}
@@ -200,7 +200,7 @@ func Test1RTTPacket_PacketNumberReconstruction(t *testing.T) {
 // reject an empty expectedDCID outright, symmetric with Seal1RTTPacket.
 func Test1RTTPacket_RejectsEmptyExpectedDCID(t *testing.T) {
 	_, ap := deriveTwoLevels(t)
-	packet, err := Seal1RTTPacket(ap, []byte{1, 2, 3}, 1, PacketNumberLen1, []byte("payload"))
+	packet, err := Seal1RTTPacket(ap, []byte{1, 2, 3}, 1, PacketNumberLen1, false, []byte("payload"))
 	if err != nil {
 		t.Fatal(err)
 	}

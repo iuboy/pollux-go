@@ -41,6 +41,13 @@ func MarshalHandshakeMessage(m handshakeMessage) ([]byte, error) {
 // ReadHandshakeMessage parses the handshake header from b and returns the type,
 // the body, and the total number of bytes consumed (header + body). It verifies
 // the declared body length fits within b.
+//
+// IMPORTANT: the returned body slice is a SUBSLICE of the input b — it shares
+// b's backing array. If the caller subsequently reuses or mutates b (e.g.
+// recycling a read buffer), the body's contents will be silently corrupted.
+// This matches the io.Reader convention (callers own the buffer lifecycle)
+// and avoids a copy on the hot path, but callers that retain the body past
+// the next use of b MUST copy it first (append([]byte(nil), body...)).
 func ReadHandshakeMessage(b []byte) (msgType uint8, body []byte, n int, err error) {
 	if len(b) < 4 {
 		return 0, nil, 0, fmt.Errorf("tls13gm: truncated handshake header (have %d bytes)", len(b))

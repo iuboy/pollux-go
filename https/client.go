@@ -1,4 +1,4 @@
-package http
+package https
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 // HTTP/2 is disabled since TLCP 1.1 does not support ALPN negotiation.
 func NewTLCPTransport(config *tlcp.Config) (*http.Transport, error) {
 	if config == nil {
-		return nil, errors.New("pollux/http: nil config")
+		return nil, errors.New("pollux/https: nil config")
 	}
 	return &http.Transport{
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -39,6 +39,9 @@ func NewTLSTransport(config *tls.Config) *http.Transport {
 // NewClient creates an *http.Client configured for TLCP or TLS.
 // Mode is auto-detected from the configured certificates.
 func NewClient(opts *ClientOptions) (*http.Client, error) {
+	if opts == nil {
+		return nil, errors.New("pollux/https: nil client options")
+	}
 	mode := opts.Mode
 	if mode == 0 {
 		mode = DetectMode(opts.SignCert)
@@ -64,14 +67,17 @@ func NewClient(opts *ClientOptions) (*http.Client, error) {
 		}
 		transport = NewTLSTransport(cfg)
 	default:
-		return nil, fmt.Errorf("pollux/http: unsupported client mode: %d", mode)
+		return nil, fmt.Errorf("pollux/https: unsupported client mode: %d", mode)
 	}
 
 	client := &http.Client{
 		Transport: transport,
 	}
-	if opts.Timeout > 0 {
-		client.Timeout = opts.Timeout
+	// Pointer semantics: nil leaves http.Client.Timeout at zero (unlimited,
+	// the stdlib default); non-nil applies the pointed-to value (which may
+	// itself be zero — explicit opt-out, equivalent to nil for http.Client).
+	if opts.Timeout != nil {
+		client.Timeout = *opts.Timeout
 	}
 
 	// Configure redirect policy.
@@ -84,7 +90,7 @@ func NewClient(opts *ClientOptions) (*http.Client, error) {
 			return http.ErrUseLastResponse
 		}
 		if len(via) >= maxRedirects {
-			return fmt.Errorf("pollux/http: stopped after %d redirects", maxRedirects)
+			return fmt.Errorf("pollux/https: stopped after %d redirects", maxRedirects)
 		}
 		return nil
 	}

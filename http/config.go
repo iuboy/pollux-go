@@ -1,6 +1,3 @@
-// Package http provides HTTP helpers for TLS, TLCP, and TLS 1.3.
-//
-// Status: HTTP helpers for TLS, TLCP, and TLS 1.3
 package http
 
 import (

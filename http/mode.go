@@ -1,8 +1,3 @@
-// Package http provides net/http compatible helpers for serving HTTP
-// over TLCP (national) or standard TLS, with optional hybrid mode.
-//
-// It works with any Go HTTP framework (Gin, Echo, Chi) since it
-// produces standard *http.Server and *http.Transport instances.
 package http
 
 import (

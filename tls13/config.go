@@ -1,7 +1,3 @@
-// Package tls13 provides standard TLS 1.3 configuration builders
-// for server and client connections.
-//
-// Status: standard TLS 1.3 configuration builder
 package tls13
 
 import (

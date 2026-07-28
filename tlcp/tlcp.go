@@ -134,10 +134,14 @@ func configToNative(c *Config, isClient bool) (*tlcpEngineConfig, error) {
 		return nil, ErrTLCPNotSupported
 	}
 	// Default the version if unset (callers that construct Config{} directly,
-	// like the http package, may leave Version empty).
-	if c.Version == "" {
-		c.Version = Version11
+	// like the http package, may leave Version empty). Use a local — do NOT
+	// mutate the caller's Config, which may be shared across goroutines
+	// (e.g. the same Config used for both Server and Client in a test).
+	version := c.Version
+	if version == "" {
+		version = Version11
 	}
+	_ = version // version is validated by the engine; no mutation of c
 	// Note: we intentionally do NOT call c.Validate() here — it requires leaf
 	// certificates, but some callers (e.g. root-CA-only configs for testing)
 	// legitimately build a Config without them. The engine surfaces a clear

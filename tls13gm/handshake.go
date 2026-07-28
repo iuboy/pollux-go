@@ -140,6 +140,7 @@ type ClientHandshaker struct {
 	resumptionPSK      []byte
 	resumptionIdentity []byte
 	resumptionObfAge   uint32
+	offerEarlyData     bool
 	// pskMode is set in HandleServerHello when the server selected our PSK. It
 	// makes the handshake skip Certificate/CertificateVerify (server omits them
 	// in PSK mode) and derive the early secret from resumptionPSK.
@@ -208,6 +209,11 @@ type ClientConfig struct {
 	// identity: (ticket_age + ticket_age_add) mod 2^32, computed by the caller
 	// from the original NewSessionTicket's TicketAgeAdd and the elapsed time.
 	ResumptionObfuscatedTicketAge uint32
+	// EarlyData, when true with ResumptionPSK, makes the client offer 0-RTT
+	// (the ClientHello carries early_data; early traffic keys are derived).
+	// When false, PSK resumption proceeds without 0-RTT (no early_data
+	// extension). Servers that don't support 0-RTT will still accept the PSK.
+	EarlyData bool
 }
 
 // NewClientHandshaker prepares a client handshaker from an explicit, fail-closed
@@ -249,6 +255,7 @@ func NewClientHandshakerWithConfig(cfg ClientConfig) (*ClientHandshaker, error) 
 		resumptionPSK:        cfg.ResumptionPSK,
 		resumptionIdentity:   cfg.ResumptionIdentity,
 		resumptionObfAge:     cfg.ResumptionObfuscatedTicketAge,
+		offerEarlyData:       cfg.EarlyData,
 	}, nil
 }
 
@@ -282,7 +289,7 @@ func (c *ClientHandshaker) ClientHello() ([]byte, error) {
 	// 0-RTT: when resuming with a PSK, derive the early traffic keys now (over
 	// the ClientHello transcript) so the transport can send 0-RTT data before
 	// the server responds.
-	if c.resumptionPSK != nil {
+	if c.resumptionPSK != nil && c.offerEarlyData {
 		c.secrets.ClientEarlyKeys, err = DeriveEarlyTrafficKeys(c.resumptionPSK, c.transcript.Sum())
 		if err != nil {
 			return nil, fmt.Errorf("tls13gm: derive 0-RTT keys: %w", err)
@@ -313,6 +320,9 @@ func (c *ClientHandshaker) buildClientHello(cookie []byte) ([]byte, error) {
 			{Type: ExtensionTypeSignatureAlgorithms, Data: []byte{0x00, 0x02, byte(SM2SigSM3 >> 8), byte(SM2SigSM3 & 0xff)}},
 			{Type: ExtensionTypeSupportedGroups, Data: []byte{0x00, 0x02, byte(CurveSM2 >> 8), byte(CurveSM2 & 0xff)}},
 			{Type: ExtensionTypeKeyShare, Data: marshalClientKeyShare(CurveSM2, sm2.MarshalUncompressed(pub))},
+			// Advertise psk_key_exchange_modes in CH1 so the server issues a
+			// resumption ticket usable with psk_dhe_ke (RFC 8446 §4.2.9).
+			{Type: ExtensionTypePSKKeyExchangeModes, Data: marshalPSKKeyExchangeModesExtension([]uint8{PSKKeyExchangeModeDHEKE})},
 		},
 	}
 	if cookie != nil {
@@ -345,11 +355,13 @@ func (c *ClientHandshaker) appendPreSharedKey(ch *ClientHelloMsg) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: marshal truncated pre_shared_key: %w", err)
 	}
+	// psk_key_exchange_modes is already in ch.Extensions (added in
+	// buildClientHello for every CH). Only append early_data (if offering
+	// 0-RTT) and pre_shared_key here.
+	if c.offerEarlyData {
+		ch.Extensions = append(ch.Extensions, Extension{Type: ExtensionTypeEarlyData})
+	}
 	ch.Extensions = append(ch.Extensions,
-		// early_data (RFC 8446 §4.2.10): empty value in ClientHello signals the
-		// client intends to send 0-RTT data. Must precede pre_shared_key (last).
-		Extension{Type: ExtensionTypeEarlyData},
-		Extension{Type: ExtensionTypePSKKeyExchangeModes, Data: marshalPSKKeyExchangeModesExtension([]uint8{PSKKeyExchangeModeDHEKE})},
 		Extension{Type: ExtensionTypePreSharedKey, Data: truncExt},
 	)
 	truncFull, err := MarshalHandshakeMessage(ch)

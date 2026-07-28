@@ -191,17 +191,17 @@ func TestHandshake_TransportParametersExchange(t *testing.T) {
 	serverTP := []byte("server-transport-params")
 
 	server, err := NewServerHandshakerWithConfig(ServerConfig{
-		DCID:               dcid,
-		Certificate:        cert,
-		PrivateKey:         serverKey,
+		DCID:                dcid,
+		Certificate:         cert,
+		PrivateKey:          serverKey,
 		TransportParameters: serverTP,
 	})
 	if err != nil {
 		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
 	}
 	client, err := NewClientHandshakerWithConfig(ClientConfig{
-		DCID:               dcid,
-		InsecureSkipVerify: true,
+		DCID:                dcid,
+		InsecureSkipVerify:  true,
 		TransportParameters: clientTP,
 	})
 	if err != nil {
@@ -336,6 +336,7 @@ func TestClientHello_PreSharedKey(t *testing.T) {
 		ResumptionPSK:                 psk,
 		ResumptionIdentity:            identity,
 		ResumptionObfuscatedTicketAge: obfAge,
+		EarlyData:                     true,
 	})
 	if err != nil {
 		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
@@ -427,6 +428,7 @@ func TestServerHandshake_VerifyPSKBinder(t *testing.T) {
 		ResumptionPSK:                 psk,
 		ResumptionIdentity:            identity,
 		ResumptionObfuscatedTicketAge: 1,
+		EarlyData:                     true,
 	})
 	if err != nil {
 		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
@@ -546,6 +548,7 @@ func TestHandshake_PSKResumption(t *testing.T) {
 		ResumptionPSK:                 psk,
 		ResumptionIdentity:            identity,
 		ResumptionObfuscatedTicketAge: ageAdd,
+		EarlyData:                     true,
 	})
 	if err != nil {
 		t.Fatalf("client2: %v", err)
@@ -611,6 +614,7 @@ func TestHandshake_EarlyTrafficKeys(t *testing.T) {
 		ResumptionPSK:                 psk,
 		ResumptionIdentity:            identity,
 		ResumptionObfuscatedTicketAge: 1,
+		EarlyData:                     true,
 	})
 	if err != nil {
 		t.Fatalf("client: %v", err)
@@ -659,5 +663,3 @@ func TestHandshake_EarlyTrafficKeys(t *testing.T) {
 			ck.AEADKey, ck.AEADIV, ck.HeaderKey, sk.AEADKey, sk.AEADIV, sk.HeaderKey)
 	}
 }
-
-

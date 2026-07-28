@@ -566,4 +566,66 @@ func TestHandshake_PSKResumption(t *testing.T) {
 	}
 }
 
+// TestHandshake_EarlyTrafficKeys verifies the 0-RTT key agreement between a PSK
+// client and server: after the client's ClientHello (which carries early_data)
+// and the server's HandleClientHello, both sides have identical ClientEarlyKeys
+// usable to encrypt/decrypt 0-RTT data before the handshake completes.
+func TestHandshake_EarlyTrafficKeys(t *testing.T) {
+	dcid := []byte{0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8}
+	cert, serverKey := generateTestSM2Cert(t)
+	psk := bytes.Repeat([]byte{0xEE}, sm3.Size)
+
+	client, err := NewClientHandshakerWithConfig(ClientConfig{
+		DCID:                          dcid,
+		InsecureSkipVerify:            true,
+		ResumptionPSK:                 psk,
+		ResumptionObfuscatedTicketAge: 1,
+	})
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	server, err := NewServerHandshakerWithConfig(ServerConfig{
+		DCID:           dcid,
+		Certificate:    cert,
+		PrivateKey:     serverKey,
+		ResumptionPSKs: [][]byte{psk},
+	})
+	if err != nil {
+		t.Fatalf("server: %v", err)
+	}
+
+	ch, err := client.ClientHello()
+	if err != nil {
+		t.Fatalf("ClientHello: %v", err)
+	}
+	// The ClientHello must carry the early_data extension.
+	_, chBody, _, _ := ReadHandshakeMessage(ch)
+	var chMsg ClientHelloMsg
+	if err := chMsg.unmarshalBody(chBody); err != nil {
+		t.Fatalf("unmarshal CH: %v", err)
+	}
+	if findExtension(chMsg.Extensions, ExtensionTypeEarlyData) == nil {
+		t.Fatal("PSK ClientHello missing early_data extension")
+	}
+	// Client derives 0-RTT keys right after the ClientHello.
+	if client.Secrets().ClientEarlyKeys == nil {
+		t.Fatal("client ClientEarlyKeys nil after ClientHello")
+	}
+
+	if err := server.HandleClientHello(ch); err != nil {
+		t.Fatalf("server HandleClientHello: %v", err)
+	}
+	if server.Secrets().ClientEarlyKeys == nil {
+		t.Fatal("server ClientEarlyKeys nil after HandleClientHello")
+	}
+
+	// Both sides must agree on the 0-RTT keys.
+	ck := client.Secrets().ClientEarlyKeys
+	sk := server.Secrets().ClientEarlyKeys
+	if !bytes.Equal(ck.AEADKey, sk.AEADKey) || !bytes.Equal(ck.AEADIV, sk.AEADIV) || !bytes.Equal(ck.HeaderKey, sk.HeaderKey) {
+		t.Fatalf("0-RTT keys mismatch:\n client %x/%x/%x\n server %x/%x/%x",
+			ck.AEADKey, ck.AEADIV, ck.HeaderKey, sk.AEADKey, sk.AEADIV, sk.HeaderKey)
+	}
+}
+
 

@@ -9,14 +9,10 @@ const (
 	SuiteECC_SM2_SM4_CBC_SM3   uint16 = 0xE013
 )
 
-// defaultCipherSuites are the default supported cipher suites (GCM-only, ECDHE-only, providing forward secrecy).
-var defaultCipherSuites = []uint16{
-	SuiteECDHE_SM2_SM4_GCM_SM3,
-}
-
 // DefaultCipherSuites returns the default TLCP cipher suites (GCM-only, ECDHE-only, providing forward secrecy).
 // This is the recommended configuration for new connections, providing the best security.
 // For legacy compatibility with non-PFS static ECC suites, use LegacyCipherSuites().
+// A fresh slice is returned on every call so callers may mutate it freely.
 func DefaultCipherSuites() []uint16 {
 	return []uint16{
 		SuiteECDHE_SM2_SM4_GCM_SM3,

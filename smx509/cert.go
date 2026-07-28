@@ -402,7 +402,10 @@ func detectKeyType(der []byte) string {
 	if _, err := x509.ParsePKCS1PrivateKey(der); err == nil {
 		return "RSA PRIVATE KEY"
 	}
-	if _, err := x509.ParseECPrivateKey(der); err == nil {
+	// Use the package's own ParseECPrivateKey (which delegates to gmsm/smx509)
+	// so that SM2 curve OIDs are recognized. The stdlib x509.ParseECPrivateKey
+	// does not understand SM2 and would mislabel SEC1 SM2 keys as PKCS#8.
+	if _, err := ParseECPrivateKey(der); err == nil {
 		return "EC PRIVATE KEY"
 	}
 	return "PRIVATE KEY"
@@ -575,8 +578,9 @@ func decryptBlock(es pkix.AlgorithmIdentifier, key, ciphertext []byte) ([]byte, 
 		}
 		plaintext := make([]byte, len(ciphertext))
 		cipher.NewCBCDecrypter(blockCipher, iv).CryptBlocks(plaintext, ciphertext)
-		unpadded, err := pkcs7Unpad(plaintext)
+		unpadded, err := pkcs7Unpad(plaintext, blockCipher.BlockSize())
 		if err != nil {
+			memsecure.ZeroBytes(plaintext)
 			return nil, errDecryptFailed
 		}
 		// CBC has no authenticated encryption: a wrong password can still pass
@@ -629,12 +633,12 @@ func asn1IsSequence(der []byte) bool {
 	return subtle.ConstantTimeByteEq(der[0], 0x30) == 1
 }
 
-func pkcs7Unpad(data []byte) ([]byte, error) {
+func pkcs7Unpad(data []byte, blockSize int) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, errInvalidPadding
 	}
 	padLen := int(data[len(data)-1])
-	if padLen == 0 || padLen > aes.BlockSize || padLen > len(data) {
+	if padLen == 0 || padLen > blockSize || padLen > len(data) {
 		return nil, errInvalidPadding
 	}
 	// Constant-time validation: always iterate all padding bytes regardless of value.
@@ -684,12 +688,13 @@ func decryptLegacyPEM(block *pem.Block, password []byte) ([]byte, error) {
 	}
 
 	if len(block.Bytes)%blockCipher.BlockSize() != 0 {
-		return nil, errors.New("ciphertext is not a multiple of the block size")
+		return nil, errDecryptFailed
 	}
 	plaintext := make([]byte, len(block.Bytes))
 	cipher.NewCBCDecrypter(blockCipher, iv).CryptBlocks(plaintext, block.Bytes)
-	unpadded, err := pkcs7Unpad(plaintext)
+	unpadded, err := pkcs7Unpad(plaintext, blockCipher.BlockSize())
 	if err != nil {
+		memsecure.ZeroBytes(plaintext)
 		return nil, errDecryptFailed
 	}
 	// CBC 没有 authenticated encryption，错误密码可能通过 PKCS7 unpad。

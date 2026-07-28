@@ -89,6 +89,8 @@ func tlcpSignHandshake(rand io.Reader, sigType tlcpSigType, priv crypto.PrivateK
 		opts = crypto.SHA256
 	case tlcpSigRSASM3, tlcpSigIBSSM3:
 		return nil, fmt.Errorf("tlcp: handshake signature type %d not implemented", sigType)
+	default:
+		return nil, fmt.Errorf("tlcp: unknown handshake signature type %d", sigType)
 	}
 	return signer.Sign(rand, tbs, opts)
 }

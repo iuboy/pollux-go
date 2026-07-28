@@ -3,6 +3,7 @@ package quicgm
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"sync"
 	"time"
@@ -27,6 +28,12 @@ type Listener struct {
 func Listen(ctx context.Context, cfg ServerConfig) (*Listener, error) {
 	if cfg.Certificate == nil || cfg.PrivateKey == nil {
 		return nil, errNoServerCert
+	}
+	// ClientCAs is declared on ServerConfig but the GM handshake layer does
+	// not yet support mutual TLS. Fail loudly rather than silently ignoring
+	// the field — a caller who sets ClientCAs expects client-cert enforcement.
+	if cfg.ClientCAs != nil {
+		return nil, errors.New("quicgm: ClientCAs is not yet supported by the GM handshake layer")
 	}
 	// Stateless RFC 8446 tickets: the Listener owns the TEK rotator (current +
 	// previous) shared by every accepted connection, so a ticket issued on one
@@ -98,7 +105,11 @@ func withTicketCollector(qcfg *quic.Config, conn *Conn) *quic.Config {
 func (c *Conn) SessionTicket() (identity, psk []byte, ticketAgeAdd uint32, ok bool) {
 	c.ticketMu.Lock()
 	defer c.ticketMu.Unlock()
-	return c.sessionIdentity, c.sessionPSK, c.ticketAgeAdd, len(c.sessionPSK) > 0
+	// Return defensive copies so internal buffers never escape — the ticket
+	// collector callback reuses the same backing arrays for the next ticket.
+	identity = append([]byte(nil), c.sessionIdentity...)
+	psk = append([]byte(nil), c.sessionPSK...)
+	return identity, psk, c.ticketAgeAdd, len(c.sessionPSK) > 0
 }
 
 // Dial establishes a GM QUIC connection to cfg.Addr. On success the underlying

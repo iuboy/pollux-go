@@ -87,6 +87,10 @@ func OpenHandshakePacket(keys *tls13gm.QUICPacketKeys, expectedDCID, packet []by
 	if packet[0]&0x80 == 0 {
 		return 0, nil, 0, nil, errors.New("quicgm: not a long-header packet")
 	}
+	// RFC 9000 §17.2: the Fixed Bit in long headers MUST be 1.
+	if packet[0]&0x40 == 0 {
+		return 0, nil, 0, nil, errors.New("quicgm: fixed bit not set in long header")
+	}
 	if (packet[0]>>4)&0x03 != 0b10 {
 		return 0, nil, 0, nil, fmt.Errorf("quicgm: not a Handshake packet (type %02b)", (packet[0]>>4)&0x03)
 	}
@@ -95,6 +99,10 @@ func OpenHandshakePacket(keys *tls13gm.QUICPacketKeys, expectedDCID, packet []by
 	version, pos, err = readUint32(packet, pos)
 	if err != nil {
 		return 0, nil, 0, nil, err
+	}
+	// The Handshake-level packet-protection keys are specific to QUIC v1.
+	if version != QUICVersion1 {
+		return 0, nil, 0, nil, fmt.Errorf("quicgm: unsupported QUIC version 0x%08x", version)
 	}
 	gotDCID, pos, err := readCID(packet, pos, "dcid")
 	if err != nil {
@@ -122,6 +130,10 @@ func OpenHandshakePacket(keys *tls13gm.QUICPacketKeys, expectedDCID, packet []by
 
 	if uint64(pnLen) > length {
 		return 0, nil, 0, nil, fmt.Errorf("quicgm: declared length %d smaller than packet number %d", length, pnLen)
+	}
+	// Bounds-check in uint64 space to avoid int truncation on 32-bit platforms.
+	if length > uint64(len(packet)-pnOffset) {
+		return 0, nil, 0, nil, fmt.Errorf("quicgm: declared length %d exceeds packet tail %d", length, len(packet)-pnOffset)
 	}
 	ctLen := int(length) - pnLen
 	headerEnd := pnOffset + pnLen

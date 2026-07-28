@@ -3,6 +3,7 @@ package sm4
 import (
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/iuboy/pollux-go/internal/memsecure"
@@ -58,6 +59,9 @@ func SealRandomNonce(key, plaintext, aad []byte) (Sealed, error) {
 // OpenWithNonce decrypts a Sealed value produced by SealRandomNonce. It is a
 // thin convenience over aead.Open that pulls the nonce out of the Sealed value.
 func OpenWithNonce(key []byte, s Sealed, aad []byte) ([]byte, error) {
+	if len(s.Nonce) != GCMNonceSize {
+		return nil, fmt.Errorf("sm4: invalid nonce length %d, want %d", len(s.Nonce), GCMNonceSize)
+	}
 	aead, err := NewGCM(key)
 	if err != nil {
 		return nil, err

@@ -28,11 +28,13 @@ func (rejectingAntiReplayCache) Check([]byte, time.Duration) bool { return false
 // remembers each digest for `window`; attempts older than `maxAge` (typically
 // the ticket lifetime) are rejected as expired.
 type memoryAntiReplayCache struct {
-	mu      sync.Mutex
-	entries map[string]time.Time // digest -> expiry
-	window  time.Duration
-	maxAge  time.Duration
-	now     func() time.Time
+	mu         sync.Mutex
+	entries    map[string]time.Time // digest -> expiry
+	window     time.Duration
+	maxAge     time.Duration
+	now        func() time.Time
+	lastSweep  time.Time
+	sweepEvery time.Duration
 }
 
 // NewAntiReplayCache returns a process-local anti-replay cache. window is how
@@ -40,10 +42,11 @@ type memoryAntiReplayCache struct {
 // acceptable ticket age (reject older tickets as expired).
 func NewAntiReplayCache(window, maxAge time.Duration) AntiReplayCache {
 	return &memoryAntiReplayCache{
-		entries: make(map[string]time.Time),
-		window:  window,
-		maxAge:  maxAge,
-		now:     time.Now,
+		entries:    make(map[string]time.Time),
+		window:     window,
+		maxAge:     maxAge,
+		now:        time.Now,
+		sweepEvery: window, // sweep at the same cadence as the replay window
 	}
 }
 
@@ -55,6 +58,18 @@ func (c *memoryAntiReplayCache) Check(digest []byte, age time.Duration) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
+	// Lazy eviction of expired entries to bound memory. Throttled by
+	// sweepEvery so it isn't O(n) on every call.
+	if c.lastSweep.IsZero() {
+		c.lastSweep = now
+	} else if c.lastSweep.Add(c.sweepEvery).Before(now) {
+		for k, exp := range c.entries {
+			if !exp.After(now) {
+				delete(c.entries, k)
+			}
+		}
+		c.lastSweep = now
+	}
 	if exp, ok := c.entries[key]; ok && exp.After(now) {
 		return false // replayed within the window
 	}

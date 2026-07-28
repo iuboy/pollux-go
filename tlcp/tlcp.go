@@ -121,7 +121,7 @@ func NewConfig() *Config {
 	return &Config{
 		Version:            Version11,
 		ClientAuth:         NoClientCert,
-		CipherSuites:       defaultCipherSuites,
+		CipherSuites:       DefaultCipherSuites(),
 		MinVersion:         tls.VersionTLS12,
 		MaxVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: false,

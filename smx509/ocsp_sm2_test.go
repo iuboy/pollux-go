@@ -89,13 +89,13 @@ func TestCreateOCSPResponse_Revoked_SM2(t *testing.T) {
 
 	revokeTime := time.Now().Add(-10 * time.Minute).UTC()
 	tmpl := &ocsp.Response{
-		Status:          ocsp.Revoked,
-		SerialNumber:    big.NewInt(99),
-		ThisUpdate:      time.Now().UTC(),
-		NextUpdate:      time.Now().Add(time.Hour).UTC(),
-		RevokedAt:       revokeTime,
+		Status:           ocsp.Revoked,
+		SerialNumber:     big.NewInt(99),
+		ThisUpdate:       time.Now().UTC(),
+		NextUpdate:       time.Now().Add(time.Hour).UTC(),
+		RevokedAt:        revokeTime,
 		RevocationReason: ocsp.KeyCompromise,
-		Certificate:     caCert,
+		Certificate:      caCert,
 	}
 
 	respBytes, err := CreateOCSPResponse(tmpl, caCert, caKey)

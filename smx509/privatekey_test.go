@@ -143,3 +143,36 @@ func TestPEMTypeForPrivateKey(t *testing.T) {
 		})
 	}
 }
+
+func TestParsePKCS8PrivateKey_SM2(t *testing.T) {
+	key, _ := sm2.GenerateKey(rand.Reader)
+	der, err := MarshalPrivateKey(key)
+	if err != nil {
+		t.Fatalf("MarshalPrivateKey SM2: %v", err)
+	}
+	parsed, err := ParsePKCS8PrivateKey(der)
+	if err != nil {
+		t.Fatalf("ParsePKCS8PrivateKey SM2: %v", err)
+	}
+	if _, ok := parsed.(*sm2.PrivateKey); !ok {
+		t.Errorf("expected *sm2.PrivateKey, got %T", parsed)
+	}
+}
+
+func TestParsePKCS8PrivateKey_RSA(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	der, _ := MarshalPrivateKey(key)
+	parsed, err := ParsePKCS8PrivateKey(der)
+	if err != nil {
+		t.Fatalf("ParsePKCS8PrivateKey RSA: %v", err)
+	}
+	if _, ok := parsed.(*rsa.PrivateKey); !ok {
+		t.Errorf("expected *rsa.PrivateKey, got %T", parsed)
+	}
+}
+
+func TestParsePKCS8PrivateKey_Invalid(t *testing.T) {
+	if _, err := ParsePKCS8PrivateKey([]byte{0xFF}); err == nil {
+		t.Error("expected error for invalid DER")
+	}
+}

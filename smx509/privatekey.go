@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 
+	gmsmSMX509 "github.com/emmansun/gmsm/smx509"
 	"github.com/iuboy/pollux-go/sm2"
 )
 
@@ -46,6 +47,16 @@ func ParsePrivateKeyPEM(pemData []byte) (any, error) {
 		return key, nil
 	}
 	return nil, errors.New("smx509: cannot parse private key PEM (not SM2/RSA/ECDSA/Ed25519)")
+}
+
+// ParsePKCS8PrivateKey parses a PKCS#8 private key DER, SM2-aware: unlike
+// crypto/x509.ParsePKCS8PrivateKey (which rejects the SM2 OID), this delegates
+// to gmsm/smx509 and returns *sm2.PrivateKey for SM2 keys. For standard
+// algorithms it returns the same types as x509.ParsePKCS8PrivateKey.
+//
+// Use this whenever the input might be SM2. For PEM input, use ParsePrivateKeyPEM.
+func ParsePKCS8PrivateKey(der []byte) (any, error) {
+	return gmsmSMX509.ParsePKCS8PrivateKey(der)
 }
 
 // MarshalPrivateKey serializes a private key to DER. SM2 uses PKCS#8 (with

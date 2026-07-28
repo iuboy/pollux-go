@@ -16,8 +16,8 @@ var (
 )
 
 var (
-	errNilPublicKey  = errors.New("smx509: public key is nil")
-	errNilTemplate   = errors.New("smx509: template is nil")
+	errNilPublicKey   = errors.New("smx509: public key is nil")
+	errNilTemplate    = errors.New("smx509: template is nil")
 	errNilCertificate = errors.New("smx509: certificate is nil")
 )
 

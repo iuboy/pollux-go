@@ -42,9 +42,12 @@ vet:
 
 ## gosec: run gosec, excluding reviewed-as-safe rules (see GOSEC_EXCLUDE above).
 ## G103 (memsecure unsafe for key zeroing) remains reported by design — it must
-## stay visible so new unsafe uses are noticed.
+## stay visible so new unsafe uses are noticed. The vendored quic-go/ fork is
+## excluded (upstream code with its own unsafe socket helpers that we cannot
+## change) — same exclusion CI applies, keeping local `make gosec` in sync with
+## the CI lint job.
 gosec:
-	gosec -exclude $(GOSEC_EXCLUDE) -quiet ./...
+	go list ./... | grep -v '/quic-go' | xargs gosec -exclude $(GOSEC_EXCLUDE) -quiet
 
 ## test: run all tests incl. integration (race detector enabled).
 test:

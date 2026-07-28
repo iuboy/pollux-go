@@ -79,3 +79,40 @@ func TestComputeResumptionBinder_Deterministic(t *testing.T) {
 		t.Fatal("binder identical for different PSK")
 	}
 }
+
+// TestDeriveEarlyTrafficKeys verifies the 0-RTT key derivation (RFC 8446 §7.1
+// client_early_traffic_secret): deterministic for fixed PSK+transcript, and
+// the PSK is mixed into the output.
+func TestDeriveEarlyTrafficKeys(t *testing.T) {
+	psk := bytes.Repeat([]byte{0x42}, sm3.Size)
+	trHash := bytes.Repeat([]byte{0x11}, sm3.Size)
+
+	keys1, err := DeriveEarlyTrafficKeys(psk, trHash)
+	if err != nil {
+		t.Fatalf("DeriveEarlyTrafficKeys: %v", err)
+	}
+	keys2, _ := DeriveEarlyTrafficKeys(psk, trHash)
+	if !bytes.Equal(keys1.AEADKey, keys2.AEADKey) || !bytes.Equal(keys1.AEADIV, keys2.AEADIV) {
+		t.Fatal("0-RTT keys not deterministic")
+	}
+	// Different PSK must yield different keys.
+	keys3, _ := DeriveEarlyTrafficKeys(bytes.Repeat([]byte{0x43}, sm3.Size), trHash)
+	if bytes.Equal(keys1.AEADKey, keys3.AEADKey) {
+		t.Fatal("0-RTT keys identical for different PSK")
+	}
+	// Different transcript must yield different keys.
+	keys4, _ := DeriveEarlyTrafficKeys(psk, bytes.Repeat([]byte{0x22}, sm3.Size))
+	if bytes.Equal(keys1.AEADKey, keys4.AEADKey) {
+		t.Fatal("0-RTT keys identical for different transcript")
+	}
+	// The derived keys must round-trip through the AEAD.
+	aead, err := NewAEAD(keys1.AEADKey, keys1.AEADIV)
+	if err != nil {
+		t.Fatalf("NewAEAD: %v", err)
+	}
+	ct, _ := aead.Seal(1, []byte("0rtt"), []byte("hdr"))
+	pt, err := aead.Open(1, ct, []byte("hdr"))
+	if err != nil || string(pt) != "0rtt" {
+		t.Fatalf("0-RTT AEAD round-trip: %v / %q", err, pt)
+	}
+}

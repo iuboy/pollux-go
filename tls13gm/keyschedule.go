@@ -96,3 +96,18 @@ func DeriveResumptionMasterSecret(masterSecret []byte, transcriptHash []byte) ([
 func DeriveExporterMasterSecret(masterSecret []byte, transcriptHash []byte) ([]byte, error) {
 	return DeriveSecret(masterSecret, LabelExporterMaster, transcriptHash)
 }
+
+// DeriveEarlyTrafficKeys derives the 0-RTT QUIC packet keys from a resumption
+// PSK (RFC 8446 §7.1: client_early_traffic_secret = DeriveSecret(Early Secret,
+// "c e traffic", transcript)). transcriptHash is Hash(ClientHello) — the
+// ClientHello carrying the early_data + pre_shared_key extensions. The client
+// uses these keys to encrypt early data before the server responds; the server
+// derives the same keys from the PSK to decrypt it.
+func DeriveEarlyTrafficKeys(psk, transcriptHash []byte) (*QUICPacketKeys, error) {
+	earlySecret := DeriveEarlySecret(psk)
+	earlyTraffic, err := DeriveSecret(earlySecret, LabelClientEarlyTraffic, transcriptHash)
+	if err != nil {
+		return nil, fmt.Errorf("tls13gm: derive client early traffic secret: %w", err)
+	}
+	return DeriveQUICPacketKeys(earlyTraffic)
+}

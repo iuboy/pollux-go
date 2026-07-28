@@ -21,6 +21,9 @@ import (
 type HandshakeSecrets struct {
 	// Initial level: derived from the DCID via DeriveQUICInitialSecrets.
 	ClientInitialKeys, ServerInitialKeys *QUICPacketKeys
+	// 0-RTT level: derived from the early secret (client early traffic). Only
+	// set in PSK mode; the client sends, the server opens.
+	ClientEarlyKeys *QUICPacketKeys
 	// Handshake level: derived from the handshake secret (c/s hs traffic).
 	ClientHandshakeKeys, ServerHandshakeKeys *QUICPacketKeys
 	// Application (1-RTT) level: derived from the master secret (c/s ap traffic).
@@ -35,6 +38,7 @@ func (h *HandshakeSecrets) Zero() {
 	}
 	for _, k := range []*QUICPacketKeys{
 		h.ClientInitialKeys, h.ServerInitialKeys,
+		h.ClientEarlyKeys,
 		h.ClientHandshakeKeys, h.ServerHandshakeKeys,
 		h.ClientApplicationKeys, h.ServerApplicationKeys,
 	} {

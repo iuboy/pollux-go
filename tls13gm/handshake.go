@@ -723,6 +723,7 @@ type ServerHandshaker struct {
 	// is set in HandleClientHello when the ClientHello carries early_data.
 	allowEarlyData         bool
 	clientOfferedEarlyData bool
+	earlyDataAcceptor      func([]byte) bool
 }
 
 // DiscardEarlyKeys clears the 0-RTT keys (called by the transport once the
@@ -764,6 +765,13 @@ type ServerConfig struct {
 	// accepting 0-RTT MUST pair this with an AntiReplayCache (quicgm); without
 	// one, 0-RTT is rejected even if this is true.
 	AllowEarlyData bool
+
+	// EarlyDataAcceptor, if set, is called when a client offers 0-RTT (early_data
+	// + PSK). It returns true to accept the 0-RTT, false to reject (replay
+	// suspected). If nil, AllowEarlyData alone decides. The psk argument is the
+	// client's offered resumption PSK; the acceptor typically consults an
+	// AntiReplayCache.
+	EarlyDataAcceptor func(psk []byte) bool
 }
 
 // NewServerHandshakerWithConfig prepares a server handshaker from an explicit
@@ -801,6 +809,7 @@ func NewServerHandshakerWithConfig(cfg ServerConfig) (*ServerHandshaker, error) 
 		localTransportParams: cfg.TransportParameters,
 		resumptionPSKs:       cfg.ResumptionPSKs,
 		allowEarlyData:       cfg.AllowEarlyData,
+		earlyDataAcceptor:    cfg.EarlyDataAcceptor,
 	}, nil
 }
 
@@ -883,7 +892,7 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 			s.clientOfferedEarlyData = true
 			// Only derive 0-RTT keys when the server is willing to accept early
 			// data; otherwise the client's 0-RTT is rejected (no early_data in EE).
-			if s.allowEarlyData {
+			if s.allowEarlyData && (s.earlyDataAcceptor == nil || s.earlyDataAcceptor(s.resumptionSelectedPSK)) {
 				s.secrets.ClientEarlyKeys, err = DeriveEarlyTrafficKeys(s.resumptionSelectedPSK, s.transcript.Sum())
 				if err != nil {
 					return fmt.Errorf("tls13gm: derive 0-RTT keys: %w", err)

@@ -27,6 +27,11 @@ type ServerConfig struct {
 	ClientCAs          *smx509.CertPool
 	MaxIdleTimeout     time.Duration
 	MaxIncomingStreams int64
+	// AllowEarlyData lets the server accept 0-RTT from resuming clients. It MUST
+	// be paired with a non-nil AntiReplay; if AntiReplay is nil, 0-RTT is
+	// rejected even when this is true (fail-safe).
+	AllowEarlyData bool
+	AntiReplay     AntiReplayCache
 }
 
 // ClientConfig holds QUIC client configuration for the RFC 8998 GM stack.
@@ -36,6 +41,15 @@ type ClientConfig struct {
 	Roots              *smx509.CertPool
 	InsecureSkipVerify bool
 	MaxIdleTimeout     time.Duration
+	// ResumptionPSK enables PSK resumption. It is the Ticket from a server
+	// NewSessionTicket obtained on a prior connection.
+	ResumptionPSK []byte
+	// ResumptionObfuscatedTicketAge is the obfuscated ticket age
+	// (age + ticket_age_add) for the pre_shared_key identity.
+	ResumptionObfuscatedTicketAge uint32
+	// EarlyData, when true with ResumptionPSK, makes the client attempt 0-RTT
+	// (the ClientHello carries early_data; early traffic keys are derived).
+	EarlyData bool
 }
 
 func (c *ServerConfig) idleTimeout() time.Duration {
@@ -55,10 +69,22 @@ func (c *ClientConfig) idleTimeout() time.Duration {
 // tls13ServerConfig builds the tls13gm server handshaker config. DCID and
 // TransportParameters are filled by the QUIC transport (GMCryptoSetup), not here.
 func (c *ServerConfig) tls13ServerConfig() *tls13gm.ServerConfig {
-	return &tls13gm.ServerConfig{
-		Certificate: c.Certificate,
-		PrivateKey:  c.PrivateKey,
+	cfg := &tls13gm.ServerConfig{
+		Certificate:    c.Certificate,
+		PrivateKey:     c.PrivateKey,
+		AllowEarlyData: c.AllowEarlyData,
 	}
+	// Fail-safe: only wire the acceptor (and thus accept 0-RTT) when an
+	// anti-replay cache is configured.
+	if c.AllowEarlyData && c.AntiReplay != nil {
+		cache := c.AntiReplay
+		cfg.EarlyDataAcceptor = func(psk []byte) bool {
+			return cache.Check(psk, 0) // age 0: ticket-age tracking is a follow-up
+		}
+	} else {
+		cfg.AllowEarlyData = false
+	}
+	return cfg
 }
 
 // tls13ClientConfig builds the tls13gm client handshaker config.
@@ -67,8 +93,10 @@ func (c *ClientConfig) tls13ClientConfig() (*tls13gm.ClientConfig, error) {
 		return nil, errNoServerName
 	}
 	return &tls13gm.ClientConfig{
-		ServerName:         c.ServerName,
-		Roots:              c.Roots,
-		InsecureSkipVerify: c.InsecureSkipVerify,
+		ServerName:                   c.ServerName,
+		Roots:                        c.Roots,
+		InsecureSkipVerify:           c.InsecureSkipVerify,
+		ResumptionPSK:                c.ResumptionPSK,
+		ResumptionObfuscatedTicketAge: c.ResumptionObfuscatedTicketAge,
 	}, nil
 }

@@ -192,30 +192,36 @@ func trafficAEAD(secret []byte) (*tls13gm.AEAD, error) {
 
 // dialRFC8998 performs a TLS 1.3 RFC 8998 handshake over conn (client side) using
 // pollux-go's tls13gm engine, returning the handshaker (with application-level
-// traffic secrets populated) once the server's Finished is verified and the
-// client's Finished has been sent.
-func dialRFC8998(conn net.Conn, serverName string) (*tls13gm.ClientHandshaker, error) {
+// traffic secrets populated), the 32-byte client random, and nil error once the
+// server's Finished is verified and the client's Finished has been sent.
+func dialRFC8998(conn net.Conn, serverName string) (*tls13gm.ClientHandshaker, []byte, error) {
 	hs, err := tls13gm.NewClientHandshakerWithConfig(tls13gm.ClientConfig{
 		DCID:               []byte("tls-interop-dummy"), // QUIC-only field; unused in TLS record mode
 		ServerName:         serverName,
 		InsecureSkipVerify: true, // the gate validates handshake crypto, not the PKI chain
 	})
 	if err != nil {
-		return nil, fmt.Errorf("new handshaker: %w", err)
+		return nil, nil, fmt.Errorf("new handshaker: %w", err)
 	}
 
 	ch, err := hs.ClientHello()
 	if err != nil {
-		return nil, fmt.Errorf("ClientHello: %w", err)
+		return nil, nil, fmt.Errorf("ClientHello: %w", err)
+	}
+	// ch = handshake header(4) || legacy_version(2) || random(32); the random
+	// keys the NSS keylog entries for cross-checking with the peer.
+	var clientRandom []byte
+	if len(ch) >= 38 {
+		clientRandom = append(clientRandom, ch[6:38]...)
 	}
 	if err := writeRecord(conn, recTypeHandshake, ch); err != nil {
-		return nil, fmt.Errorf("write ClientHello: %w", err)
+		return nil, nil, fmt.Errorf("write ClientHello: %w", err)
 	}
 	// ChangeCipherSpec (middlebox compatibility, RFC 8446 §5): a single-byte
 	// record signaling the switch to encrypted records. Tongsuo emits one and
 	// expects the client to echo it before its first encrypted record.
 	if err := writeRecord(conn, recTypeCCS, []byte{0x01}); err != nil {
-		return nil, fmt.Errorf("write CCS: %w", err)
+		return nil, nil, fmt.Errorf("write CCS: %w", err)
 	}
 
 	hr := &handshakeReader{}
@@ -228,7 +234,7 @@ func dialRFC8998(conn net.Conn, serverName string) (*tls13gm.ClientHandshaker, e
 	for {
 		rtype, frag, err := readRecord(conn)
 		if err != nil {
-			return nil, fmt.Errorf("read record: %w", err)
+			return nil, nil, fmt.Errorf("read record: %w", err)
 		}
 		switch {
 		case rtype == recTypeCCS:
@@ -236,11 +242,11 @@ func dialRFC8998(conn net.Conn, serverName string) (*tls13gm.ClientHandshaker, e
 		case rtype == recTypeHandshake && !hsKeysReady:
 			// Plaintext ServerHello.
 			if err := hs.HandleServerHello(frag); err != nil {
-				return nil, fmt.Errorf("HandleServerHello: %w", err)
+				return nil, nil, fmt.Errorf("HandleServerHello: %w", err)
 			}
 			srvHSRead, err = trafficAEAD(hs.Secrets().ServerHandshakeTrafficSecret)
 			if err != nil {
-				return nil, fmt.Errorf("server hs key: %w", err)
+				return nil, nil, fmt.Errorf("server hs key: %w", err)
 			}
 			hsKeysReady = true
 		case hsKeysReady:
@@ -248,7 +254,7 @@ func dialRFC8998(conn net.Conn, serverName string) (*tls13gm.ClientHandshaker, e
 			plaintext, err := openRecord(srvHSRead, srvHSReadSeq, rtype, frag)
 			srvHSReadSeq++
 			if err != nil {
-				return nil, fmt.Errorf("open handshake record: %w", err)
+				return nil, nil, fmt.Errorf("open handshake record: %w", err)
 			}
 			// TLSInnerPlaintext = content || ContentType; strip the trailing
 			// content-type byte so it doesn't pollute handshake-message parsing
@@ -258,10 +264,10 @@ func dialRFC8998(conn net.Conn, serverName string) (*tls13gm.ClientHandshaker, e
 			}
 		default:
 			if rtype == 21 && len(frag) >= 2 {
-				return nil, fmt.Errorf("server alert before ServerHello: level=%d desc=%d (%s)",
+				return nil, nil, fmt.Errorf("server alert before ServerHello: level=%d desc=%d (%s)",
 					frag[0], frag[1], alertDesc(frag[1]))
 			}
-			return nil, fmt.Errorf("unexpected record type %d before ServerHello", rtype)
+			return nil, nil, fmt.Errorf("unexpected record type %d before ServerHello", rtype)
 		}
 
 		// Drain reassembled handshake messages until Finished.
@@ -274,26 +280,26 @@ func dialRFC8998(conn net.Conn, serverName string) (*tls13gm.ClientHandshaker, e
 			switch mt {
 			case tls13gm.HandshakeTypeEncryptedExtensions:
 				if err := hs.HandleEncryptedExtensions(msg); err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 			case tls13gm.HandshakeTypeCertificate:
 				if err := hs.HandleCertificate(msg); err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 			case tls13gm.HandshakeTypeCertificateVerify:
 				if err := hs.HandleCertificateVerify(msg); err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 			case tls13gm.HandshakeTypeFinished:
 				if err := hs.HandleServerFinished(msg); err != nil {
-					return nil, fmt.Errorf("HandleServerFinished: %w", err)
+					return nil, nil, fmt.Errorf("HandleServerFinished: %w", err)
 				}
 				if err := finishClientFlight(conn, hs); err != nil {
-					return nil, err
+					return nil, nil, err
 				}
-				return hs, nil
+				return hs, clientRandom, nil
 			default:
-				return nil, fmt.Errorf("unexpected handshake msg type %d", mt)
+				return nil, nil, fmt.Errorf("unexpected handshake msg type %d", mt)
 			}
 		}
 	}
@@ -321,7 +327,7 @@ func finishClientFlight(conn net.Conn, hs *tls13gm.ClientHandshaker) error {
 // certificate negotiated to TLS_SM4_GCM_SM3. rev=true enables echo mode
 // (s_server -rev) for application-data round-trip tests. Server output is
 // captured to a temp file accessible via the returned log path for diagnostics.
-func startTongsuoServer(t *testing.T, ts, cert, key string) (*exec.Cmd, int, string) {
+func startTongsuoServer(t *testing.T, ts, cert, key string, rev bool) (*exec.Cmd, int, string, string) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -330,7 +336,9 @@ func startTongsuoServer(t *testing.T, ts, cert, key string) (*exec.Cmd, int, str
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 
-	logPath := filepath.Join(t.TempDir(), "s_server.log")
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "s_server.log")
+	keylogPath := filepath.Join(dir, "sslkeys.log")
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		t.Fatalf("create server log: %v", err)
@@ -340,7 +348,13 @@ func startTongsuoServer(t *testing.T, ts, cert, key string) (*exec.Cmd, int, str
 		"-cert", cert, "-key", key,
 		"-tls1_3", "-ciphersuites", "TLS_SM4_GCM_SM3",
 		"-groups", "SM2", // RFC 8998 typical: SM4-GCM-SM3 suite with SM2 (curveSM2) ECDHE
-		"-naccept", "1", "-quiet",
+		"-naccept", "1",
+		"-keylogfile", keylogPath, // NSS-format secrets for diagnostics
+	}
+	if rev {
+		args = append(args, "-rev") // echo received data back (reversed)
+	} else {
+		args = append(args, "-quiet")
 	}
 	cmd := exec.Command(ts, args...)
 	cmd.Stdout = logFile
@@ -353,7 +367,7 @@ func startTongsuoServer(t *testing.T, ts, cert, key string) (*exec.Cmd, int, str
 	// and would exit before the real client connects. Wait briefly for it to
 	// bind instead.
 	time.Sleep(300 * time.Millisecond)
-	return cmd, port, logPath
+	return cmd, port, logPath, keylogPath
 }
 
 func dumpServerLog(t *testing.T, logPath string) {
@@ -369,7 +383,7 @@ func TestRFC8998_Tongsuo_HandshakeInterop(t *testing.T) {
 		t.Skip("Tongsuo/BabaSSL not found; skipping RFC 8998 interop gate")
 	}
 	cert, key := tongsuoGenSM2Cert(t, ts)
-	cmd, port, srvLog := startTongsuoServer(t, ts, cert, key)
+	cmd, port, srvLog, _ := startTongsuoServer(t, ts, cert, key, false)
 	defer func() {
 		cmd.Process.Kill()
 		cmd.Wait()
@@ -381,7 +395,7 @@ func TestRFC8998_Tongsuo_HandshakeInterop(t *testing.T) {
 	}
 	defer conn.Close()
 
-	if _, err := dialRFC8998(conn, "localhost"); err != nil {
+	if _, _, err := dialRFC8998(conn, "localhost"); err != nil {
 		dumpServerLog(t, srvLog)
 		t.Fatalf("RFC 8998 handshake with Tongsuo failed: %v", err)
 	}
@@ -389,4 +403,141 @@ func TestRFC8998_Tongsuo_HandshakeInterop(t *testing.T) {
 	// matched) and our Finished was accepted — proof of byte-level RFC 8998
 	// compatibility: ClientHello suite/curve/key_share, SM2 ECDHE, SM2-SM3
 	// CertificateVerify, and SM4-GCM record protection all line up.
+}
+
+// TestRFC8998_Tongsuo_AppDataEcho completes the RFC 8998 handshake then
+// exchanges 1-RTT application data with Tongsuo under SM4-GCM in both
+// directions:
+//   - client→server: pollux-go seals an application-data record with the client
+//     application traffic secret; Tongsuo decrypts it (s_server -rev).
+//   - server→client: Tongsuo reverses the bytes and seals them with the server
+//     application traffic secret; pollux-go decrypts and verifies.
+//
+// As a cross-check, pollux-go's handshake and application traffic secrets are
+// compared against Tongsuo's NSS keylog (CLIENT_HANDSHAKE_TRAFFIC_SECRET /
+// CLIENT_TRAFFIC_SECRET_0). This is the strongest available proof of RFC 8998
+// key-schedule interoperability: identical SM3 HKDF transcripts on both sides.
+func TestRFC8998_Tongsuo_AppDataEcho(t *testing.T) {
+	ts, ok := tongsuoBinary()
+	if !ok {
+		t.Skip("Tongsuo/BabaSSL not found; skipping RFC 8998 interop gate")
+	}
+	cert, key := tongsuoGenSM2Cert(t, ts)
+	cmd, port, srvLog, keylogPath := startTongsuoServer(t, ts, cert, key, true)
+	defer func() {
+		cmd.Process.Kill()
+		cmd.Wait()
+	}()
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	hs, clientRandom, err := dialRFC8998(conn, "localhost")
+	if err != nil {
+		dumpServerLog(t, srvLog)
+		t.Fatalf("handshake: %v", err)
+	}
+
+	// Cross-check secrets against Tongsuo's NSS keylog. -rev writes the keylog
+	// after the handshake; give it a moment to flush.
+	time.Sleep(150 * time.Millisecond)
+	keylog, _ := os.ReadFile(keylogPath)
+	cr := hexEncode(clientRandom)
+	wantHS := hexEncode(hs.Secrets().ClientHandshakeTrafficSecret)
+	wantAP := hexEncode(hs.Secrets().ClientApplicationTrafficSecret)
+	if !strings.Contains(string(keylog), "CLIENT_HANDSHAKE_TRAFFIC_SECRET "+cr+" "+wantHS) {
+		t.Fatalf("ClientHandshakeTrafficSecret mismatch vs Tongsuo keylog.\nkeylog:\n%s", keylog)
+	}
+	if !strings.Contains(string(keylog), "CLIENT_TRAFFIC_SECRET_0 "+cr+" "+wantAP) {
+		t.Fatalf("ClientApplicationTrafficSecret mismatch vs Tongsuo keylog.\nkeylog:\n%s", keylog)
+	}
+
+	cliAppWrite, err := trafficAEAD(hs.Secrets().ClientApplicationTrafficSecret)
+	if err != nil {
+		t.Fatalf("client app key: %v", err)
+	}
+	srvAppRead, err := trafficAEAD(hs.Secrets().ServerApplicationTrafficSecret)
+	if err != nil {
+		t.Fatalf("server app key: %v", err)
+	}
+
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	defer conn.SetDeadline(time.Time{})
+
+	// s_server -rev reads lines and reverses the bytes; the trailing newline
+	// terminates the line so the server actually echoes.
+	payload := []byte("RFC8998 SM4-GCM 1-RTT round trip\n")
+	sealed, err := sealRecord(cliAppWrite, 0, recTypeAppData, payload)
+	if err != nil {
+		t.Fatalf("seal request: %v", err)
+	}
+	if err := writeRecord(conn, recTypeAppData, sealed); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	// Read records: skip post-handshake NewSessionTicket(s) (handshake content
+	// type) until the application-data echo arrives, then verify it. s_server
+	// -rev is line-oriented: it strips the trailing newline, reverses the line
+	// bytes, and re-appends a newline.
+	var srvAppReadSeq uint64
+	line := payload[:len(payload)-1] // drop the delimiter newline
+	expected := append(reversed(line), '\n')
+	for i := 0; i < 8; i++ {
+		rtype, frag, err := readRecord(conn)
+		if err != nil {
+			dumpServerLog(t, srvLog)
+			t.Fatalf("read echo: %v", err)
+		}
+		plaintext, err := openRecord(srvAppRead, srvAppReadSeq, rtype, frag)
+		srvAppReadSeq++
+		if err != nil {
+			t.Fatalf("open echo record[%d]: %v", i, err)
+		}
+		if len(plaintext) == 0 {
+			continue
+		}
+		contentType := plaintext[len(plaintext)-1]
+		content := plaintext[:len(plaintext)-1]
+		if contentType == recTypeHandshake {
+			continue // NewSessionTicket
+		}
+		if !bytesEqual(content, expected) {
+			t.Fatalf("echo mismatch:\n got  %q\n want %q", content, expected)
+		}
+		return
+	}
+	t.Fatal("no application-data echo received")
+}
+
+func reversed(b []byte) []byte {
+	out := make([]byte, len(b))
+	for i := range b {
+		out[i] = b[len(b)-1-i]
+	}
+	return out
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func hexEncode(b []byte) string {
+	const h = "0123456789abcdef"
+	out := make([]byte, len(b)*2)
+	for i, v := range b {
+		out[i*2] = h[v>>4]
+		out[i*2+1] = h[v&0xf]
+	}
+	return string(out)
 }

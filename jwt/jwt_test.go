@@ -3,6 +3,7 @@ package jwt
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -56,8 +57,7 @@ func TestHS512_RoundTrip(t *testing.T) {
 func TestHS256_RejectsTamperedToken(t *testing.T) {
 	sv := mustHS256(t, "iss")
 	token, _ := sv.Sign(&jwt.RegisteredClaims{Subject: "orig"})
-	// Flip the last char of the signature segment.
-	tampered := token[:len(token)-1] + "X"
+	tampered := tamperSignature(t, token)
 	if err := sv.Verify(tampered, &jwt.RegisteredClaims{}); err == nil {
 		t.Error("Verify accepted a tampered token")
 	}
@@ -188,10 +188,30 @@ func TestSM2SM3_RejectsTamperedToken(t *testing.T) {
 	priv, pub := newTestSM2Key(t)
 	sv, _ := NewSM2SM3(priv, pub, "")
 	token, _ := sv.Sign(&jwt.RegisteredClaims{Subject: "orig"})
-	tampered := token[:len(token)-1] + "Z"
+	tampered := tamperSignature(t, token)
 	if err := sv.Verify(tampered, &jwt.RegisteredClaims{}); err == nil {
 		t.Error("SM2 verifier accepted a tampered token")
 	}
+}
+
+// tamperSignature flips the first byte of the base64url-decoded signature
+// segment and re-encodes it, guaranteeing a byte-level change. This replaces
+// the previous "flip the last base64 char" approach, which silently no-oped
+// ~7% of the time because the trailing base64 char carries bits outside the
+// signature's byte boundary (SM2 ASN.1 length is not always 6-bit aligned).
+func tamperSignature(t *testing.T, token string) string {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token has %d parts, want 3", len(parts))
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(sig) == 0 {
+		t.Fatalf("decode signature segment: err=%v len=%d", err, len(sig))
+	}
+	sig[0] ^= 0xFF // flip all bits of the first byte — guaranteed to change it
+	parts[2] = base64.RawURLEncoding.EncodeToString(sig)
+	return parts[0] + "." + parts[1] + "." + parts[2]
 }
 
 func TestSM2SM3_RejectsDifferentKey(t *testing.T) {

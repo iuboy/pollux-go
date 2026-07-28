@@ -81,6 +81,36 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Conn, error) {
 	return &Conn{inner: qc}, nil
 }
 
+// DialEarly establishes a GM QUIC connection and returns it before the
+// handshake completes, enabling 0-RTT. The client must carry a ResumptionPSK
+// (from a prior connection's NewSessionTicket) to attempt 0-RTT; data written
+// before the handshake completes is sent as 0-RTT and accepted only if the
+// server is configured with AllowEarlyData + a valid AntiReplayCache.
+func DialEarly(ctx context.Context, cfg ClientConfig) (*Conn, error) {
+	clientCfg, err := cfg.tls13ClientConfig()
+	if err != nil {
+		return nil, err
+	}
+	udpAddr, err := net.ResolveUDPAddr("udp", cfg.Addr)
+	if err != nil {
+		return nil, err
+	}
+	udpConn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return nil, err
+	}
+	qc, err := quic.DialEarly(ctx, udpConn, udpAddr, &tls.Config{}, &quic.Config{
+		GMSM4GCM:          true,
+		GMHandshakeConfig: &quic.GMHandshakeConfig{Client: clientCfg},
+		MaxIdleTimeout:    cfg.idleTimeout(),
+	})
+	if err != nil {
+		udpConn.Close()
+		return nil, err
+	}
+	return &Conn{inner: qc}, nil
+}
+
 // OpenStream opens a new bidirectional stream.
 func (c *Conn) OpenStream(ctx context.Context) (*quic.Stream, error) {
 	return c.inner.OpenStreamSync(ctx)

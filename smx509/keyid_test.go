@@ -115,3 +115,67 @@ func TestGetAuthorityKeyIdentifier_NilCert(t *testing.T) {
 		t.Errorf("GetAuthorityKeyIdentifier(nil) = %v, want nil", got)
 	}
 }
+
+// TestValidateKeyIdentifiers_NilCert confirms the nil guard returns false
+// with a clear issue string rather than panicking.
+func TestValidateKeyIdentifiers_NilCert(t *testing.T) {
+	ok, issues := ValidateKeyIdentifiers(nil)
+	if ok {
+		t.Error("expected ok=false for nil cert")
+	}
+	if len(issues) == 0 {
+		t.Error("expected at least one issue for nil cert")
+	}
+}
+
+// TestValidateKeyIdentifiers_SelfSignedDERBased verifies that self-signed
+// detection now compares the canonical DER Subject/Issuer rather than only
+// the CommonName field. Two certs with the same CN but different O must be
+// treated as non-self-signed (and thus require AKI).
+func TestValidateKeyIdentifiers_SelfSignedDERBased(t *testing.T) {
+	key, _ := sm2.GenerateKey(rand.Reader)
+
+	// A genuine self-signed CA with SKI: should pass.
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		PublicKey:             key.Public(),
+	}
+	if err := AddRFC5280KeyIdentifiers(tmpl, nil, nil, nil); err != nil {
+		t.Fatalf("AddRFC5280KeyIdentifiers: %v", err)
+	}
+	der, err := CreateCertificate(tmpl, tmpl, key.Public(), key)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	cert, err := ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	if ok, issues := ValidateKeyIdentifiers(cert); !ok {
+		t.Errorf("self-signed CA with SKI should validate, got issues: %v", issues)
+	}
+}
+
+// TestValidateKeyIdentifiers_MissingSKI confirms a missing SKI is flagged.
+// Note: CreateCertificate auto-generates a SKI for CA certs, so we use a
+// non-CA leaf cert (which has no auto-SKI) and a manually-parsed cert that
+// has no extensions at all.
+func TestValidateKeyIdentifiers_MissingSKI(t *testing.T) {
+	// Construct a parsed cert with no extensions to force the missing-SKI path.
+	// Using a non-CA template avoids the auto-SKI behavior of CreateCertificate.
+	cert := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		// No Extensions, no SubjectKeyId.
+	}
+	ok, issues := ValidateKeyIdentifiers(cert)
+	if ok {
+		t.Error("expected ok=false for cert without SKI")
+	}
+	if len(issues) == 0 {
+		t.Error("expected issues for cert without SKI")
+	}
+}

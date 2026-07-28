@@ -9,9 +9,9 @@ import (
 
 // RFC 5280 §4.2.2.1 Authority Information Access OIDs.
 var (
-	OIDAuthorityInfoAccess    = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 1}
-	OIDAIAOCSP                = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1}
-	OIDAIACAIssuers           = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 2}
+	OIDAuthorityInfoAccess = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 1}
+	OIDAIAOCSP             = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1}
+	OIDAIACAIssuers        = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 2}
 )
 
 // aiaAccessDescription mirrors RFC 5280 AccessDescription.

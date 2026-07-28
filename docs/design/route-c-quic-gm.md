@@ -309,6 +309,7 @@ next_keys   = DeriveQUICPacketKeys(next_secret)
 | 6b | TLS 1.3 GM 握手引擎（消息层 + transcript + 状态机）→ 三级密钥切换；quicgm CRYPTO frame + Handshake/1-RTT 包变体 | P3 | ✅ 已完成 |
 | 6c | packet-number 截断编解码（Choose/Truncate/Decode，RFC 9000 §17.1） | P3 | ✅ 已完成 |
 | 7 | 性能基准测试（对比 AES-128-GCM） | P3 | ✅ 已完成 |
+| 8 | BabaSSL/Tongsuo 互操作验证（1-RTT 握手 + 应用数据回显 + PSK resumption） | P4 | ✅ 已完成（见 [互通矩阵](../security/interop-matrix.md)） |
 
 ### 9.1 性能基线（Apple M5, darwin/arm64, go 1.26, benchtime=2s）
 

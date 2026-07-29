@@ -706,4 +706,3 @@ func TestZero_DoesNotClearTransportTrafficSecrets(t *testing.T) {
 		t.Errorf("Zero() cleared the transport traffic secret (alias bug): before=%x after=%x", before, after)
 	}
 }
-

@@ -79,4 +79,3 @@ func TestModeTLS_NotZeroValueAndExplicitSelect(t *testing.T) {
 		t.Errorf("DetectMode with ModeUnset and nil cert = %v, want ModeTLS (auto-detect default)", got)
 	}
 }
-

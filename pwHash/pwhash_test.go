@@ -411,4 +411,3 @@ func TestArgon2id_RejectsMemoryBelowRFC9106FloorAtOverflowParallelism(t *testing
 		})
 	}
 }
-

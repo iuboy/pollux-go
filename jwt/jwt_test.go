@@ -447,4 +447,3 @@ func TestNewSM2SM3SigningMethod(t *testing.T) {
 		t.Errorf("Verify with custom-UID method failed: %v", err)
 	}
 }
-

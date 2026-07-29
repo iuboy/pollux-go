@@ -1,7 +1,6 @@
 package tls13gm
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/iuboy/pollux-go/sm3"
@@ -17,22 +16,20 @@ type FinishedMsg struct {
 func (*FinishedMsg) msgType() uint8 { return HandshakeTypeFinished }
 
 func (m *FinishedMsg) marshalBody() ([]byte, error) {
-	if len(m.VerifyData) == 0 {
-		return nil, errors.New("tls13gm: Finished verify_data is empty")
+	if len(m.VerifyData) != sm3.Size {
+		return nil, fmt.Errorf("tls13gm: Finished verify_data length %d != Hash.length (%d)", len(m.VerifyData), sm3.Size)
 	}
 	return append([]byte(nil), m.VerifyData...), nil
 }
 
 func (m *FinishedMsg) unmarshalBody(b []byte) error {
-	if len(b) == 0 {
-		return errors.New("tls13gm: Finished verify_data is empty")
-	}
-	// RFC 8446 §4.4.4: verify_data length is Hash.length (HMAC output) for the
-	// negotiated cipher suite. For SM4-GCM/SM3 this is sm3.Size (32). Cap at a
-	// small multiple to reject memory-exhaustion attempts via oversized Finished
-	// messages while tolerating future hash sizes.
-	if len(b) > 4*sm3.Size {
-		return fmt.Errorf("tls13gm: Finished verify_data length %d exceeds 4*Hash.length", len(b))
+	// RFC 8446 §4.4.4: verify_data length is exactly Hash.length for the
+	// negotiated cipher suite. For SM4-GCM/SM3 this is sm3.Size (32). Require an
+	// exact match rather than the previous "4×Hash.length" upper bound, which
+	// accepted malformed Finished messages up to 128 bytes and only let them be
+	// rejected later by the Finished HMAC check.
+	if len(b) != sm3.Size {
+		return fmt.Errorf("tls13gm: Finished verify_data length %d != Hash.length (%d)", len(b), sm3.Size)
 	}
 	m.VerifyData = append([]byte(nil), b...)
 	return nil

@@ -651,3 +651,59 @@ func TestHandshake_EarlyTrafficKeys(t *testing.T) {
 			ck.AEADKey, ck.AEADIV, ck.HeaderKey, sk.AEADKey, sk.AEADIV, sk.HeaderKey)
 	}
 }
+
+// TestZero_DoesNotClearTransportTrafficSecrets is a regression test for the
+// slice-aliasing bug: HandleServerHello previously stored c.clientHSTraffic
+// directly into c.secrets.ClientHandshakeTrafficSecret (same backing array), so
+// ClientHandshaker.Zero() — which zeroes clientHSTraffic to bound its lifetime
+// — also wiped the transport layer's traffic secret, violating the documented
+// "Zero does NOT zero the raw traffic secrets" contract.
+//
+// With the fix the secret is copied, so Zero() leaves the transport-owned
+// traffic secrets intact. This runs a real handshake (not the hand-built
+// HandshakeSecrets of TestHandshakeSecrets_ZeroAll, which could not catch the
+// alias because its slices were independent).
+func TestZero_DoesNotClearTransportTrafficSecrets(t *testing.T) {
+	dcid := []byte{0x07, 0x08, 0x09, 0x0a}
+
+	// Run one full handshake with a live client handshaker we can Zero() and
+	// then inspect. driveFullHandshake is not used here because it returns only
+	// the final HandshakeSecrets snapshot, not the live handshaker.
+	cert, serverKey := generateTestSM2Cert(t)
+	server, err := NewServerHandshaker(dcid, cert, serverKey)
+	if err != nil {
+		t.Fatalf("NewServerHandshaker: %v", err)
+	}
+	client, err := NewClientHandshaker(dcid, cert)
+	if err != nil {
+		t.Fatalf("NewClientHandshaker: %v", err)
+	}
+	ch, _ := client.ClientHello()
+	if err := server.HandleClientHello(ch); err != nil {
+		t.Fatalf("server HandleClientHello: %v", err)
+	}
+	sh, ee, certMsg, cv, fin, _ := server.ServerFlight()
+	if err := client.HandleServerHello(sh); err != nil {
+		t.Fatalf("HandleServerHello: %v", err)
+	}
+	_ = client.HandleEncryptedExtensions(ee)
+	_ = client.HandleCertificate(certMsg)
+	_ = client.HandleCertificateVerify(cv)
+	_ = client.HandleServerFinished(fin)
+
+	before := append([]byte(nil), client.Secrets().ClientHandshakeTrafficSecret...)
+	if len(before) != sm3.Size {
+		t.Fatalf("traffic secret not derived: len=%d", len(before))
+	}
+	// Client and server must agree on the handshake traffic secret before Zero.
+	if serverWant := server.Secrets().ClientHandshakeTrafficSecret; !bytes.Equal(before, serverWant) {
+		t.Fatalf("client/server traffic secret mismatch before Zero: client=%x server=%x", before, serverWant)
+	}
+
+	client.Zero()
+	after := client.Secrets().ClientHandshakeTrafficSecret
+	if !bytes.Equal(before, after) {
+		t.Errorf("Zero() cleared the transport traffic secret (alias bug): before=%x after=%x", before, after)
+	}
+}
+

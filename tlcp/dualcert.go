@@ -103,6 +103,9 @@ func LoadDualCertPairFromPEM(signCertPEM, signKeyPEM, encCertPEM, encKeyPEM []by
 // ValidateDualCertPair validates the dual certificate pair.
 // Checks: certificate type, key usage, issuer consistency, validity period.
 func ValidateDualCertPair(pair *DualCertPair) error {
+	if pair == nil {
+		return errors.New("tlcp: dual cert pair is nil")
+	}
 	if pair.SignCert == nil {
 		return errSignCertMissing
 	}
@@ -134,7 +137,12 @@ func ValidateTLCPCertificate(cert *x509.Certificate, isSignCert bool) error {
 		return errInvalidCertPair
 	}
 
-	// Verify SM2 certificate
+	// Verify SM2 certificate. Guard against a typed-nil public key (e.g.
+	// (*ecdsa.PublicKey)(nil) produced by x509 for an unsupported curve), which
+	// would otherwise panic inside IsSM2PublicKey's type assertion.
+	if cert.PublicKey == nil {
+		return errors.New("tlcp: certificate public key is nil")
+	}
 	if !polluxSmx509.IsSM2PublicKey(cert.PublicKey) {
 		return errNotSM2Certificate
 	}

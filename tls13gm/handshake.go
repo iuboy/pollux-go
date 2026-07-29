@@ -524,8 +524,16 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 	if c.secrets.ServerHandshakeKeys, err = DeriveQUICPacketKeys(c.serverHSTraffic); err != nil {
 		return err
 	}
-	c.secrets.ClientHandshakeTrafficSecret = c.clientHSTraffic
-	c.secrets.ServerHandshakeTrafficSecret = c.serverHSTraffic
+	// Copy the traffic secrets into the transport-facing HandshakeSecrets rather
+	// than aliasing them. Zero() zeroes the local clientHSTraffic/serverHSTraffic
+	// buffers to bound the lifetime of these handshake-only secrets; if the
+	// secrets struct aliased the same backing arrays, that Zero would also wipe
+	// the transport layer's copies (violating the documented "Zero does NOT zero
+	// the raw traffic secrets" contract). DeriveQUICPacketKeys already produced
+	// independent key material above; the traffic-secret fields need the same
+	// treatment.
+	c.secrets.ClientHandshakeTrafficSecret = append([]byte(nil), c.clientHSTraffic...)
+	c.secrets.ServerHandshakeTrafficSecret = append([]byte(nil), c.serverHSTraffic...)
 	c.phase = clientAfterServerHello
 	return nil
 }
@@ -1156,8 +1164,12 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	if s.secrets.ServerHandshakeKeys, err = DeriveQUICPacketKeys(s.serverHSTraffic); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	s.secrets.ClientHandshakeTrafficSecret = s.clientHSTraffic
-	s.secrets.ServerHandshakeTrafficSecret = s.serverHSTraffic
+	// Copy (not alias) the traffic secrets into the transport-facing
+	// HandshakeSecrets — see the matching comment in HandleServerHello. Zero()
+	// wipes the local clientHSTraffic/serverHSTraffic buffers; aliasing would
+	// let that wipe the transport layer's copies too.
+	s.secrets.ClientHandshakeTrafficSecret = append([]byte(nil), s.clientHSTraffic...)
+	s.secrets.ServerHandshakeTrafficSecret = append([]byte(nil), s.serverHSTraffic...)
 
 	// --- EncryptedExtensions (carries QUIC transport params if configured) ---
 	ee := &EncryptedExtensionsMsg{}

@@ -7,6 +7,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
+	"fmt"
 	"math/big"
 	"time"
 
@@ -135,6 +136,12 @@ func createSM2OCSPResponse(issuer, responderCert *x509.Certificate, template ocs
 			RevocationTime: template.RevokedAt.UTC(),
 			Reason:         asn1.Enumerated(template.RevocationReason),
 		}
+	default:
+		// An unrecognized status would otherwise silently produce a response with
+		// all status fields zeroed — an invalid OCSP response that downstream
+		// parsers interpret unpredictably. Fail explicitly, mirroring
+		// x/crypto/ocsp.CreateResponse's "unknown OCSP status" handling.
+		return nil, fmt.Errorf("smx509: unknown OCSP status %d", template.Status)
 	}
 
 	rawResponderID := asn1.RawValue{

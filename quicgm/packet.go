@@ -17,12 +17,25 @@ import (
 // Safety: a QUICPacketProtector is safe for concurrent use. EncryptPayload,
 // DecryptPayload, ApplyHeaderProtection, and RemoveHeaderProtection each acquire
 // a short-lived mutex to serialize AEAD and HP block operations.
+//
+// Once Zero has been called the protector is unusable: every public method
+// returns a distinct error rather than panicking on the nil AEAD/HP block.
 type QUICPacketProtector struct {
 	mu      sync.Mutex
 	keys    *tls13gm.QUICPacketKeys
 	aead    *tls13gm.AEAD
 	hpBlock cipher.Block // SM4-ECB for header protection; created once, reused per packet
 }
+
+// sm4GCMTagSize is the fixed authentication-tag length for SM4-GCM (16 bytes,
+// per GCM). Exposed as a constant so TagSize() need not touch the AEAD after
+// Zero() nils it, and so callers sizing buffers don't depend on a live AEAD.
+const sm4GCMTagSize = 16
+
+// errZeroedProtector is returned by every public method after Zero() has
+// dropped the AEAD/HP block, so callers get a clear error instead of a
+// nil-pointer panic.
+var errZeroedProtector = errors.New("quicgm: packet protector has been zeroed")
 
 // NewQUICPacketProtector derives packet protection keys from a QUIC traffic
 // secret (RFC 9001 §5.1) and constructs a protector.
@@ -70,6 +83,9 @@ func NewQUICPacketProtectorFromKeys(keys *tls13gm.QUICPacketKeys) (*QUICPacketPr
 func (p *QUICPacketProtector) EncryptPayload(pn uint64, header, payload []byte) ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.aead == nil {
+		return nil, errZeroedProtector
+	}
 	return p.aead.Seal(pn, payload, header)
 }
 
@@ -78,6 +94,9 @@ func (p *QUICPacketProtector) EncryptPayload(pn uint64, header, payload []byte) 
 func (p *QUICPacketProtector) DecryptPayload(pn uint64, header, ciphertext []byte) ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.aead == nil {
+		return nil, errZeroedProtector
+	}
 	return p.aead.Open(pn, ciphertext, header)
 }
 
@@ -91,6 +110,9 @@ func (p *QUICPacketProtector) DecryptPayload(pn uint64, header, ciphertext []byt
 func (p *QUICPacketProtector) ApplyHeaderProtection(buffer []byte, pnOffset, pnLen int, isLongHeader bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.hpBlock == nil {
+		return errZeroedProtector
+	}
 	if err := validateHeaderArgs(buffer, pnOffset, pnLen); err != nil {
 		return err
 	}
@@ -110,6 +132,9 @@ func (p *QUICPacketProtector) ApplyHeaderProtection(buffer []byte, pnOffset, pnL
 func (p *QUICPacketProtector) RemoveHeaderProtection(buffer []byte, pnOffset int, isLongHeader bool) (uint64, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.hpBlock == nil {
+		return 0, errZeroedProtector
+	}
 	if pnOffset < 1 || pnOffset >= len(buffer) {
 		return 0, fmt.Errorf("quicgm: packet number offset %d out of range for buffer length %d", pnOffset, len(buffer))
 	}
@@ -128,12 +153,39 @@ func (p *QUICPacketProtector) RemoveHeaderProtection(buffer []byte, pnOffset int
 	return decodePacketNumber(buffer[pnOffset : pnOffset+pnLen]), nil
 }
 
-// Keys returns the packet protection keys. To perform a key update, derive the
-// next secret with tls13gm.QUICKeyUpdate and construct a new protector.
-func (p *QUICPacketProtector) Keys() *tls13gm.QUICPacketKeys { return p.keys }
+// Keys returns a deep copy of the packet protection keys. To perform a key
+// update, derive the next secret with tls13gm.QUICKeyUpdate and construct a new
+// protector.
+//
+// The copy is deliberate: returning the internal pointer would let callers
+// mutate the protector's keys and race a concurrent Zero(). The returned keys
+// are independent — callers own their lifetime (including zeroing them) and the
+// protector's Zero() still zeroes its own copy.
+func (p *QUICPacketProtector) Keys() *tls13gm.QUICPacketKeys {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.keys == nil {
+		return nil
+	}
+	// copyBytes(nil) stays nil (not an empty non-nil slice), so a post-Zero()
+	// call mirrors the source's nil fields exactly.
+	copyBytes := func(b []byte) []byte {
+		if b == nil {
+			return nil
+		}
+		return append([]byte(nil), b...)
+	}
+	return &tls13gm.QUICPacketKeys{
+		AEADKey:   copyBytes(p.keys.AEADKey),
+		AEADIV:    copyBytes(p.keys.AEADIV),
+		HeaderKey: copyBytes(p.keys.HeaderKey),
+	}
+}
 
 // TagSize returns the AEAD authentication-tag size in bytes (16 for SM4-GCM).
-func (p *QUICPacketProtector) TagSize() int { return p.aead.Overhead() }
+// It returns the fixed constant so it remains valid even after Zero() has
+// dropped the AEAD, rather than panicking on a nil AEAD.
+func (p *QUICPacketProtector) TagSize() int { return sm4GCMTagSize }
 
 // Zero securely zeroes the protector's key material. The underlying QUICPacketKeys
 // are zeroed, and the AEAD/block cipher references are dropped.

@@ -348,18 +348,22 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	// 10. Send CCS + client Finished (buffered, then flushed).
 	c.buffering.Store(true)
 	if err := c.writeRecord(tlcpRecordChangeCipherSpec, []byte{1}); err != nil {
+		zeroBytes(masterSecret) // mirror clientResumeHandshake: clear secret on every error path
 		return err
 	}
 	finished := &tlcpFinishedMsg{verifyData: transcript.clientSum(masterSecret)}
 	if err := c.writeHandshakeRecord(finished, transcript); err != nil {
+		zeroBytes(masterSecret)
 		return err
 	}
 	if err := c.flush(); err != nil {
+		zeroBytes(masterSecret)
 		return err
 	}
 
 	// 11. Read server CCS + Finished.
 	if err := c.readServerCCSAndFinished(transcript, masterSecret); err != nil {
+		zeroBytes(masterSecret)
 		return err
 	}
 

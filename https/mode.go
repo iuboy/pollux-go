@@ -11,8 +11,16 @@ import (
 type Mode int
 
 const (
+	// ModeUnset is the zero value of Mode and means "not configured" — the
+	// builder falls back to auto-detection via DetectMode. It is NOT a usable
+	// protocol mode; the named modes start at 1 so the zero value cannot be
+	// confused with an explicit ModeTLS selection (the previous iota-from-0
+	// design made `opts.Mode = ModeTLS` indistinguishable from "left unset",
+	// silently overriding an explicit TLS choice with detected TLCP).
+	ModeUnset Mode = iota
+
 	// ModeTLS uses standard crypto/tls.
-	ModeTLS Mode = iota
+	ModeTLS
 
 	// ModeTLCP uses the national TLCP protocol (GB/T 38636-2020)
 	// with dual certificate pairs (sign + encrypt).
@@ -26,6 +34,8 @@ const (
 // String returns a human-readable name for the mode.
 func (m Mode) String() string {
 	switch m {
+	case ModeUnset:
+		return "Unset"
 	case ModeTLS:
 		return "TLS"
 	case ModeTLCP:

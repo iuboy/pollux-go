@@ -152,19 +152,28 @@ func (p Argon2idParams) validateDecoded(saltLen, keyLen int) error {
 		return fmt.Errorf("%w: memory must be positive", ErrMalformedHash)
 	case p.Iterations == 0:
 		return fmt.Errorf("%w: iterations must be positive", ErrMalformedHash)
+	case p.Iterations > maxArgon2Iteration:
+		return fmt.Errorf("%w: iterations exceed safe upper bound", ErrMalformedHash)
 	case p.Parallelism == 0:
 		return fmt.Errorf("%w: parallelism must be positive", ErrMalformedHash)
-	case p.Memory < uint32(8*p.Parallelism):
+	case p.Memory < uint32(p.Parallelism)*8:
 		// RFC 9106 §3: memory MUST be ≥ 8*p; golang.org/x/crypto/argon2 panics
 		// on memory < threads*2 (its own lower bound). Enforce the RFC floor so
 		// attacker-crafted PHC strings cannot reach the panic path.
-		return fmt.Errorf("%w: memory %d KiB below RFC 9106 minimum (8*parallelism=%d)", ErrMalformedHash, p.Memory, 8*p.Parallelism)
+		//
+		// NOTE: compute 8*p in uint32, NOT uint8. p.Parallelism is uint8, so the
+		// literal `8*p.Parallelism` evaluates in uint8 and overflows to 0 once
+		// parallelism ≥ 32 — silently disabling this check and letting an
+		// attacker-crafted PHC with tiny memory reach argon2.IDKey.
+		return fmt.Errorf("%w: memory %d KiB below RFC 9106 minimum (8*parallelism=%d)", ErrMalformedHash, p.Memory, uint32(p.Parallelism)*8)
 	case p.Memory > maxArgon2Memory:
 		return fmt.Errorf("%w: memory %d KiB exceeds safe upper bound", ErrMalformedHash, p.Memory)
 	case p.Parallelism > maxArgon2Parallelism:
 		return fmt.Errorf("%w: parallelism %d exceeds safe upper bound", ErrMalformedHash, p.Parallelism)
 	case keyLen == 0:
 		return fmt.Errorf("%w: hash must be non-empty", ErrMalformedHash)
+	case keyLen > maxKeyLength:
+		return fmt.Errorf("%w: key length exceeds safe upper bound", ErrMalformedHash)
 	case saltLen < minSaltLength:
 		return fmt.Errorf("%w: salt too short", ErrMalformedHash)
 	}

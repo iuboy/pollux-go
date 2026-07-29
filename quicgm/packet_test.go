@@ -229,3 +229,66 @@ func TestZero(t *testing.T) {
 		t.Error("Zero should nil out all key material")
 	}
 }
+
+// TestZeroedProtectorDoesNotPanic is a regression test for a nil-pointer panic
+// after Zero(): Zero() drops p.aead/p.hpBlock, so any subsequent public method
+// used to dereference them and panic. Each method must now return a distinct
+// error (errZeroedProtector) instead. TagSize stays usable (returns the fixed
+// SM4-GCM constant) since it must not depend on the live AEAD.
+func TestZeroedProtectorDoesNotPanic(t *testing.T) {
+	p, _ := NewQUICPacketProtector(testSecret())
+	p.Zero()
+
+	if got := p.TagSize(); got != sm4GCMTagSize {
+		t.Errorf("TagSize() after Zero = %d, want %d (fixed constant)", got, sm4GCMTagSize)
+	}
+
+	// None of these must panic; each must return an error.
+	checkErr := func(name string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Errorf("%s after Zero: expected error, got nil", name)
+		}
+	}
+	checkErr("EncryptPayload", wrapErr2(p.EncryptPayload(1, []byte("h"), []byte("p"))))
+	checkErr("DecryptPayload", wrapErr2(p.DecryptPayload(1, []byte("h"), []byte("p"))))
+	buf := buildPacketBuffer(0xC3, 6, 1)
+	checkErr("ApplyHeaderProtection", p.ApplyHeaderProtection(buf, 6, 4, true))
+	_, err := p.RemoveHeaderProtection(buf, 6, true)
+	checkErr("RemoveHeaderProtection", err)
+}
+
+// wrapErr2 adapts the (_, error) return shape so checkErr can test for an error.
+func wrapErr2(_ any, err error) error { return err }
+
+// TestKeys_ReturnsIndependentCopy is a regression test for the aliasing race:
+// Keys() previously returned the protector's internal *QUICPacketKeys pointer,
+// so a caller mutating the returned slices (or a concurrent Zero()) would
+// corrupt the protector's state. With the deep-copy fix the returned keys are
+// independent — mutating them must not affect the protector, and Zero()'ing the
+// copy must not affect the protector's keys either.
+func TestKeys_ReturnsIndependentCopy(t *testing.T) {
+	p := mustNewProtector(t)
+	defer p.Zero()
+
+	orig := p.Keys()
+	if orig == nil || len(orig.AEADKey) != 16 {
+		t.Fatalf("Keys() = %+v, want non-nil 16-byte AEADKey", orig)
+	}
+
+	// Snapshot the protector's view for later comparison.
+	snap := p.Keys()
+
+	// Mutate the returned copy — the protector must be unaffected.
+	for i := range orig.AEADKey {
+		orig.AEADKey[i] ^= 0xFF
+	}
+	orig.AEADIV[0] ^= 0xFF
+	orig.HeaderKey[0] ^= 0xFF
+
+	after := p.Keys()
+	if !bytes.Equal(after.AEADKey, snap.AEADKey) || !bytes.Equal(after.AEADIV, snap.AEADIV) || !bytes.Equal(after.HeaderKey, snap.HeaderKey) {
+		t.Error("mutating Keys() copy corrupted the protector's internal keys (alias bug)")
+	}
+}
+

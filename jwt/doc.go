@@ -30,10 +30,10 @@
 // [github.com/iuboy/pollux-go/gmstd.DefaultSM2UserID] for both sign and verify
 // so the two ends interoperate by default.
 //
-// The user ID is currently fixed at package init time on the singleton
-// SigningMethodSM2SM3; there is no public API to override it. Callers that
-// need a non-default user ID must construct and register a distinct
-// SigningMethod under a different alg name.
+// The user ID is fixed at package init time on the singleton
+// SigningMethodSM2SM3. Callers that need a non-default user ID should call
+// [NewSM2SM3SigningMethod] to obtain a distinct SigningMethod and register it
+// under a different alg name (signingMethodSM2SM3 is unexported).
 //
 // # Key formats
 //

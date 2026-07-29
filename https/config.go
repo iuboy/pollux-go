@@ -131,7 +131,7 @@ func (o *ServerOptions) LoadTLSCertificate(certFile, keyFile string) error {
 
 // DetectMode returns the effective mode, auto-detecting if needed.
 func (o *ServerOptions) DetectMode() Mode {
-	if o.Mode != 0 {
+	if o.Mode != ModeUnset {
 		return o.Mode
 	}
 	return DetectMode(o.SignCert)
@@ -186,11 +186,31 @@ func (o *ServerOptions) buildTLSConfig() (*tls.Config, error) {
 }
 
 func loadSM2KeyPair(certPEM, keyPEM []byte) (*tls.Certificate, error) {
-	certBlock, _ := pem.Decode(certPEM)
-	if certBlock == nil {
+	// Collect ALL CERTIFICATE PEM blocks so a chain (leaf + intermediates) is
+	// preserved. Previously only the first block was decoded, dropping any
+	// intermediate CA certs and breaking handshakes against peers that only
+	// trust the issuing root.
+	var chain [][]byte
+	var leafDER []byte
+	rest := certPEM
+	for {
+		block, r := pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		rest = r
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		if leafDER == nil {
+			leafDER = block.Bytes
+		}
+		chain = append(chain, block.Bytes)
+	}
+	if len(chain) == 0 {
 		return nil, errors.New("pollux/https: failed to decode cert PEM")
 	}
-	polluxCert, err := polluxCert.ParseCertificate(certBlock.Bytes)
+	polluxCert, err := polluxCert.ParseCertificate(leafDER)
 	if err != nil {
 		return nil, fmt.Errorf("pollux/https: failed to parse SM2 certificate: %w", err)
 	}
@@ -198,7 +218,7 @@ func loadSM2KeyPair(certPEM, keyPEM []byte) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Verify the private key matches the certificate's public key.
+	// Verify the private key matches the leaf certificate's public key.
 	certPub, ok := polluxCert.PublicKey.(*polluxSm2.PublicKey)
 	if !ok {
 		return nil, errors.New("pollux/https: SM2 certificate public key type mismatch")
@@ -208,7 +228,7 @@ func loadSM2KeyPair(certPEM, keyPEM []byte) (*tls.Certificate, error) {
 		return nil, errors.New("pollux/https: private key does not match certificate's public key")
 	}
 	return &tls.Certificate{
-		Certificate: [][]byte{certBlock.Bytes},
+		Certificate: chain,
 		PrivateKey:  key,
 	}, nil
 }

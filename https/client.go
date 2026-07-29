@@ -43,7 +43,7 @@ func NewClient(opts *ClientOptions) (*http.Client, error) {
 		return nil, errors.New("pollux/https: nil client options")
 	}
 	mode := opts.Mode
-	if mode == 0 {
+	if mode == ModeUnset {
 		mode = DetectMode(opts.SignCert)
 	}
 

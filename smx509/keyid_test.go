@@ -57,9 +57,12 @@ func TestGenerateAuthorityKeyIdentifier_NilKey(t *testing.T) {
 }
 
 func TestCreateSubjectKeyIdentifierExtension_Empty(t *testing.T) {
-	ext := CreateSubjectKeyIdentifierExtension(nil)
+	ext, err := CreateSubjectKeyIdentifierExtension(nil)
+	if err != nil {
+		t.Fatalf("empty keyID: unexpected error %v", err)
+	}
 	if ext.Id != nil {
-		t.Error("empty keyID should produce zero-value Extension")
+		t.Error("empty keyID should produce zero-value Extension (Id==nil)")
 	}
 }
 

@@ -440,7 +440,16 @@ func (c *tlcpConn) NetConn() net.Conn { return c.rawConn }
 
 // ConnectionState returns the negotiated security parameters. Peer certificates
 // are parsed from their DER via polluxsmx509 (SM2-aware).
+//
+// It acquires handshakeMutex so the reads of vers/cipherSuite/serverName/
+// peerCertificates establish a happens-before relationship with the handshake
+// that writes them (Handshake holds handshakeMutex throughout). This matches
+// crypto/tls.Conn.ConnectionState, which also locks. A concurrent in-flight
+// handshake will block this call until the handshake finishes — the intended
+// behavior, since ConnectionState is only meaningful post-handshake.
 func (c *tlcpConn) ConnectionState() tlcpEngineConnectionState {
+	c.handshakeMutex.Lock()
+	defer c.handshakeMutex.Unlock()
 	st := tlcpEngineConnectionState{
 		Version:           c.vers,
 		HandshakeComplete: atomic.LoadUint32(&c.handshakeStatus) == 1,
@@ -712,7 +721,16 @@ func (c *tlcpConn) readHandshake(transcript *tlcpFinishedHash) ([]byte, error) {
 }
 
 // flush sends all buffered records.
+//
+// It holds c.out.mu while touching c.sendBuf: writeRecord's buffering branch
+// (engine_conn.go) appends to c.sendBuf under c.out.mu, and Close()'s alert
+// goroutine can run concurrently with a handshake flush. Without this lock the
+// two would race on the bytes.Buffer. flush is never invoked from a path that
+// already holds out.mu (writeRecord's buffering branch returns without calling
+// flush), so acquiring it here cannot deadlock.
 func (c *tlcpConn) flush() error {
+	c.out.mu.Lock()
+	defer c.out.mu.Unlock()
 	if c.sendBuf.Len() == 0 {
 		return nil
 	}

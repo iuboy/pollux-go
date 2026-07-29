@@ -14,6 +14,9 @@ GEMINI.md
 .github/copilot-instructions.md
 .zcode/
 
+# OS-generated files
+.DS_Store
+
 # Test coverage artifacts
 coverage.out
 coverage.html

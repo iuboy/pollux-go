@@ -9,7 +9,7 @@
 //
 // This package covers:
 //   - Parsing (ParseCertificate, ParseCertificatePEM, ParseCertificatesPEM)
-//   - Verification (Verify, VerifyDualCerts)
+//   - Verification (VerifyCertificate, VerifyDualCertificate)
 //   - Pool management (NewPool, Pool.AddCert, Pool.AppendCertsFromPEM)
 //   - Loading from PEM/file (LoadKeyPairPEM, LoadDualCertificatePEM, etc.)
 //   - Standard/TLS config building (BuildClientTLSConfig, BuildServerTLSConfig,

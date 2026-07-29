@@ -3,6 +3,7 @@ package smx509
 import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"fmt"
 	"time"
 )
 
@@ -61,49 +62,50 @@ var (
 
 // CreateCRLReasonExtension builds a CRLReason extension (RFC 5280 §5.3.1).
 // The extension is non-critical.
-func CreateCRLReasonExtension(reason CRLReason) pkix.Extension {
+//
+// Returns an error (rather than a zero-value pkix.Extension) when reason is
+// outside the RFC 5280 §5.3.1 valid range (0-10 excluding 7) or ASN.1 marshaling
+// fails. This makes an out-of-range reason an explicit, checkable failure
+// instead of a sentinel the caller must remember to test for — preventing a
+// malformed (empty-Value) extension from being silently injected into a CRL.
+func CreateCRLReasonExtension(reason CRLReason) (pkix.Extension, error) {
 	// Validate reason range (RFC 5280 §5.3.1: valid values are 0-10 excluding 7).
 	if reason < 0 || reason > 10 || reason == 7 {
-		return pkix.Extension{
-			Id:       OIDCRLReason,
-			Critical: false,
-		}
+		return pkix.Extension{}, fmt.Errorf("smx509: invalid CRL reason %d (RFC 5280 §5.3.1)", reason)
 	}
 	// CRLReason is an ENUMERATED type per RFC 5280 §5.3.1 (tag 0x0A, not
 	// INTEGER tag 0x02). Use asn1.Enumerated for spec-conformant encoding.
 	value, err := asn1.Marshal(asn1.Enumerated(reason))
 	if err != nil {
-		return pkix.Extension{
-			Id:       OIDCRLReason,
-			Critical: false,
-		}
+		return pkix.Extension{}, fmt.Errorf("smx509: marshal CRL reason: %w", err)
 	}
 	return pkix.Extension{
 		Id:       OIDCRLReason,
 		Critical: false,
 		Value:    value,
-	}
+	}, nil
 }
 
 // CreateInvalidityDateExtension builds an InvalidityDate extension
 // (RFC 5280 §5.3.2) encoding the date the certificate is considered invalid.
 // The extension is non-critical.
-func CreateInvalidityDateExtension(date time.Time) pkix.Extension {
+//
+// Returns an error on ASN.1 marshaling failure (effectively unreachable for a
+// valid time.Time), making the failure explicit rather than a sentinel
+// zero-value extension the caller must remember to skip.
+func CreateInvalidityDateExtension(date time.Time) (pkix.Extension, error) {
 	// InvalidityDate is a GeneralizedTime per RFC 5280 §5.3.2 (tag 0x18).
 	// Marshal the time.Time directly with "generalized" params so the tag is
 	// correct; marshaling a string would produce UTF8String (tag 0x0C).
 	value, err := asn1.MarshalWithParams(date.UTC(), "generalized")
 	if err != nil {
-		return pkix.Extension{
-			Id:       OIDInvalidityDate,
-			Critical: false,
-		}
+		return pkix.Extension{}, fmt.Errorf("smx509: marshal invalidity date: %w", err)
 	}
 	return pkix.Extension{
 		Id:       OIDInvalidityDate,
 		Critical: false,
 		Value:    value,
-	}
+	}, nil
 }
 
 // ParseCRLReason extracts the CRLReason from a CRL entry's extensions.

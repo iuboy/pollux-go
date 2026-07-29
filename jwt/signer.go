@@ -4,6 +4,8 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"reflect"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -37,7 +39,12 @@ const (
 // claims — callers set the iss claim themselves on the Claims they pass to
 // Sign. This keeps Sign a pure pass-through and avoids mutating caller-owned
 // claim structs.
+//
+// Concurrency: safe for concurrent use. Sign/Verify take a read lock and
+// Zeroize takes a write lock, so Zeroize (which mutates the secret slice in
+// place) cannot race a concurrent Sign/Verify and hand it a half-zeroed key.
 type hmacSignerVerifier struct {
+	mu     sync.RWMutex
 	method jwt.SigningMethod
 	algo   Algorithm
 	secret []byte
@@ -78,23 +85,58 @@ func NewHS512(secret []byte, issuer string) (SignerVerifier, error) {
 	}, nil
 }
 
+// checkClaimsPtr guards Verify against the silent-data-loss foot-gun described
+// in the [Verifier] docs: a non-nil pointer Claims is required because the JWT
+// library writes the decoded claims through it. Passing a value (non-pointer)
+// Claims compiles, parses, and validates successfully — but the decoded claims
+// are written to a throwaway copy and the caller keeps a zero-value struct with
+// no error. A nil/empty interface map (jwt.MapClaims) is also accepted, since
+// map types are reference-semantic and Unmarshal writes through them correctly.
+func checkClaimsPtr(v Claims) error {
+	if v == nil {
+		return errors.New("jwt: Verify requires a non-nil Claims pointer")
+	}
+	switch reflect.ValueOf(v).Kind() {
+	case reflect.Ptr:
+		if reflect.ValueOf(v).IsNil() {
+			return errors.New("jwt: Verify requires a non-nil Claims pointer")
+		}
+		return nil
+	case reflect.Map:
+		return nil // jwt.MapClaims and similar reference types are valid
+	default:
+		return fmt.Errorf("jwt: Verify requires a *Claims (pointer), got non-pointer %T", v)
+	}
+}
+
 // Zeroize securely clears the HMAC secret held by the SignerVerifier. Callers
 // should invoke it (typically via defer) once the SignerVerifier is no longer
 // needed, to keep the secret's lifetime bounded — consistent with the
 // ZeroKey/ZeroNonce helpers in the aes and sm4 packages.
-func (h *hmacSignerVerifier) Zeroize() { memsecure.ZeroBytes(h.secret) }
+func (h *hmacSignerVerifier) Zeroize() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	memsecure.ZeroBytes(h.secret)
+}
 
 func (h *hmacSignerVerifier) Algorithm() Algorithm { return h.algo }
 
 func (h *hmacSignerVerifier) Sign(claims Claims) (string, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	token := jwt.NewWithClaims(h.method, claims)
 	return token.SignedString(h.secret)
 }
 
 func (h *hmacSignerVerifier) Verify(tokenString string, v Claims) error {
+	if err := checkClaimsPtr(v); err != nil {
+		return err
+	}
 	parserOpts := []jwt.ParserOption{
 		jwt.WithExpirationRequired(),
 	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	if h.issuer != "" {
 		parserOpts = append(parserOpts, jwt.WithIssuer(h.issuer))
 	}
@@ -117,7 +159,12 @@ func (h *hmacSignerVerifier) Verify(tokenString string, v Claims) error {
 }
 
 // sm2SignerVerifier implements [SignerVerifier] for SM2-SM3.
+//
+// Concurrency: safe for concurrent use (see hmacSignerVerifier). Zeroize takes
+// the write lock and mutates priv.D; Sign/Verify take a read lock so they never
+// observe a half-zeroed scalar concurrently.
 type sm2SignerVerifier struct {
+	mu     sync.RWMutex
 	algo   Algorithm
 	priv   *sm2.PrivateKey  // *gmsmSM2.PrivateKey (embeds ecdsa.PrivateKey)
 	pub    *ecdsa.PublicKey // sm2.PublicKey is an alias for *ecdsa.PublicKey
@@ -144,6 +191,8 @@ func NewSM2SM3(priv *sm2.PrivateKey, pub *ecdsa.PublicKey, issuer string) (Signe
 func (s *sm2SignerVerifier) Algorithm() Algorithm { return s.algo }
 
 func (s *sm2SignerVerifier) Sign(claims Claims) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.priv == nil {
 		return "", errors.New("jwt/sm2sm3: Sign called on a verify-only instance (priv is nil)")
 	}
@@ -152,6 +201,11 @@ func (s *sm2SignerVerifier) Sign(claims Claims) (string, error) {
 }
 
 func (s *sm2SignerVerifier) Verify(tokenString string, v Claims) error {
+	if err := checkClaimsPtr(v); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.pub == nil {
 		return errors.New("jwt/sm2sm3: Verify called on a sign-only instance (pub is nil)")
 	}
@@ -190,6 +244,8 @@ func (s *sm2SignerVerifier) Verify(tokenString string, v Claims) error {
 // should keep the raw key bytes and zero those directly (see
 // sm2.PrivateKeyToBytesSecure).
 func (s *sm2SignerVerifier) Zeroize() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.priv != nil && s.priv.D != nil {
 		s.priv.D.SetInt64(0)
 	}

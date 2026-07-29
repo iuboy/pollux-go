@@ -17,14 +17,23 @@ var (
 	// parses successfully but the encoded key is not on the SM2 P256 curve.
 	// It is the sentinel smx509 uses to decide whether to fall through to the
 	// standard-library private-key parsers.
-	ErrNotSM2Key  = errors.New("sm2: key is not SM2")
-	errPEMDecode  = errors.New("sm2: failed to decode PEM block")
-	errNoKeyInPEM = errors.New("sm2: no key found in PEM data")
+	ErrNotSM2Key = errors.New("sm2: key is not SM2")
+	errPEMDecode = errors.New("sm2: failed to decode PEM block")
+	// ErrNoKeyInPEM is returned by ParsePrivateKeyFromPEM when none of the
+	// supported SM2 key encodings (PKCS#8, EC SEC1) recognized the PEM block —
+	// e.g. a PKCS#1 "RSA PRIVATE KEY" block. Like ErrNotSM2Key, it is a sentinel
+	// smx509 treats as a valid fallthrough signal to the stdlib parsers. Callers
+	// MUST use errors.Is to match it, never string comparison.
+	ErrNoKeyInPEM = errors.New("sm2: no key found in PEM data")
 )
 
 // errNotSM2Key preserved as an alias for internal callers; new code should
 // prefer the exported ErrNotSM2Key for errors.Is compatibility.
 var errNotSM2Key = ErrNotSM2Key
+
+// errNoKeyInPEM preserved as an alias for internal callers; new code should
+// prefer the exported ErrNoKeyInPEM for errors.Is compatibility.
+var errNoKeyInPEM = ErrNoKeyInPEM
 
 // ParsePrivateKeyFromPEM 解析 PEM 编码的 SM2 私钥。
 // 支持 PKCS#8 和 EC PRIVATE KEY 格式。
@@ -98,6 +107,9 @@ func ParsePublicKeyFromPEM(pemData []byte) (*ecdsa.PublicKey, error) {
 
 // WritePrivateKeyToPEM 将 SM2 私钥序列化为 PEM 格式 (PKCS#8)。
 func WritePrivateKeyToPEM(key *PrivateKey) ([]byte, error) {
+	if key == nil {
+		return nil, errors.New("sm2: private key is nil")
+	}
 	der, err := MarshalPKCS8PrivateKey(key)
 	if err != nil {
 		return nil, err
@@ -117,6 +129,9 @@ func MarshalPKCS8PrivateKey(key *PrivateKey) ([]byte, error) {
 
 // WritePublicKeyToPEM 将 SM2 公钥序列化为 PEM 格式。
 func WritePublicKeyToPEM(key *ecdsa.PublicKey) ([]byte, error) {
+	if key == nil {
+		return nil, errors.New("sm2: public key is nil")
+	}
 	der, err := gmsmSMX509.MarshalPKIXPublicKey(key)
 	if err != nil {
 		return nil, err

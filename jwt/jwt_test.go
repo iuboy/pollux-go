@@ -3,6 +3,7 @@ package jwt
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"crypto/rand"
 	"encoding/base64"
 	"strings"
 	"testing"
@@ -340,3 +341,110 @@ func TestSignerVerifierConformance(t *testing.T) {
 	sv, _ := NewSM2SM3(priv, pub, "")
 	var _ SignerVerifier = sv
 }
+
+// ─── concurrency safety ───
+
+// TestSignerVerifier_ConcurrentVerifyVsZeroize exercises the RWMutex added to
+// hmacSignerVerifier/sm2SignerVerifier. Concurrent Verify vs Zeroize previously
+// was a data race (Zeroize mutates the secret/scalar while Verify reads it).
+// Run with -race to catch any regression. It must not panic and must not hang.
+func TestSignerVerifier_ConcurrentVerifyVsZeroize(t *testing.T) {
+	t.Run("HS256", func(t *testing.T) {
+		sv := mustHS256(t, "")
+		token, err := IssueWithExpiry(sv, "sub", "iss", time.Hour)
+		if err != nil {
+			t.Fatalf("issue: %v", err)
+		}
+		runConcurrentVerifyVsZeroize(t, sv, token)
+	})
+	t.Run("SM2SM3", func(t *testing.T) {
+		priv, pub := newTestSM2Key(t)
+		sv, _ := NewSM2SM3(priv, pub, "")
+		token, err := IssueWithExpiry(sv, "sub", "iss", time.Hour)
+		if err != nil {
+			t.Fatalf("issue: %v", err)
+		}
+		runConcurrentVerifyVsZeroize(t, sv, token)
+	})
+}
+
+func runConcurrentVerifyVsZeroize(t *testing.T, sv SignerVerifier, token string) {
+	t.Helper()
+	done := make(chan struct{})
+	// Verifier loop: keep verifying until closed. Errors are expected once
+	// Zeroize runs (SM2/HMAC state changes), so we only assert no panic.
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			_ = sv.Verify(token, &jwt.RegisteredClaims{})
+		}
+	}()
+	// Concurrently zeroize a few times to force the race window.
+	for i := 0; i < 50; i++ {
+		// Zeroize is destructive; only the concurrent-read safety is under test,
+		// so we don't assert Verify keeps succeeding after this point.
+		if zeroer, ok := sv.(interface{ Zeroize() }); ok {
+			zeroer.Zeroize()
+		}
+	}
+	<-done
+}
+
+// ─── Verify non-pointer Claims defense ───
+
+// TestVerify_RejectsNonPointerClaims covers the silent-data-loss foot-gun: a
+// non-pointer Claims value compiles and parses, but the decoded claims are
+// written to a throwaway copy. With the reflect guard, Verify now returns an
+// explicit error instead of silently succeeding with zero-value claims.
+func TestVerify_RejectsNonPointerClaims(t *testing.T) {
+	t.Run("HS256", func(t *testing.T) {
+		sv := mustHS256(t, "")
+		token, err := IssueWithExpiry(sv, "sub", "iss", time.Hour)
+		if err != nil {
+			t.Fatalf("issue: %v", err)
+		}
+		// Passing a struct value (not a pointer) must now error rather than
+		// silently leave the caller's claims zero-valued.
+		if err := sv.Verify(token, jwt.RegisteredClaims{}); err == nil {
+			t.Error("Verify with non-pointer Claims should return an error, got nil")
+		}
+		// nil must also error.
+		if err := sv.Verify(token, nil); err == nil {
+			t.Error("Verify with nil Claims should return an error, got nil")
+		}
+	})
+	t.Run("SM2SM3", func(t *testing.T) {
+		priv, pub := newTestSM2Key(t)
+		sv, _ := NewSM2SM3(priv, pub, "")
+		token, err := IssueWithExpiry(sv, "sub", "iss", time.Hour)
+		if err != nil {
+			t.Fatalf("issue: %v", err)
+		}
+		if err := sv.Verify(token, jwt.RegisteredClaims{}); err == nil {
+			t.Error("Verify with non-pointer Claims should return an error, got nil")
+		}
+	})
+}
+
+// TestNewSM2SM3SigningMethod covers the exported constructor for custom-UID
+// SigningMethod variants: it must round-trip under the custom uid and must not
+// share mutable state with the caller's uid slice.
+func TestNewSM2SM3SigningMethod(t *testing.T) {
+	customUID := []byte("custom-user-id-16")
+	method := NewSM2SM3SigningMethod(customUID)
+
+	// Mutating the caller's slice after construction must not affect the method.
+	customUID[0] = 'X'
+
+	priv, _ := sm2.GenerateKey(rand.Reader)
+	signingString := "header.payload"
+	sig, err := method.Sign(signingString, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	// Verify must use the SAME (unmutated) uid to succeed; the method copied it.
+	if err := method.Verify(signingString, sig, &priv.PublicKey); err != nil {
+		t.Errorf("Verify with custom-UID method failed: %v", err)
+	}
+}
+

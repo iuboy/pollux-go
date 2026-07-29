@@ -69,7 +69,15 @@ func (c *Conn) HandshakeContext(ctx context.Context) error {
 func (c *Conn) Read(b []byte) (int, error) {
 	return panicsafe.Do1(func() (int, error) {
 		if c.inner == nil {
-			return 0, c.initErr
+			// net.Conn convention: (0, nil) is ambiguous (could mean EOF).
+			// Return an explicit error so callers never mistake an uninitialized
+			// connection for a clean close. When the constructor recorded a
+			// config-conversion failure we surface that; otherwise this is a
+			// programming error (Conn used before/without Handshake success).
+			if c.initErr != nil {
+				return 0, c.initErr
+			}
+			return 0, errors.New("tlcp: connection not initialized")
 		}
 		return c.inner.Read(b)
 	})
@@ -79,7 +87,11 @@ func (c *Conn) Read(b []byte) (int, error) {
 func (c *Conn) Write(b []byte) (int, error) {
 	return panicsafe.Do1(func() (int, error) {
 		if c.inner == nil {
-			return 0, c.initErr
+			// See Read: never return (0, nil) for an uninitialized connection.
+			if c.initErr != nil {
+				return 0, c.initErr
+			}
+			return 0, errors.New("tlcp: connection not initialized")
 		}
 		return c.inner.Write(b)
 	})

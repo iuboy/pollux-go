@@ -374,3 +374,41 @@ func TestArgon2id_VerifyRejectsOversizedParallelism(t *testing.T) {
 		t.Error("Verify accepted p=300 (parallelism should be rejected, not truncated)")
 	}
 }
+
+// TestArgon2id_RejectsMemoryBelowRFC9106FloorAtOverflowParallelism is a
+// regression test for a uint8 overflow in the RFC 9106 memory floor check.
+//
+// Before the fix, `p.Memory < uint32(8*p.Parallelism)` computed 8*p in the
+// uint8 domain. At p=32, 8*32 = 256 overflows to 0, so the check became
+// `memory < 0` — always false for uint32 — and an attacker-crafted PHC string
+// with tiny memory (e.g. m=1) slipped through to argon2.IDKey, bypassing the
+// panic-prevention floor. p=64 (8*64=512 → 0 mod 256) was equally broken.
+//
+// With the fix (computing 8*p in uint32), m=1/p=32 must be rejected at the
+// decode boundary with the specific "below RFC 9106 minimum" error, not
+// accepted and forwarded to argon2.IDKey.
+func TestArgon2id_RejectsMemoryBelowRFC9106FloorAtOverflowParallelism(t *testing.T) {
+	salt, dk := validB64(16), validB64(32)
+
+	cases := []struct {
+		name string
+		phc  string
+	}{
+		// p=32: 8*32 overflowed to 0 in the buggy uint8 arithmetic.
+		{"p=32 m=1 (overflow point)", "$argon2id$v=19$m=1,t=3,p=32$" + salt + "$" + dk},
+		// p=64: 8*64 overflowed to 0 in the buggy uint8 arithmetic.
+		{"p=64 m=1 (overflow point)", "$argon2id$v=19$m=1,t=3,p=64$" + salt + "$" + dk},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, _, err := decodeArgon2id(c.phc)
+			if err == nil {
+				t.Fatalf("decodeArgon2id accepted %q (RFC 9106 memory floor bypassed via uint8 overflow)", c.phc)
+			}
+			if !strings.Contains(err.Error(), "RFC 9106 minimum") {
+				t.Fatalf("decodeArgon2id rejected %q with wrong error (want RFC 9106 floor, got %v)", c.phc, err)
+			}
+		})
+	}
+}
+

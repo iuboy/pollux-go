@@ -7,6 +7,34 @@ import (
 	gmsmZUC "github.com/emmansun/gmsm/zuc"
 )
 
+// validateZUCKey enforces the key-length contract shared by NewCipher/NewHash:
+// 16 bytes (ZUC-128) or 32 bytes (ZUC-256). It returns the expected IV length
+// for the detected variant so callers can validate the IV against the same key.
+//
+// Validating up front (rather than letting the underlying gmsm call fail) keeps
+// the "zuc:" error prefix consistent across the package surface, so callers can
+// branch on parameter mistakes without parsing gmsm's error strings.
+func validateZUCKey(key []byte) (wantIV int, err error) {
+	switch len(key) {
+	case 16:
+		return 16, nil
+	case 32:
+		return 23, nil
+	default:
+		return 0, fmt.Errorf("zuc: key length %d invalid (want 16 for ZUC-128 or 32 for ZUC-256)", len(key))
+	}
+}
+
+// validateEEAKey enforces the 3GPP EEA3/EIA3 key contract: 16 bytes (ZUC-128).
+// EEA3/EIA3 (3GPP TS 35.221) is a 128-bit algorithm; the 32-byte ZUC-256 key
+// belongs to the NewCipher/NewHash generic path, not the 3GPP radio-bearer API.
+func validateEEAKey(key []byte) error {
+	if len(key) != 16 {
+		return fmt.Errorf("zuc: 3GPP EEA/EIA key length %d invalid (want 16 for ZUC-128)", len(key))
+	}
+	return nil
+}
+
 // SeekableStream is a stream cipher that supports seeking.
 //
 // Concurrency: SeekableStream values are NOT safe for concurrent use — the
@@ -35,12 +63,9 @@ type EIA = gmsmZUC.EIA
 // enabling XOR-based plaintext recovery (two-time pad attack). Each call must
 // use a unique key/IV combination. See package documentation for details.
 func NewCipher(key, iv []byte) (SeekableStream, error) {
-	if len(key) != 16 && len(key) != 32 {
-		return nil, fmt.Errorf("zuc: key length %d invalid (want 16 for ZUC-128 or 32 for ZUC-256)", len(key))
-	}
-	wantIV := 16
-	if len(key) == 32 {
-		wantIV = 23
+	wantIV, err := validateZUCKey(key)
+	if err != nil {
+		return nil, err
 	}
 	if len(iv) != wantIV {
 		return nil, fmt.Errorf("zuc: IV length %d invalid (want %d for %d-byte key)", len(iv), wantIV, len(key))
@@ -56,6 +81,9 @@ func NewCipher(key, iv []byte) (SeekableStream, error) {
 // ensure a unique IV. Reusing the same (key, count, bearer, direction) tuple
 // produces identical keystream, enabling plaintext recovery.
 func NewEEACipher(key []byte, count, bearer, direction uint32) (SeekableStream, error) {
+	if err := validateEEAKey(key); err != nil {
+		return nil, err
+	}
 	return gmsmZUC.NewEEACipher(key, count, bearer, direction)
 }
 
@@ -65,16 +93,29 @@ func NewEEACipher(key []byte, count, bearer, direction uint32) (SeekableStream, 
 // ensure a unique IV. Reusing the same (key, count, bearer, direction) tuple
 // undermines integrity protection.
 func NewEIAHash(key []byte, count, bearer, direction uint32) (EIA, error) {
+	if err := validateEEAKey(key); err != nil {
+		return nil, err
+	}
 	return gmsmZUC.NewEIAHash(key, count, bearer, direction)
 }
 
 // NewHash creates a ZUC-EIA hash with explicit key and IV.
 func NewHash(key, iv []byte) (EIA, error) {
+	wantIV, err := validateZUCKey(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(iv) != wantIV {
+		return nil, fmt.Errorf("zuc: IV length %d invalid (want %d for %d-byte key)", len(iv), wantIV, len(key))
+	}
 	return gmsmZUC.NewHash(key, iv)
 }
 
 // Encrypt encrypts data using ZUC-EEA3 and returns the ciphertext.
 func Encrypt(key []byte, count, bearer, direction uint32, plaintext []byte) ([]byte, error) {
+	if err := validateEEAKey(key); err != nil {
+		return nil, err
+	}
 	stream, err := gmsmZUC.NewEEACipher(key, count, bearer, direction)
 	if err != nil {
 		return nil, err
@@ -93,6 +134,9 @@ func Encrypt(key []byte, count, bearer, direction uint32, plaintext []byte) ([]b
 
 // MAC computes the ZUC-EIA3 message authentication code.
 func MAC(key []byte, count, bearer, direction uint32, data []byte) ([]byte, error) {
+	if err := validateEEAKey(key); err != nil {
+		return nil, err
+	}
 	h, err := gmsmZUC.NewEIAHash(key, count, bearer, direction)
 	if err != nil {
 		return nil, err

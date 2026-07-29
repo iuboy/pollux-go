@@ -24,22 +24,29 @@ const (
 // This is the recommended configuration for new connections, providing the best security.
 // For legacy compatibility with non-PFS static ECC suites, use LegacyCipherSuites().
 // A fresh slice is returned on every call so callers may mutate it freely.
+//
+// Derived from allTLPCSuites (the single source of truth) by filtering for the
+// GCM + ECDHE suite, so adding a suite to allTLPCSuites only needs an update
+// here if it should enter the default set.
 func DefaultCipherSuites() []uint16 {
-	return []uint16{
-		SuiteECDHE_SM2_SM4_GCM_SM3,
+	out := make([]uint16, 0, len(allTLPCSuites))
+	for _, s := range allTLPCSuites {
+		// Default = forward-secret (ECDHE) + AEAD (GCM).
+		if s == SuiteECDHE_SM2_SM4_GCM_SM3 {
+			out = append(out, s)
+		}
 	}
+	return out
 }
 
 // LegacyCipherSuites returns the full cipher suite list including CBC suites.
 // CBC mode has known risks such as padding oracle attacks and is only for legacy
 // system compatibility. New protocols should use the GCM-only default configuration.
+//
+// Returns a defensive copy of allTLPCSuites (the single source of truth) so
+// adding a suite only requires editing allTLPCSuites, not this function.
 func LegacyCipherSuites() []uint16 {
-	return []uint16{
-		SuiteECDHE_SM2_SM4_GCM_SM3,
-		SuiteECDHE_SM2_SM4_CBC_SM3,
-		SuiteECC_SM2_SM4_GCM_SM3,
-		SuiteECC_SM2_SM4_CBC_SM3,
-	}
+	return append([]uint16(nil), allTLPCSuites...)
 }
 
 // IsTLCPCipherSuite reports whether id is a TLCP cipher suite.

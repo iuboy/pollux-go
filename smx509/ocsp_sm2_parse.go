@@ -117,8 +117,10 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate) (*ocsp.Response
 	}
 
 	// Verify signature. SM2 signing used priv.Sign(rand, tbsDER, NewSM2SignerOption(true, nil)),
-	// i.e. ZA+SM3 over the raw TBS DER with the default UID. Verify with the
-	// symmetric call: VerifyASN1WithSM2(pub, nil, tbsDER, sig).
+	// i.e. ZA+SM3 over the raw TBS DER with the default UID (nil UID + forceGMSign
+	// resolves to the default UID inside gmsm). Verify with the explicit
+	// defaultSM2UID so both the OCSP-signature path and the embedded-cert issuer
+	// path below use identical, self-documenting UIDs.
 	verifyAgainst := func(signerCert *x509.Certificate) error {
 		pub, ok := signerCert.PublicKey.(*ecdsa.PublicKey)
 		if !ok {
@@ -209,7 +211,7 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate) (*ocsp.Response
 			if !ok {
 				return nil, errors.New("smx509: issuer public key is not ECDSA (SM2)")
 			}
-			if !sm2.VerifyWithSM2(issuerPub, nil, embedded.RawTBSCertificate, embedded.Signature) {
+			if !sm2.VerifyWithSM2(issuerPub, defaultSM2UID, embedded.RawTBSCertificate, embedded.Signature) {
 				return nil, errors.New("smx509: embedded responder cert not signed by issuer")
 			}
 		}

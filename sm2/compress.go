@@ -7,7 +7,6 @@ import (
 	"math/big"
 
 	gmsmSM2 "github.com/emmansun/gmsm/sm2"
-	"github.com/emmansun/gmsm/sm2/sm2ec"
 	"github.com/iuboy/pollux-go/internal/memsecure"
 )
 
@@ -137,7 +136,7 @@ func PrivateKeyToBytesSecure(key *PrivateKey) (*SecureKeyBytes, error) {
 
 // BytesToPrivateKey recovers SM2 private key from 32-byte big-endian integer.
 func BytesToPrivateKey(data []byte) (*PrivateKey, error) {
-	curve := sm2ec.P256()
+	curve := P256()
 	d := new(big.Int).SetBytes(data)
 	n := curve.Params().N
 	if d.Sign() <= 0 || d.Cmp(n) >= 0 {
@@ -146,7 +145,14 @@ func BytesToPrivateKey(data []byte) (*PrivateKey, error) {
 	priv := new(ecdsa.PrivateKey)
 	priv.PublicKey.Curve = curve
 	priv.D = d
-	priv.PublicKey.X, priv.PublicKey.Y = curve.ScalarBaseMult(d.Bytes())
+	// ScalarBaseMult treats its input as a big integer (variable-length, right-
+	// aligned), so d.Bytes() is functionally correct. Pad to the fixed curve
+	// scalar size for consistency with gmsm's constant-time path and to avoid
+	// any implementation that expects a field-element-width scalar.
+	scalarSize := (curve.Params().BitSize + 7) / 8
+	dBytes := make([]byte, scalarSize)
+	d.FillBytes(dBytes)
+	priv.PublicKey.X, priv.PublicKey.Y = curve.ScalarBaseMult(dBytes)
 	sm2Priv := new(gmsmSM2.PrivateKey)
 	_, err := sm2Priv.FromECPrivateKey(priv)
 	if err != nil {

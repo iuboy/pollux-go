@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/pem"
 	"math/big"
 	"strings"
@@ -129,6 +130,33 @@ func TestParsePrivateKeyPEM_RSA(t *testing.T) {
 	}
 	if _, ok := parsed.(*rsa.PrivateKey); !ok {
 		t.Errorf("expected *rsa.PrivateKey, got %T", parsed)
+	}
+}
+
+// TestParsePrivateKeyPEM_RSA_PKCS1 is a regression test for a fallthrough bug:
+// sm2.ParsePrivateKeyFromPEM returns "no key found in PEM data" (NOT
+// sm2.ErrNotSM2Key) for a PKCS#1 "RSA PRIVATE KEY" block, because its internal
+// parsers only recognize PKCS#8 / EC SEC1. The old smx509 logic treated any
+// non-ErrNotSM2Key error as a hard "SM2 parse failed" and returned it — making
+// the PKCS#1 path below unreachable, so a standard PKCS#1 RSA key was rejected
+// with a confusing SM2 error. With the fix, "no key found" is a valid
+// fallthrough signal and the PKCS#1 parser is reached.
+func TestParsePrivateKeyPEM_RSA_PKCS1(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	// Explicitly use the PKCS#1 ("RSA PRIVATE KEY") encoding, not PKCS#8.
+	der := x509.MarshalPKCS1PrivateKey(key)
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der})
+
+	parsed, err := ParsePrivateKeyPEM(pemBytes)
+	if err != nil {
+		t.Fatalf("ParsePrivateKeyPEM PKCS#1 RSA failed (fallthrough bug): %v", err)
+	}
+	rsaParsed, ok := parsed.(*rsa.PrivateKey)
+	if !ok {
+		t.Fatalf("expected *rsa.PrivateKey, got %T", parsed)
+	}
+	if rsaParsed.N.Cmp(key.N) != 0 {
+		t.Error("parsed RSA key modulus does not match the input key")
 	}
 }
 

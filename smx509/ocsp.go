@@ -34,6 +34,9 @@ func CreateOCSPResponse(issuer, responderCert *x509.Certificate, template *ocsp.
 	if responderCert == nil {
 		return nil, errors.New("smx509: responder certificate is required to sign the OCSP response")
 	}
+	if template == nil {
+		return nil, errors.New("smx509: OCSP response template is required")
+	}
 	if sm2Key, ok := signer.(*sm2.PrivateKey); ok {
 		return createSM2OCSPResponse(issuer, responderCert, *template, sm2Key)
 	}

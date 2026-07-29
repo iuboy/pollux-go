@@ -272,3 +272,33 @@ func TestKeysGeneratedWithRealRandom(t *testing.T) {
 		t.Fatal("user key should not be nil")
 	}
 }
+
+// TestDecrypt_UnwrapKey_RejectEmptyInput guards the defensive nil/empty checks
+// added to Decrypt and UnwrapKey. Without them, an empty ciphertext/cipher is
+// forwarded to gmsm, which can panic (nil ASN.1 dereference) rather than return
+// a clean error. Both must reject empty input explicitly.
+func TestDecrypt_UnwrapKey_RejectEmptyInput(t *testing.T) {
+	master, err := GenerateEncryptMasterKey()
+	if err != nil {
+		t.Fatalf("GenerateEncryptMasterKey: %v", err)
+	}
+	uid := []byte("empty-input@example.com")
+	userKey, err := GenerateEncryptUserKey(master, uid)
+	if err != nil {
+		t.Fatalf("GenerateEncryptUserKey: %v", err)
+	}
+
+	// Decrypt: nil and empty ciphertext must error, not panic.
+	for name, ct := range map[string][]byte{"nil": nil, "empty": {}} {
+		if _, err := Decrypt(userKey, uid, ct); err == nil {
+			t.Errorf("Decrypt with %s ciphertext: expected error, got nil", name)
+		}
+	}
+
+	// UnwrapKey: nil and empty cipher must error, not panic.
+	for name, c := range map[string][]byte{"nil": nil, "empty": {}} {
+		if _, err := UnwrapKey(userKey, uid, c, 16); err == nil {
+			t.Errorf("UnwrapKey with %s cipher: expected error, got nil", name)
+		}
+	}
+}

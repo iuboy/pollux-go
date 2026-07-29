@@ -54,7 +54,12 @@ func ZeroUint32(data []uint32) {
 	// MaxInt32/4 would wrap byteLen and yield an out-of-bounds view.
 	// When the guard trips we skip XOR but still run the direct-write layer
 	// below — silently returning without zeroing would leak key material.
-	if uint64(len(data)) <= (1<<32-1)/4 {
+	//
+	// The bound is (1<<31-1)/4 (MaxInt32/4), NOT (1<<32-1)/4: byteLen has type
+	// int, whose max on 32-bit is 2^31-1, so a length that passes the old
+	// (1<<32-1)/4 check made len(data)*4 overflow to a negative int and panic
+	// in unsafe.Slice.
+	if uint64(len(data)) <= (1<<31-1)/4 {
 		byteLen := len(data) * 4
 		view := unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen) // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
 		// XOR with itself so values self-cancel to zero.
@@ -80,7 +85,9 @@ func ZeroUint64(data []uint64) {
 	// Layer 1: XOR-based zeroing (consistent with ZeroBytes pattern).
 	// Guard len*8 against integer overflow on 32-bit builds (see ZeroUint32).
 	// When the guard trips we skip XOR but still run the direct-write layer.
-	if uint64(len(data)) <= (1<<32-1)/8 {
+	// The bound is (1<<31-1)/8 (MaxInt32/8) since byteLen has type int (see
+	// ZeroUint32 for details).
+	if uint64(len(data)) <= (1<<31-1)/8 {
 		byteLen := len(data) * 8
 		view := unsafe.Slice((*byte)(unsafe.Pointer(&data[0])), byteLen) // #nosec G103 -- view uint32/64 key words as bytes for XOR zeroing
 		// XOR with itself so values self-cancel to zero.

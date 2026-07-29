@@ -42,12 +42,13 @@ func init() {
 // The default user ID is gmstd.DefaultSM2UserID ("1234567812345678"). Both
 // ends MUST agree on the user ID or signatures will not verify.
 //
-// User ID customization: the current implementation pins the user ID to the
-// GM/T 0009 default at package init time; there is no public API to override
-// it on the registered SigningMethodSM2SM3 singleton. Callers that need a
-// non-default user ID (e.g. for a profile that mandates a key-bound UID) must
-// construct a separate SigningMethod instance with the desired uid and
-// register it with jwt.RegisterSigningMethod under a distinct alg name.
+// User ID customization: the registered SigningMethodSM2SM3 singleton pins the
+// user ID to the GM/T 0009 default. To use a non-default user ID (e.g. for a
+// profile that mandates a key-bound UID), call [NewSM2SM3SigningMethod] with the
+// desired uid to obtain a distinct [jwt.SigningMethod], then register it with
+// jwt.RegisterSigningMethod under a distinct alg name. signingMethodSM2SM3 is
+// unexported, so callers cannot construct it directly; NewSM2SM3SigningMethod is
+// the only way to obtain a custom-UID variant.
 //
 // golang-jwt v5 SigningMethod contract:
 //   - Sign(signingString string, key any) ([]byte, error) — returns raw sig
@@ -63,6 +64,33 @@ var SigningMethodSM2SM3 jwt.SigningMethod = &signingMethodSM2SM3{
 // with a mutex.
 type signingMethodSM2SM3 struct {
 	uid []byte // GM/T 0009 user ID; default "1234567812345678"
+}
+
+// NewSM2SM3SigningMethod returns an SM2-SM3 [jwt.SigningMethod] that uses uid
+// as the GM/T 0009 user ID instead of the default. Use it when a deployment
+// mandates a non-default user ID; both signing and verifying ends MUST use the
+// same uid.
+//
+// The returned method is independent of the package-registered
+// [SigningMethodSM2SM3] singleton. To make the JWT parser dispatch to it,
+// register it under a distinct alg name:
+//
+//	custom := jwt.NewSM2SM3SigningMethod([]byte("custom-uid"))
+//	jwt.RegisterSigningMethod("SM2SM3-Custom", func() jwt.SigningMethod { return custom })
+//
+// Registering under the default "SM2SM3" name would overwrite the default
+// singleton and silently change UID for all default-alg tokens — avoid that
+// unless it is the explicit intent.
+//
+// A nil/empty uid falls back to gmstd.DefaultSM2UserID.
+func NewSM2SM3SigningMethod(uid []byte) jwt.SigningMethod {
+	if len(uid) == 0 {
+		uid = []byte(gmstd.DefaultSM2UserID)
+	}
+	// Copy uid so later caller mutation cannot affect the method's behavior.
+	uidCopy := make([]byte, len(uid))
+	copy(uidCopy, uid)
+	return &signingMethodSM2SM3{uid: uidCopy}
 }
 
 // Alg returns the JWT "alg" header value for this method.

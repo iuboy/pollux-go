@@ -45,10 +45,15 @@ func IsSM2Key(key any) bool {
 
 // IsSM2PublicKey reports whether a public key is an SM2 public key.
 func IsSM2PublicKey(pub any) bool {
-	if ecdsaPub, ok := pub.(*ecdsa.PublicKey); ok {
-		return ecdsaPub.Curve == sm2.P256()
+	// Guard against a typed-nil public key, e.g. (*ecdsa.PublicKey)(nil).
+	// crypto/x509 can produce such a value (e.g. for a cert carrying an
+	// unsupported curve), and the type assertion below succeeds for it (ok=true)
+	// while leaving ecdsaPub nil — dereferencing ecdsaPub.Curve would panic.
+	ecdsaPub, ok := pub.(*ecdsa.PublicKey)
+	if !ok || ecdsaPub == nil {
+		return false
 	}
-	return false
+	return ecdsaPub.Curve == sm2.P256()
 }
 
 // CreateCertificate creates a certificate, automatically selecting
@@ -200,11 +205,11 @@ func ParseCertificate(der []byte) (*x509.Certificate, error) {
 	if stdErr == nil {
 		return stdCert, nil
 	}
-	// Both parsers failed. Wrap both errors so the caller sees the full
-	// picture — previously only a generic 'both rejected' string was returned,
-	// hiding the underlying ASN.1 / signature / curve errors.
-	return nil, fmt.Errorf("smx509: failed to parse certificate (gmsm/smx509: %v; stdlib crypto/x509: %v)",
-		smErr, stdErr)
+	// Both parsers failed. Join both errors so the caller sees the full picture
+	// AND can inspect each backend's error via errors.Is/errors.As — previously
+	// fmt.Errorf("...: %v; ...: %v") flattened them into an opaque string,
+	// hiding the underlying ASN.1 / signature / curve errors from typed checks.
+	return nil, fmt.Errorf("smx509: failed to parse certificate: %w", errors.Join(smErr, stdErr))
 }
 
 // smX509ToStdCertificate converts a gmsm *smx509.Certificate to a stdlib
@@ -258,10 +263,9 @@ func ParseCertificateRequest(der []byte) (*x509.CertificateRequest, error) {
 	if stdErr == nil {
 		return stdCSR, nil
 	}
-	// Both parsers failed. Wrap both errors so the caller sees the full
-	// picture — previously only a generic 'both rejected' string was returned.
-	return nil, fmt.Errorf("smx509: failed to parse certificate request (gmsm/smx509: %v; stdlib crypto/x509: %v)",
-		smErr, stdErr)
+	// Both parsers failed. Join both errors (see ParseCertificate) so each
+	// backend's error remains inspectable via errors.Is/errors.As.
+	return nil, fmt.Errorf("smx509: failed to parse certificate request: %w", errors.Join(smErr, stdErr))
 }
 
 // SignatureAlgorithmForPrivateKey returns the appropriate signature algorithm

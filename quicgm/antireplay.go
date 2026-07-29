@@ -59,7 +59,12 @@ func NewAntiReplayCache(window, maxAge time.Duration) AntiReplayCache {
 }
 
 func (c *memoryAntiReplayCache) Check(digest []byte, age time.Duration) bool {
-	if age < 0 || age > c.maxAge {
+	// Reject at-or-beyond the max-age boundary (>=), not just beyond it (>).
+	// RFC 8446 §8 requires the server to reject 0-RTT for an expired ticket;
+	// using >= is the conservative choice and avoids accepting a ticket whose
+	// age lands exactly on maxAge — where clock skew or rounding could let a
+	// truly-expired ticket slip through.
+	if age < 0 || age >= c.maxAge {
 		return false // future or expired ticket
 	}
 	// An empty digest maps to the map key "" — every empty-digest attempt

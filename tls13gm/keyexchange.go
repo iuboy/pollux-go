@@ -58,6 +58,12 @@ func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]b
 	if !peerPublic.Curve.IsOnCurve(peerPublic.X, peerPublic.Y) { //nolint:staticcheck // SM2 curve; crypto/ecdh has no SM2 support
 		return nil, errors.New("tls13gm: peer public key is not on the SM2 curve")
 	}
+	// privateKey.D is populated by sm2.GenerateKey, but CurveSM2ECDHE is a public
+	// API reachable from keys constructed via other means (unmarshal, zero-value
+	// declarations) where D may be nil. A nil D would panic at .Bytes() below.
+	if privateKey.D == nil {
+		return nil, errors.New("tls13gm: private key scalar D is nil")
+	}
 	// sm2.PrivateKey embeds ecdsa.PrivateKey (via PublicKey), so .D and .Curve
 	// are directly accessible. Perform raw scalar multiplication on the peer's
 	// public point using our private scalar.

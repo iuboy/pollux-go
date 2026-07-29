@@ -49,13 +49,20 @@ func ParsePrivateKeyPEM(pemData []byte) (any, error) {
 	// (DER corruption, ASN.1 syntax errors) which should NOT be masked by the
 	// stdlib fallback path — otherwise a corrupt SM2 key produces a confusing
 	// "cannot parse private key PEM" instead of the real parse error.
+	//
+	// Two sentinel errors are valid fallthrough signals, matched via errors.Is:
+	//   - sm2.ErrNotSM2Key  — key parsed but is not on the SM2 curve.
+	//   - sm2.ErrNoKeyInPEM — sm2's PKCS#8/SEC1 parsers did not recognize the
+	//     block at all (e.g. a PKCS#1 "RSA PRIVATE KEY" block).
+	// Treating only ErrNotSM2Key as fallthrough previously made PKCS#1 RSA keys
+	// unreachable here. Matching via errors.Is (rather than the prior
+	// string-contains hack on the error message) is robust against the sm2
+	// package rewording its error text.
 	if sm2Key, err := sm2.ParsePrivateKeyFromPEM(pemData); err == nil {
 		return sm2Key, nil
-	} else if !errors.Is(err, sm2.ErrNotSM2Key) {
-		// errNotSM2Key is the only acceptable fallthrough signal; anything
-		// else is a real SM2 parse failure that should surface directly.
-		// (sm2.ErrNotSM2Key is the package-level sentinel; errors.Is handles
-		// both sentinel equality and future wrapping.)
+	} else if !errors.Is(err, sm2.ErrNotSM2Key) && !errors.Is(err, sm2.ErrNoKeyInPEM) {
+		// Anything other than the two fallthrough sentinels is a real SM2 parse
+		// failure (DER/ASN.1 corruption) that should surface directly.
 		return nil, fmt.Errorf("smx509: SM2 private key parse failed: %w", err)
 	}
 

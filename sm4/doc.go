@@ -28,8 +28,9 @@
 // generation to the encrypt call) and GenerateNonce for callers that reuse a
 // cipher.AEAD across many messages. See gcm.go.
 //
-// ECB mode (NewECBEncrypter/NewECBDecrypter) is provided for compatibility only
-// and should not be used in new protocols — it does not provide semantic security.
+// ECB mode (via Encrypt/Decrypt with ModeECB) is provided for compatibility
+// only and should not be used in new protocols — it does not provide semantic
+// security.
 //
 // Status: wrapper around gmsm/sm4
 package sm4

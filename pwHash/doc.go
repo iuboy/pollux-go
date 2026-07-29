@@ -21,11 +21,13 @@
 //	argon2id:  $argon2id$v=19$m=<KiB>,t=<iter>,p=<par>$<b64-salt>$<b64-hash>
 //	pbkdf2-sm3: $pbkdf2-sm3$i=<iter>$<b64-salt>$<b64-hash>
 //
-// The <b64-...> fields use raw (no-padding) URL-safe base64
-// (base64.RawURLEncoding), matching the de-facto PHC $argon2id convention.
-// RawURL was chosen over StdEncoding because the PHC spec forbids '=' padding
-// and because '+'/'/' would need escaping in some URI contexts. Decoding must
-// use the same encoding or the salt/hash will be mis-parsed.
+// The <b64-...> fields use raw (no-padding) standard base64
+// (base64.RawStdEncoding), matching the encoding used by the Go
+// golang.org/x/crypto/argon2 reference implementation and most Go-based PHC
+// consumers. RawStdEncoding uses '+' and '/' (not URL-safe); these characters
+// may need escaping in URI contexts. The PHC convention forbids '=' padding,
+// which is why the *raw* (unpadded) variant is used. Decoding must use the same
+// encoding or the salt/hash will be mis-parsed.
 //
 // These encodings round-trip with [PasswordHasher.Verify]: the hash itself
 // embeds the algorithm and parameters, so no out-of-band state is required.
@@ -42,4 +44,10 @@
 // The package intentionally exposes no global default — callers must pick a
 // hasher explicitly via NewArgon2id or NewPBKDF2SM3 so the choice is visible
 // at the construction site.
+//
+// # Concurrency
+//
+// PasswordHasher implementations are safe for concurrent use: Hash and Verify
+// carry no mutable state, so a single shared hasher may verify credentials from
+// many goroutines.
 package pwhash

@@ -42,14 +42,26 @@ func CreateRevocationList(template *x509.RevocationList, issuer *x509.Certificat
 }
 
 // toSMX509RevocationList converts a stdlib *x509.RevocationList to
-// *smx509.RevocationList via reflection-based field copy (see
-// toSMX509Certificate). Fresh templates (Raw empty) are handled correctly:
-// shared fields carry over, smx509-only fields stay zero. Enum-typed fields
-// (SignatureAlgorithm) and entry slices (RevokedCertificateEntries) convert
-// element-wise via copyCertFields.
+// *smx509.RevocationList.
+//
+// When the template already carries a DER encoding (tpl.Raw non-empty), it is
+// parsed directly by smx509 — a lossless round-trip that mirrors
+// toSMX509Certificate. This matters when re-signing an already-parsed CRL (e.g.
+// rotating the signing key) where reflection-based field copy could drop or
+// mis-convert nested types.
+//
+// A fresh template (Raw empty) cannot round-trip, so it falls back to a
+// reflection field copy (copyCertFields): shared fields carry over, smx509-only
+// fields stay zero, and enum-typed fields (SignatureAlgorithm) and entry slices
+// (RevokedCertificateEntries) convert element-wise.
 func toSMX509RevocationList(tpl *x509.RevocationList) (*smx509pkg.RevocationList, error) {
 	if tpl == nil {
 		return nil, nil
+	}
+	if len(tpl.Raw) > 0 {
+		// Lossless DER round-trip — preferred when the template was parsed from
+		// DER. Avoids any field-type drift between the stdlib and gmsm forks.
+		return smx509pkg.ParseRevocationList(tpl.Raw)
 	}
 	sm := &smx509pkg.RevocationList{}
 	copyCertFields(reflect.ValueOf(tpl).Elem(), reflect.ValueOf(sm).Elem())

@@ -93,6 +93,12 @@ func validateKeyUsages(cert *x509.Certificate, required []x509.ExtKeyUsage) erro
 		return nil // No EKU restriction on cert, accept any usage.
 	}
 	for _, req := range required {
+		// RFC 5280 §4.2.1.12: ExtKeyUsageAny on the *requester* side means the
+		// verifier accepts all usages, so the cert need not itself list Any.
+		// Without this, required=[Any] with cert=[ServerAuth] was wrongly rejected.
+		if req == x509.ExtKeyUsageAny {
+			return nil
+		}
 		for _, present := range cert.ExtKeyUsage {
 			if present == req || present == x509.ExtKeyUsageAny {
 				return nil
@@ -118,8 +124,17 @@ func verifyStandard(cert *x509.Certificate, opts VerifyOptions) error {
 	return err
 }
 
-// VerifyDualCertificate verifies a TLCP dual certificate pair.
-func VerifyDualCertificate(signCert, encCert *x509.Certificate, signRoots, encRoots *Pool) error {
+// VerifyDualCertificate verifies a TLCP dual certificate pair (signing +
+// encryption). Each certificate is verified with its own [VerifyOptions], so
+// callers can supply DNSName, Intermediates, KeyUsages, and CurrentTime per
+// cert — the previous signature forwarded only Roots, silently dropping those
+// checks (chain completeness via intermediates, hostname/EKU enforcement, and
+// fixed-time verification).
+//
+// The TLCP-mandated basic KeyUsage bits are still enforced here regardless of
+// opts.KeyUsages (ExtKeyUsage): sign cert must carry DigitalSignature; enc cert
+// must carry KeyEncipherment, DataEncipherment, or KeyAgreement.
+func VerifyDualCertificate(signCert, encCert *x509.Certificate, signOpts, encOpts VerifyOptions) error {
 	return panicsafe.Do(func() error {
 		if signCert == nil || encCert == nil {
 			return errors.New("cert: both sign and enc certificates are required")
@@ -141,10 +156,10 @@ func VerifyDualCertificate(signCert, encCert *x509.Certificate, signRoots, encRo
 			return errors.New("cert: enc certificate must have KeyUsageKeyEncipherment, KeyUsageDataEncipherment, or KeyUsageKeyAgreement")
 		}
 
-		if err := VerifyCertificate(signCert, VerifyOptions{Roots: signRoots}); err != nil {
+		if err := VerifyCertificate(signCert, signOpts); err != nil {
 			return fmt.Errorf("cert: sign certificate verification failed: %w", err)
 		}
-		if err := VerifyCertificate(encCert, VerifyOptions{Roots: encRoots}); err != nil {
+		if err := VerifyCertificate(encCert, encOpts); err != nil {
 			return fmt.Errorf("cert: enc certificate verification failed: %w", err)
 		}
 		return nil

@@ -32,8 +32,8 @@ func (m *CertificateMsg) marshalBody() ([]byte, error) {
 	// Build the certificate_list contents first to compute its 3-byte length.
 	list := make([]byte, 0, 256)
 	for _, e := range m.CertificateList {
-		if len(e.Certificate) > MaxHandshakeMessageLen {
-			return nil, fmt.Errorf("tls13gm: certificate length %d exceeds maximum", len(e.Certificate))
+		if len(e.Certificate) == 0 || len(e.Certificate) > MaxHandshakeMessageLen {
+			return nil, fmt.Errorf("tls13gm: certificate length %d invalid (cert_data must be 1..2^24-1)", len(e.Certificate))
 		}
 		clen := len(e.Certificate)
 		list = append(list, byte(clen>>16), byte(clen>>8), byte(clen))

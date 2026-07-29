@@ -123,6 +123,19 @@ func TestValidateKeyUsages_AnyEKU(t *testing.T) {
 	}
 }
 
+// TestValidateKeyUsages_RequiredAnyEKU covers the requester-side ExtKeyUsageAny
+// fast path: when the *required* slice contains ExtKeyUsageAny, the verifier
+// accepts ALL usages regardless of what the cert advertises (RFC 5280 §4.2.1.12).
+//
+// Before the fix, required=[Any] with cert=[ServerAuth] was rejected because the
+// old loop only matched when the CERT listed Any, never when the REQUESTER did.
+func TestValidateKeyUsages_RequiredAnyEKU(t *testing.T) {
+	cert := generateSM2TestCert(t) // ExtKeyUsage restricted to ServerAuth
+	if err := validateKeyUsages(cert, []x509.ExtKeyUsage{x509.ExtKeyUsageAny}); err != nil {
+		t.Errorf("required=[ExtKeyUsageAny] should accept any cert usage (RFC 5286): %v", err)
+	}
+}
+
 // generateLeafTestCert issues a self-signed non-CA (leaf) ECDSA certificate. It
 // intentionally lacks IsCA so it can be used to assert leaf-as-root rejection.
 func generateLeafTestCert(t *testing.T) *x509.Certificate {

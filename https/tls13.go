@@ -3,6 +3,7 @@ package https
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"net"
 	"net/http"
 	"time"
@@ -75,10 +76,12 @@ func NewTLS13Client(opts TLS13ClientOptions) (*http.Client, error) {
 }
 
 // ListenAndServeTLS13 starts an HTTP server that only accepts TLS 1.3 connections.
-// cfg MUST already enforce MinVersion >= TLS 1.3; if cfg is nil a default
-// TLS 1.3-only config is created. cfg.MinVersion is forced up to TLS 1.3 if a
-// caller supplied a weaker setting, so the function name's contract holds
-// regardless of caller configuration mistakes.
+//
+// cfg may be nil (a TLS 1.3-only config is created) or a caller-supplied
+// *tls.Config (which is cloned, never mutated). The MinVersion is forced up to
+// TLS 1.3 regardless of the caller's setting so the function name's contract
+// holds; if a caller-supplied MaxVersion is lower than TLS 1.3 the call fails
+// fast with a clear error rather than producing an unsatisfiable Min>Max range.
 func ListenAndServeTLS13(addr string, handler http.Handler, cfg *tls.Config) error {
 	if cfg == nil {
 		cfg = &tls.Config{}
@@ -87,6 +90,13 @@ func ListenAndServeTLS13(addr string, handler http.Handler, cfg *tls.Config) err
 		cfg = cfg.Clone()
 	}
 	cfg.MinVersion = tls.VersionTLS13
+	// Reject a caller-supplied MaxVersion that conflicts with the forced TLS 1.3
+	// floor. A MaxVersion < TLS 1.3 leaves MinVersion > MaxVersion, which makes
+	// the subsequent TLS handshake fail with a cryptic error. Fail fast with a
+	// clear message instead.
+	if cfg.MaxVersion != 0 && cfg.MaxVersion < cfg.MinVersion {
+		return errors.New("https: TLS 1.3 floor conflicts with caller-supplied MaxVersion (lower than TLS 1.3)")
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err

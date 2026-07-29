@@ -277,7 +277,14 @@ func (m *tlcpClientHelloMsg) unmarshalExtensions(extensions cryptobyte.String) b
 						return false
 					}
 				default:
-					continue
+					// Unknown IdentifierType. The payload length for an unknown
+					// type is undefined by the spec, so we cannot skip it
+					// deterministically — continuing would only consume the 1
+					// type byte and then mis-parse the unconsumed payload as the
+					// next entry (parsing misalignment, possible trust-bypass).
+					// Reject the whole message, mirroring how crypto/tls treats
+					// structurally invalid trusted_authorities.
+					return false
 				}
 				m.trustedAuthorities = append(m.trustedAuthorities, ta)
 			}

@@ -24,6 +24,9 @@ func NewCipher(key []byte) (cipher.Block, error) {
 }
 
 // GenerateKey generates a random 128-bit SM4 key.
+//
+// The caller MUST securely zero the returned slice when done, preferably via
+// defer ZeroKey(key).
 func GenerateKey() ([]byte, error) {
 	key := make([]byte, KeySize)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {

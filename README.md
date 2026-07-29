@@ -17,7 +17,7 @@ pollux-go 是**集成工具包，不是密码学实现**。它把 gmsm 的原语
 | SM9 基于身份加密 | `sm9` | ✅ | 封装 gmsm/sm9 |
 | ZUC 序列密码 | `zuc` | ✅ | 封装 gmsm/zuc |
 | SM2 感知 X.509 | `smx509`、`cert` | ✅ | 证书创建 / 解析 / 验证 |
-| **路线 A** — 标准 TLS 1.3 | `tls13`、`http` | ✅ 生产 | 基于 `crypto/tls` |
+| **路线 A** — 标准 TLS 1.3 | `tls13`、`https` | ✅ 生产 | 基于 `crypto/tls` |
 | **路线 A** — 标准 QUIC | `quic` | ✅ 生产 | 基于 `quic-go` |
 | **路线 C** — RFC 8998 TLS 1.3 GM | `tls13gm` | ✅ 互通已验证 | 完整握手引擎，与 Tongsuo/BabaSSL 互通（见 [互通矩阵](docs/security/interop-matrix.md)） |
 | **路线 C** — RFC 9001 QUIC GM | `quicgm` | ✅ 互通已验证 | transport-level packet protection，端到端 + 0-RTT 测试 |
@@ -33,7 +33,7 @@ gmstd                         # GM/T 标准辅助函数
 tlcp                          # TLCP 1.1（GB/T 38636-2020）
 tls13gm quicgm                # RFC 8998 / RFC 9001 GM 栈（Route C，已与 Tongsuo 互通验证）
 tls tls13 quic                # 标准 TLS/QUIC（Route A）
-http                          # TLS / TLCP / TLS1.3 HTTP 辅助
+https                         # TLS / TLCP / TLS1.3 HTTP 辅助
 internal/memsecure            # 密钥材料安全清零
 internal/panicsafe            # panic 安全辅助
 ```
@@ -89,6 +89,7 @@ make cover-html   # 生成覆盖率报告
 
 ## 文档
 
+- [贡献指南](CONTRIBUTING.md) — 分支模型、提交流程、代码门禁、本地开发
 - [架构与设计](docs/design/architecture.md) — 项目定位、概念边界、包职责、标准依据
 - [内存与密钥管理](docs/security/memory-management.md)
 - [RFC 8998 互通矩阵](docs/security/interop-matrix.md) — pollux-go × Tongsuo/BabaSSL 合规验证

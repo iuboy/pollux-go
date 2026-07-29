@@ -24,20 +24,25 @@ var (
 
 // CreateSubjectKeyIdentifierExtension builds a SubjectKeyIdentifier extension
 // (RFC 5280 §4.2.1.2) from a key identifier. SKI is non-critical.
-// Returns an empty Extension if keyID is empty.
-func CreateSubjectKeyIdentifierExtension(keyID []byte) pkix.Extension {
+//
+// An empty keyID returns a zero-value pkix.Extension (Id == nil) with a nil
+// error, signalling "no extension to add" — callers should check `ext.Id !=
+// nil` before appending. An ASN.1 marshal failure (effectively unreachable for
+// a []byte) returns an error. This matches the (Extension, error) shape of the
+// other Create*Extension helpers, keeping the four functions consistent.
+func CreateSubjectKeyIdentifierExtension(keyID []byte) (pkix.Extension, error) {
 	if len(keyID) == 0 {
-		return pkix.Extension{}
+		return pkix.Extension{}, nil
 	}
 	value, err := asn1.Marshal(keyID)
 	if err != nil {
-		return pkix.Extension{}
+		return pkix.Extension{}, fmt.Errorf("smx509: marshal SKI: %w", err)
 	}
 	return pkix.Extension{
 		Id:       OIDSubjectKeyIdentifier,
 		Critical: false,
 		Value:    value,
-	}
+	}, nil
 }
 
 // GenerateSubjectKeyIdentifier computes a SubjectKeyIdentifier from a public key
@@ -62,20 +67,23 @@ type authorityKeyIdentifier struct {
 
 // CreateAuthorityKeyIdentifierExtension builds an AuthorityKeyIdentifier
 // extension (RFC 5280 §4.2.1.1) from a key identifier. AKI is non-critical.
-// Returns an empty Extension if keyID is empty.
-func CreateAuthorityKeyIdentifierExtension(keyID []byte) pkix.Extension {
+//
+// As with CreateSubjectKeyIdentifierExtension, an empty keyID returns a
+// zero-value extension with a nil error ("nothing to add"); a marshal failure
+// returns an error.
+func CreateAuthorityKeyIdentifierExtension(keyID []byte) (pkix.Extension, error) {
 	if len(keyID) == 0 {
-		return pkix.Extension{}
+		return pkix.Extension{}, nil
 	}
 	value, err := asn1.Marshal(authorityKeyIdentifier{KeyIdentifier: keyID})
 	if err != nil {
-		return pkix.Extension{}
+		return pkix.Extension{}, fmt.Errorf("smx509: marshal AKI: %w", err)
 	}
 	return pkix.Extension{
 		Id:       OIDAuthorityKeyIdentifier,
 		Critical: false,
 		Value:    value,
-	}
+	}, nil
 }
 
 // GenerateAuthorityKeyIdentifier computes an AuthorityKeyIdentifier from an
@@ -136,7 +144,13 @@ func AddRFC5280KeyIdentifiers(
 		subjectKeyID = ski
 	}
 	if len(subjectKeyID) > 0 && !hasExt(OIDSubjectKeyIdentifier) {
-		extensions = append(extensions, CreateSubjectKeyIdentifierExtension(subjectKeyID))
+		ext, err := CreateSubjectKeyIdentifierExtension(subjectKeyID)
+		if err != nil {
+			return fmt.Errorf("smx509: build SKI extension: %w", err)
+		}
+		if ext.Id != nil { // non-nil Id => a real extension was produced
+			extensions = append(extensions, ext)
+		}
 	}
 
 	if len(authorityKeyID) == 0 && issuerPubKey != nil {
@@ -147,7 +161,13 @@ func AddRFC5280KeyIdentifiers(
 		authorityKeyID = aki
 	}
 	if len(authorityKeyID) > 0 && !hasExt(OIDAuthorityKeyIdentifier) {
-		extensions = append(extensions, CreateAuthorityKeyIdentifierExtension(authorityKeyID))
+		ext, err := CreateAuthorityKeyIdentifierExtension(authorityKeyID)
+		if err != nil {
+			return fmt.Errorf("smx509: build AKI extension: %w", err)
+		}
+		if ext.Id != nil {
+			extensions = append(extensions, ext)
+		}
 	}
 
 	template.ExtraExtensions = append(template.ExtraExtensions, extensions...)

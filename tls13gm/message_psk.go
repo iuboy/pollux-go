@@ -136,6 +136,14 @@ func parsePreSharedKeyExtension(data []byte) (identities []PskIdentity, binders 
 // bindersOffset. Re-encoding a shorter "identities-only" extension is WRONG: it
 // rewrites the ext_len byte and desyncs the transcript from the server.
 func pskBinderTranscript(ch *ClientHelloMsg, identities []PskIdentity) ([]byte, error) {
+	// Make the "exactly one identity" assumption from the doc comment an
+	// enforced contract. The placeholder binder vector below hardcodes a single
+	// binder and bindersField hardcodes the offset for one identity; a
+	// multi-identity input would silently violate RFC 8446 §4.2.11
+	// (len(binders) == len(identities)) and compute a wrong binder transcript.
+	if len(identities) != 1 {
+		return nil, fmt.Errorf("tls13gm: pskBinderTranscript requires exactly 1 identity (got %d); multi-identity PSK is unsupported", len(identities))
+	}
 	placeholder, err := marshalPreSharedKeyExtension(identities, [][]byte{make([]byte, sm3.Size)})
 	if err != nil {
 		return nil, err

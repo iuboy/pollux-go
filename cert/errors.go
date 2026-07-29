@@ -3,7 +3,10 @@ package cert
 import "errors"
 
 // Sentinel errors returned by certificate loading, parsing, and verification.
-// They wrap the underlying cause via errors.Is so callers can branch on type.
+// These are plain sentinels (created via errors.New); match them with
+// errors.Is, which checks equality for unwrapped sentinels. They do NOT wrap
+// an underlying cause — a verification failure surfaces the wrapped reason via
+// the %w chain of the returned error, not via these sentinels themselves.
 var (
 	// ErrNoCertificates is returned when no certificate is provided where at least one is required.
 	ErrNoCertificates = errors.New("cert: at least one certificate is required")

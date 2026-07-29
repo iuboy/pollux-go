@@ -17,6 +17,8 @@ var (
 	errNilEncMasterPub  = errors.New("sm9: nil encryption master public key")
 	errNilSignMasterPub = errors.New("sm9: nil signing master public key")
 	errSigEmpty         = errors.New("sm9: empty signature")
+	errCiphertextEmpty  = errors.New("sm9: ciphertext must not be empty")
+	errCipherEmpty      = errors.New("sm9: cipher must not be empty")
 
 	// ErrSignatureInvalid is returned by Verify when signature verification
 	// fails. It is distinct from input-validation errors (nil key, empty uid,
@@ -156,6 +158,9 @@ func Decrypt(privateKey *EncryptPrivateKey, uid, ciphertext []byte) ([]byte, err
 	if len(uid) == 0 {
 		return nil, errUIDEmpty
 	}
+	if len(ciphertext) == 0 {
+		return nil, errCiphertextEmpty
+	}
 	return gmsmSM9.DecryptASN1(privateKey, uid, ciphertext)
 }
 
@@ -199,6 +204,9 @@ func UnwrapKey(privateKey *EncryptPrivateKey, uid, cipher []byte, keyLen int) ([
 	}
 	if keyLen <= 0 || keyLen > 1024 {
 		return nil, errors.New("sm9: keyLen must be between 1 and 1024")
+	}
+	if len(cipher) == 0 {
+		return nil, errCipherEmpty
 	}
 	return gmsmSM9.UnwrapKey(privateKey, uid, cipher, keyLen)
 }

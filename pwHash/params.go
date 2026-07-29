@@ -32,6 +32,18 @@ const (
 	// maxPBKDF2Iteration mirrors kdf.maxIteration so a hasher configured here
 	// agrees with the bound enforced inside kdf.PBKDF2.
 	maxPBKDF2Iteration = 10_000_000
+
+	// maxKeyLength caps the derived-key length (1 MiB) to match the bound
+	// enforced inside kdf.PBKDF2 (maxKeyLen = 1<<20). Without it, a malicious
+	// PHC string with a huge key length passes Validate() and only fails later
+	// at Hash/Verify time, or — for argon2id — drives an oversized allocation
+	// / integer overflow in the underlying argon2.IDKey call.
+	maxKeyLength = 1 << 20
+
+	// maxArgon2Iteration caps the argon2id time cost so an attacker cannot
+	// craft a PHC string (t=<huge>) that stalls verification (DoS). Mirrors the
+	// symmetric bound PBKDF2 already has via maxPBKDF2Iteration.
+	maxArgon2Iteration = maxPBKDF2Iteration
 )
 
 // Argon2idParams configures the argon2id memory-hard password hash.
@@ -66,6 +78,8 @@ func (p Argon2idParams) Validate() error {
 		return errors.New("pwhash: argon2id memory exceeds safe upper bound (1 GiB)")
 	case p.Iterations == 0:
 		return errors.New("pwhash: argon2id iterations must be positive")
+	case p.Iterations > maxArgon2Iteration:
+		return errors.New("pwhash: argon2id iterations exceed safe upper bound")
 	case p.Parallelism == 0:
 		return errors.New("pwhash: argon2id parallelism must be positive")
 	case p.Parallelism > maxArgon2Parallelism:
@@ -74,6 +88,8 @@ func (p Argon2idParams) Validate() error {
 		return errors.New("pwhash: argon2id salt length must be at least 8 bytes")
 	case p.KeyLength < minKeyLength:
 		return errors.New("pwhash: argon2id key length must be at least 16 bytes")
+	case p.KeyLength > maxKeyLength:
+		return errors.New("pwhash: argon2id key length exceeds safe upper bound (1 MiB)")
 	}
 	return nil
 }
@@ -128,6 +144,8 @@ func (p PBKDF2Params) Validate() error {
 		return errors.New("pwhash: pbkdf2 salt length must be at least 8 bytes")
 	case p.KeyLength < minKeyLength:
 		return errors.New("pwhash: pbkdf2 key length must be at least 16 bytes")
+	case p.KeyLength > maxKeyLength:
+		return errors.New("pwhash: pbkdf2 key length exceeds safe upper bound (1 MiB)")
 	}
 	return nil
 }

@@ -146,7 +146,9 @@ func configToNative(c *Config, isClient bool) (*tlcpEngineConfig, error) {
 	// certificates, but some callers (e.g. root-CA-only configs for testing)
 	// legitimately build a Config without them. The engine surfaces a clear
 	// error during the handshake if certs are missing.
-	cipherSuites := c.CipherSuites
+	// Defensive copy so a concurrent mutation of c.CipherSuites cannot corrupt the
+	// engine's negotiated suite list during the handshake.
+	cipherSuites := cloneUint16Slice(c.CipherSuites)
 	if len(cipherSuites) == 0 {
 		cipherSuites = DefaultCipherSuites()
 	}
@@ -612,7 +614,7 @@ func dialWithDialer(dialer *net.Dialer, network, addr string, config *Config) (*
 func (c *Config) BuildClientConfig() (*tls.Config, error) {
 	cfg := &tls.Config{
 		ServerName:         c.ServerName,
-		CipherSuites:       c.CipherSuites,
+		CipherSuites:       cloneUint16Slice(c.CipherSuites),
 		InsecureSkipVerify: c.InsecureSkipVerify,
 		MinVersion:         tls.VersionTLS12,
 		MaxVersion:         tls.VersionTLS12,
@@ -634,7 +636,7 @@ func (c *Config) BuildClientConfig() (*tls.Config, error) {
 // BuildServerConfig builds TLS server configuration
 func (c *Config) BuildServerConfig() (*tls.Config, error) {
 	cfg := &tls.Config{
-		CipherSuites:       c.CipherSuites,
+		CipherSuites:       cloneUint16Slice(c.CipherSuites),
 		InsecureSkipVerify: c.InsecureSkipVerify,
 		MinVersion:         tls.VersionTLS12,
 		MaxVersion:         tls.VersionTLS12,
@@ -669,6 +671,9 @@ func (c *Config) BuildServerConfig() (*tls.Config, error) {
 
 // Enable enables TLCP Cipher Suites on existing TLS configuration
 func Enable(tlsCfg *tls.Config) error {
+	if tlsCfg == nil {
+		return errors.New("tlcp: tls config is nil")
+	}
 	nationalSuites := polluxtls.NationalCipherSuites()
 	if len(nationalSuites) == 0 {
 		return ErrTLCPNotSupported
@@ -679,6 +684,9 @@ func Enable(tlsCfg *tls.Config) error {
 
 // Disable disables TLCP Cipher Suites on TLS configuration
 func Disable(tlsCfg *tls.Config) {
+	if tlsCfg == nil {
+		return
+	}
 	filtered := make([]uint16, 0, len(tlsCfg.CipherSuites))
 	for _, suite := range tlsCfg.CipherSuites {
 		if !polluxtls.IsNationalCipherSuite(suite) {
@@ -686,6 +694,19 @@ func Disable(tlsCfg *tls.Config) {
 		}
 	}
 	tlsCfg.CipherSuites = filtered
+}
+
+// cloneUint16Slice returns a defensive copy of s (or nil if s is empty). Used by
+// the Build* builders so the returned *tls.Config does not alias the Config's
+// CipherSuites backing array — a caller mutating the source slice after building
+// would otherwise corrupt the built config.
+func cloneUint16Slice(s []uint16) []uint16 {
+	if len(s) == 0 {
+		return nil
+	}
+	out := make([]uint16, len(s))
+	copy(out, s)
+	return out
 }
 
 // GetStandardSummary returns a human-readable summary of the TLCP standard.

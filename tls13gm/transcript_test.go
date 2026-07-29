@@ -140,3 +140,60 @@ func TestReadHandshakeMessage_Truncated(t *testing.T) {
 		}
 	}
 }
+
+// TestResetForHelloRetry covers the HelloRetryRequest transcript synthesis
+// (RFC 8446 §4.4.1), previously untested. After ResetForHelloRetry the running
+// transcript must equal:
+//
+//	SM3( message_hash( Hash(ClientHello1) ) || ServerHello( hrr_body ) )
+//
+// where ClientHello1 is hashed in full and hrr is the full ServerHello-carrying
+// message whose 4-byte handshake header is stripped before adding the body.
+func TestResetForHelloRetry(t *testing.T) {
+	// Full ClientHello1 (4-byte header + body) and full HRR (4-byte header + body).
+	ch1Body := []byte("ClientHello1-body")
+	ch1Full := append([]byte{HandshakeTypeClientHello, 0x00, 0x00, byte(len(ch1Body))}, ch1Body...)
+	hrrBody := []byte("HRR-ServerHello-body")
+	hrrFull := append([]byte{HandshakeTypeServerHello, 0x00, 0x00, byte(len(hrrBody))}, hrrBody...)
+
+	tr := NewTranscript()
+	// Seed with an unrelated message to confirm ResetForHelloRetry clears it.
+	tr.AddMessage(HandshakeTypeClientHello, []byte("should-be-discarded"))
+	tr.ResetForHelloRetry(ch1Full, hrrFull)
+
+	// Build the expected transcript independently.
+	hash1 := sm3.Sum(ch1Full)
+	want := wantTranscript(t,
+		struct {
+			typ  uint8
+			body []byte
+		}{HandshakeTypeMessageHash, hash1[:]},
+		struct {
+			typ  uint8
+			body []byte
+		}{HandshakeTypeServerHello, hrrBody},
+	)
+	if got := tr.Sum(); !bytes.Equal(got, want) {
+		t.Errorf("HRR transcript mismatch:\n got %x\nwant %x", got, want)
+	}
+
+	// Subsequent messages append normally after the synthetic prefix.
+	tr.AddMessage(HandshakeTypeClientHello, []byte("CH2"))
+	want2 := wantTranscript(t,
+		struct {
+			typ  uint8
+			body []byte
+		}{HandshakeTypeMessageHash, hash1[:]},
+		struct {
+			typ  uint8
+			body []byte
+		}{HandshakeTypeServerHello, hrrBody},
+		struct {
+			typ  uint8
+			body []byte
+		}{HandshakeTypeClientHello, []byte("CH2")},
+	)
+	if got := tr.Sum(); !bytes.Equal(got, want2) {
+		t.Errorf("post-HRR append mismatch:\n got %x\nwant %x", got, want2)
+	}
+}

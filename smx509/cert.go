@@ -60,11 +60,11 @@ func IsSM2PublicKey(pub any) bool {
 // crypto/x509 or gmsm/smx509 based on the signer's key type.
 func CreateCertificate(template, parent *x509.Certificate, pub, priv any) ([]byte, error) {
 	if IsSM2Key(priv) {
-		smTmpl, err := toSMX509Certificate(template)
+		smTmpl, err := ToSMX509Certificate(template)
 		if err != nil {
 			return nil, err
 		}
-		smParent, err := toSMX509Certificate(parent)
+		smParent, err := ToSMX509Certificate(parent)
 		if err != nil {
 			return nil, err
 		}
@@ -86,7 +86,7 @@ func CreateCertificateRequest(template *x509.CertificateRequest, priv any) ([]by
 	return x509.CreateCertificateRequest(rand.Reader, template, priv)
 }
 
-// toSMX509Certificate converts a stdlib *x509.Certificate to *smx509.Certificate.
+// ToSMX509Certificate converts a stdlib *x509.Certificate to *smx509.Certificate.
 // This is required since gmsm v0.44 made smx509 a clean fork: its Certificate
 // type is no longer struct-assignable from crypto/x509's (the ToX509/FromX509
 // helpers and direct casts were removed).
@@ -101,7 +101,7 @@ func CreateCertificateRequest(template *x509.CertificateRequest, priv any) ([]by
 //     int-backed with identical constant values, so they convert directly.
 //     Fields absent on one side are skipped. This avoids maintaining a brittle
 //     hand-written field list against a moving stdlib/smx509 fork baseline.
-func toSMX509Certificate(cert *x509.Certificate) (*smx509.Certificate, error) {
+func ToSMX509Certificate(cert *x509.Certificate) (*smx509.Certificate, error) {
 	if cert == nil {
 		return nil, nil
 	}
@@ -111,6 +111,22 @@ func toSMX509Certificate(cert *x509.Certificate) (*smx509.Certificate, error) {
 	sm := &smx509.Certificate{}
 	copyCertFields(reflect.ValueOf(cert).Elem(), reflect.ValueOf(sm).Elem())
 	return sm, nil
+}
+
+// ToSMX509Certificates converts a slice of stdlib *x509.Certificate to
+// []*smx509.Certificate (batch form of ToSMX509Certificate). A nil/empty input
+// returns an empty (non-nil) slice. On error, the index of the failing cert is
+// wrapped into the returned error.
+func ToSMX509Certificates(certs []*x509.Certificate) ([]*smx509.Certificate, error) {
+	out := make([]*smx509.Certificate, len(certs))
+	for i, c := range certs {
+		sm, err := ToSMX509Certificate(c)
+		if err != nil {
+			return nil, fmt.Errorf("convert certificate[%d]: %w", i, err)
+		}
+		out[i] = sm
+	}
+	return out, nil
 }
 
 // toSMX509CertificateRequest converts a stdlib *x509.CertificateRequest to
@@ -199,7 +215,7 @@ func copyCertFields(src, dst reflect.Value) {
 func ParseCertificate(der []byte) (*x509.Certificate, error) {
 	smCert, smErr := smx509.ParseCertificate(der)
 	if smErr == nil {
-		return smX509ToStdCertificate(smCert)
+		return SMX509ToStdCertificate(smCert)
 	}
 	stdCert, stdErr := x509.ParseCertificate(der)
 	if stdErr == nil {
@@ -212,19 +228,35 @@ func ParseCertificate(der []byte) (*x509.Certificate, error) {
 	return nil, fmt.Errorf("smx509: failed to parse certificate: %w", errors.Join(smErr, stdErr))
 }
 
-// smX509ToStdCertificate converts a gmsm *smx509.Certificate to a stdlib
+// SMX509ToStdCertificate converts a gmsm *smx509.Certificate to a stdlib
 // *x509.Certificate via reflection-based field copy (see copyCertFields).
 // This replaces the ToX509() bridge removed in gmsm v0.44. The Raw DER is
 // preserved, so callers that re-marshal (e.g. x509.MarshalX509) get identical
 // bytes. SM2 public keys survive as *ecdsa.PublicKey in the any-typed PublicKey
 // field — stdlib never needs to re-parse the curve.
-func smX509ToStdCertificate(smCert *smx509.Certificate) (*x509.Certificate, error) {
+func SMX509ToStdCertificate(smCert *smx509.Certificate) (*x509.Certificate, error) {
 	if smCert == nil {
 		return nil, nil
 	}
 	std := &x509.Certificate{}
 	copyCertFields(reflect.ValueOf(smCert).Elem(), reflect.ValueOf(std).Elem())
 	return std, nil
+}
+
+// SMX509ToStdCertificates converts a slice of gmsm *smx509.Certificate to
+// []*x509.Certificate (batch form of SMX509ToStdCertificate). A nil/empty input
+// returns an empty (non-nil) slice. On error, the index of the failing cert is
+// wrapped into the returned error.
+func SMX509ToStdCertificates(certs []*smx509.Certificate) ([]*x509.Certificate, error) {
+	out := make([]*x509.Certificate, len(certs))
+	for i, c := range certs {
+		std, err := SMX509ToStdCertificate(c)
+		if err != nil {
+			return nil, fmt.Errorf("convert certificate[%d]: %w", i, err)
+		}
+		out[i] = std
+	}
+	return out, nil
 }
 
 // ParseCertificatePEM parses a PEM-encoded certificate.

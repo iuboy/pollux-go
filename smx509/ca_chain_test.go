@@ -34,7 +34,7 @@ func mustGenerateSM2Key(t *testing.T) (*ecdsa.PrivateKey, *sm2.PrivateKey) {
 // smX509ToStdCertificate helper (reflection field copy) is reused.
 func smToStdCert(t *testing.T, cert *gmsmSMX509.Certificate) *x509.Certificate {
 	t.Helper()
-	std, err := smX509ToStdCertificate(cert)
+	std, err := SMX509ToStdCertificate(cert)
 	if err != nil {
 		t.Fatalf("convert smx509 cert to stdlib: %v", err)
 	}

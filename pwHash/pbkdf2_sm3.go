@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/iuboy/pollux-go/internal/memsecure"
 	"github.com/iuboy/pollux-go/kdf"
 	"github.com/iuboy/pollux-go/sm3"
 )
@@ -49,13 +50,16 @@ func (h *PBKDF2SM3) Hash(password string) (string, error) {
 	if _, err := readRandom(salt); err != nil {
 		return "", fmt.Errorf("pwhash/pbkdf2-sm3: %w", err)
 	}
+	pw := []byte(password)
+	defer memsecure.ZeroBytes(pw)
 	dk, err := kdf.PBKDF2(
-		[]byte(password), salt,
+		pw, salt,
 		h.params.Iterations, h.params.KeyLength, sm3.New,
 	)
 	if err != nil {
 		return "", fmt.Errorf("pwhash/pbkdf2-sm3: %w", err)
 	}
+	defer memsecure.ZeroBytes(dk)
 	return encodePBKDF2SM3(h.params, salt, dk), nil
 }
 
@@ -70,13 +74,16 @@ func (h *PBKDF2SM3) Verify(password, encoded string) bool {
 	if err != nil {
 		return false
 	}
+	pw := []byte(password)
+	defer memsecure.ZeroBytes(pw)
 	got, err := kdf.PBKDF2(
-		[]byte(password), salt,
+		pw, salt,
 		params.Iterations, params.KeyLength, sm3.New,
 	)
 	if err != nil {
 		return false
 	}
+	defer memsecure.ZeroBytes(got)
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 

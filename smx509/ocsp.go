@@ -82,15 +82,45 @@ func ParseOCSPResponseUnverified(data []byte) (*ocsp.Response, error) {
 // stdlib ocsp.ParseResponse rejects sm2.P256() with "unsupported elliptic
 // curve"); for standard algorithms, it delegates to ocsp.ParseResponse.
 //
+// In addition to signature verification, this function enforces a
+// validity-period check: the response is rejected if NextUpdate has passed or
+// ThisUpdate is in the future (beyond a small clock-skew tolerance). A
+// signature-valid but stale response can otherwise be replayed to mask a
+// revocation. Use ParseOCSPResponseWithIssuerAt to supply a reference time
+// (e.g. for testing or a fixed verification instant).
+//
 // Returns an error if issuer is nil, as signature verification would be skipped.
 func ParseOCSPResponseWithIssuer(data []byte, issuer *x509.Certificate) (*ocsp.Response, error) {
+	return ParseOCSPResponseWithIssuerAt(data, issuer, time.Now())
+}
+
+// ParseOCSPResponseWithIssuerAt is like ParseOCSPResponseWithIssuer but uses
+// the supplied now as the reference time for the validity-period check. Pass
+// time.Time{} (the zero value) to disable the time check — intended only for
+// parsing already-trusted or historical responses where staleness is not
+// meaningful.
+func ParseOCSPResponseWithIssuerAt(data []byte, issuer *x509.Certificate, now time.Time) (*ocsp.Response, error) {
 	if issuer == nil {
 		return nil, errors.New("smx509: issuer certificate is required for OCSP response verification")
 	}
 	if isSM2OCSPResponse(data) {
-		return parseSM2OCSPResponse(data, issuer)
+		return parseSM2OCSPResponse(data, issuer, now)
 	}
-	return ocsp.ParseResponse(data, issuer)
+	// Non-SM2 responses are delegated to x/crypto/ocsp, which does not enforce
+	// a time check. Apply the same validity-period policy here for consistency.
+	resp, err := ocsp.ParseResponse(data, issuer)
+	if err != nil {
+		return nil, err
+	}
+	if !now.IsZero() {
+		if !resp.ThisUpdate.IsZero() && now.Add(ocspFreshnessLeeway).Before(resp.ThisUpdate) {
+			return nil, errors.New("smx509: OCSP response ThisUpdate is in the future")
+		}
+		if !resp.NextUpdate.IsZero() && now.After(resp.NextUpdate) {
+			return nil, errors.New("smx509: OCSP response is stale (past NextUpdate)")
+		}
+	}
+	return resp, nil
 }
 
 // NewOCSPResponseTemplate creates an OCSP response template for a certificate.

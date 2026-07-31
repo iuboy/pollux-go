@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/iuboy/pollux-go/sm3"
 )
@@ -613,6 +614,11 @@ func TestHandshake_EarlyTrafficKeys(t *testing.T) {
 		PrivateKey:        serverKey,
 		SessionTicketKeys: func() [][]byte { return [][]byte{tek} },
 		AllowEarlyData:    true,
+		// 0-RTT requires an EarlyDataAcceptor (which would consult an
+		// AntiReplayCache in production); AllowEarlyData alone no longer
+		// accepts 0-RTT. Use an always-accept stub here to exercise the
+		// 0-RTT handshake path.
+		EarlyDataAcceptor: func([]byte, time.Duration) bool { return true },
 	})
 	if err != nil {
 		t.Fatalf("server: %v", err)

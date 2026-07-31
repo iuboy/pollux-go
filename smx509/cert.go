@@ -33,6 +33,17 @@ import (
 )
 
 // IsSM2Key reports whether a private key is an SM2 key.
+//
+// SM2 key identity convention (gmsm): an SM2 key IS an ECDSA key on the SM2
+// curve. gmsm registers sm2.P256() as a distinct curve object (not the
+// stdlib's elliptic.P256()), and identification is by pointer equality against
+// that registered object. Consequences:
+//   - A *sm2.PrivateKey is SM2 by definition.
+//   - A plain *ecdsa.PrivateKey whose Curve is the same sm2.P256() object is
+//     treated as SM2 (this is how SM2 keys surface after stdlib ASN.1 parsing).
+//   - Changing gmsm's curve registration (e.g. returning a new P256() instance
+//     per call) would silently break this detection. If gmsm ever does so,
+//     identification must switch to parameter comparison.
 func IsSM2Key(key any) bool {
 	switch k := key.(type) {
 	case *sm2.PrivateKey:
@@ -44,6 +55,9 @@ func IsSM2Key(key any) bool {
 }
 
 // IsSM2PublicKey reports whether a public key is an SM2 public key.
+//
+// Uses the same pointer-equality convention as IsSM2Key: the curve must be the
+// exact gmsm-registered sm2.P256() object. See IsSM2Key for the full caveat.
 func IsSM2PublicKey(pub any) bool {
 	// Guard against a typed-nil public key, e.g. (*ecdsa.PublicKey)(nil).
 	// crypto/x509 can produce such a value (e.g. for a cert carrying an
@@ -101,6 +115,13 @@ func CreateCertificateRequest(template *x509.CertificateRequest, priv any) ([]by
 //     int-backed with identical constant values, so they convert directly.
 //     Fields absent on one side are skipped. This avoids maintaining a brittle
 //     hand-written field list against a moving stdlib/smx509 fork baseline.
+//
+// Maintenance note: this reflection-based copy assumes smx509.Certificate stays
+// a superset of crypto/x509.Certificate with matching field names/types. If a
+// gmsm upgrade changes the field layout (adds/removes/renames fields, or changes
+// enum backing), re-run the round-trip and CA-chain tests
+// (smx509/ca_chain_test.go) to confirm ToSMX509Certificate /
+// SMX509ToStdCertificate remain lossless for every field a GM certificate uses.
 func ToSMX509Certificate(cert *x509.Certificate) (*smx509.Certificate, error) {
 	if cert == nil {
 		return nil, nil
@@ -681,7 +702,21 @@ func decryptBlock(es pkix.AlgorithmIdentifier, key, ciphertext []byte) ([]byte, 
 		if err != nil {
 			return nil, err
 		}
-		return aead.Open(nil, gcmNonce, ciphertext, nil)
+		// cipher.NewGCM returns an AEAD whose Open panics (not returns error)
+		// when len(nonce) != NonceSize() (12 bytes for standard GCM). The nonce
+		// comes from attacker-controlled ASN.1, so guard explicitly to turn a
+		// process crash into an opaque decrypt error — mirroring the CBC IV
+		// length guard above. A malformed/short nonce means the key material is
+		// corrupt or hostile; return errDecryptFailed to keep the failure surface
+		// indistinguishable from other decrypt failures.
+		if len(gcmNonce) != aead.NonceSize() {
+			return nil, errDecryptFailed
+		}
+		plaintext, err := aead.Open(nil, gcmNonce, ciphertext, nil)
+		if err != nil {
+			return nil, errDecryptFailed
+		}
+		return plaintext, nil
 
 	default:
 		return nil, fmt.Errorf("smx509: unsupported encryption scheme: %v", es.Algorithm)

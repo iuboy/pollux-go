@@ -4,6 +4,8 @@ import (
 	"crypto/subtle"
 	"encoding/binary"
 	"errors"
+
+	"github.com/iuboy/pollux-go/internal/memsecure"
 )
 
 // keyWrapIV is the RFC 3394 §2.2.3.1 default IV: 0xA6 repeated 8 times.
@@ -43,6 +45,15 @@ func KeyWrap(kek, plaintextKey []byte) ([]byte, error) {
 		R[i] = make([]byte, 8)
 		copy(R[i], plaintextKey[(i-1)*8:i*8])
 	}
+	// A and R[i] carry key-derived semiblocks; zero them before returning so the
+	// material does not linger on the heap (consistent with the ZeroKey
+	// convention used by the GCM one-shot helpers in this package).
+	defer func() {
+		memsecure.ZeroBytes(A)
+		for i := 1; i <= n; i++ {
+			memsecure.ZeroBytes(R[i])
+		}
+	}()
 
 	for j := 0; j <= 5; j++ {
 		for i := 1; i <= n; i++ {
@@ -99,6 +110,14 @@ func KeyUnwrap(kek, ciphertext []byte) ([]byte, error) {
 		R[i] = make([]byte, 8)
 		copy(R[i], ciphertext[i*8:(i+1)*8])
 	}
+	// R[i] will hold the recovered plaintext key semiblocks; zero them before
+	// returning so the key material does not linger on the heap.
+	defer func() {
+		memsecure.ZeroBytes(A)
+		for i := 1; i <= n; i++ {
+			memsecure.ZeroBytes(R[i])
+		}
+	}()
 
 	// Reverse: j from 5 to 0, i from n to 1
 	for j := 5; j >= 0; j-- {

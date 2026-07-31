@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/argon2"
+
+	"github.com/iuboy/pollux-go/internal/memsecure"
 )
 
 // argon2idAlgo is the PHC scheme identifier prefix for argon2id hashes.
@@ -48,11 +50,17 @@ func (h *Argon2id) Hash(password string) (string, error) {
 	if _, err := readRandom(salt); err != nil {
 		return "", fmt.Errorf("pwhash/argon2id: %w", err)
 	}
+	// Copy the password so we can zero our copy; argon2 may retain an internal
+	// copy, but clearing the input copy still reduces the window the password
+	// sits in memory.
+	pw := []byte(password)
+	defer memsecure.ZeroBytes(pw)
 	dk := argon2.IDKey(
-		[]byte(password), salt,
+		pw, salt,
 		h.params.Iterations, h.params.Memory, h.params.Parallelism,
 		h.params.KeyLength,
 	)
+	defer memsecure.ZeroBytes(dk)
 	return encodeArgon2id(h.params, salt, dk), nil
 }
 
@@ -68,11 +76,14 @@ func (h *Argon2id) Verify(password, encoded string) bool {
 	if err != nil {
 		return false
 	}
+	pw := []byte(password)
+	defer memsecure.ZeroBytes(pw)
 	got := argon2.IDKey(
-		[]byte(password), salt,
+		pw, salt,
 		params.Iterations, params.Memory, params.Parallelism,
 		params.KeyLength,
 	)
+	defer memsecure.ZeroBytes(got)
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 

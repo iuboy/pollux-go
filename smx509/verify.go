@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"time"
 
 	smx509 "github.com/emmansun/gmsm/smx509"
 )
@@ -26,6 +27,13 @@ type VerifyOptions struct {
 	// If nil, defaults to ExtKeyUsageServerAuth (matching crypto/x509 default).
 	// Set to []ExtKeyUsage{ExtKeyUsageClientAuth} when verifying client certs.
 	KeyUsages []x509.ExtKeyUsage
+	// CurrentTime is used as the reference time for certificate validity
+	// (NotBefore/NotAfter) checks. If zero, time.Now() is used. Set this for
+	// deterministic testing, fixed verification instants, or clock-skew
+	// tolerance. The standard-library path forwards it to x509.VerifyOptions;
+	// the SM2 path applies it manually (gmsm/smx509 does not support
+	// CurrentTime), matching the cert package's behavior.
+	CurrentTime time.Time
 }
 
 // Verify verifies a certificate, automatically selecting the standard library
@@ -54,6 +62,9 @@ func Verify(cert *x509.Certificate, opts VerifyOptions) error {
 	verifyOpts := x509.VerifyOptions{
 		DNSName:   opts.DNSName,
 		KeyUsages: opts.KeyUsages,
+	}
+	if !opts.CurrentTime.IsZero() {
+		verifyOpts.CurrentTime = opts.CurrentTime
 	}
 	if opts.Roots != nil {
 		verifyOpts.Roots = opts.Roots.toStdCertPool()
@@ -134,6 +145,20 @@ func verifySM2(cert *x509.Certificate, opts VerifyOptions) error {
 	}
 	if len(chains) == 0 {
 		return errNoCertChain
+	}
+	// gmsm/smx509's VerifyOptions does not support CurrentTime (it uses
+	// time.Now internally), so apply the caller's reference time manually for
+	// the validity period. This mirrors the cert package's verifySM2 and lets
+	// callers inject a deterministic time (tests, fixed verification instant).
+	if !opts.CurrentTime.IsZero() {
+		if opts.CurrentTime.Before(smCert.NotBefore) {
+			return fmt.Errorf("smx509: certificate is not valid yet (current %s, not before %s)",
+				opts.CurrentTime.Format(time.RFC3339), smCert.NotBefore.Format(time.RFC3339))
+		}
+		if opts.CurrentTime.After(smCert.NotAfter) {
+			return fmt.Errorf("smx509: certificate is expired (current %s, not after %s)",
+				opts.CurrentTime.Format(time.RFC3339), smCert.NotAfter.Format(time.RFC3339))
+		}
 	}
 	return nil
 }

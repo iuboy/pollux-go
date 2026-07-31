@@ -44,11 +44,13 @@ const (
 // Zeroize takes a write lock, so Zeroize (which mutates the secret slice in
 // place) cannot race a concurrent Sign/Verify and hand it a half-zeroed key.
 type hmacSignerVerifier struct {
-	mu     sync.RWMutex
-	method jwt.SigningMethod
-	algo   Algorithm
-	secret []byte
-	issuer string
+	mu       sync.RWMutex
+	method   jwt.SigningMethod
+	algo     Algorithm
+	secret   []byte
+	issuer   string
+	audience string
+	zeroized bool
 }
 
 // NewHS256 constructs an HS256 SignerVerifier backed by the given symmetric
@@ -117,13 +119,33 @@ func (h *hmacSignerVerifier) Zeroize() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	memsecure.ZeroBytes(h.secret)
+	h.zeroized = true
 }
 
+// errKeyZeroized is returned by Sign/Verify after Zeroize has cleared the key.
+// Without this guard a zeroed SignerVerifier would silently sign with an
+// all-zero secret or fail to verify with a zeroed scalar — both hard to spot.
+var errKeyZeroized = errors.New("jwt: signer/verifier key has been zeroized")
+
 func (h *hmacSignerVerifier) Algorithm() Algorithm { return h.algo }
+
+// SetAudience configures the expected "aud" claim enforced during Verify. An
+// empty audience (the default) disables the check; setting it makes the
+// verifier reject tokens whose "aud" claim does not match, preventing a token
+// issued for one service from being replayed against another. This must be set
+// before any concurrent Verify call.
+func (h *hmacSignerVerifier) SetAudience(aud string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.audience = aud
+}
 
 func (h *hmacSignerVerifier) Sign(claims Claims) (string, error) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	if h.zeroized {
+		return "", errKeyZeroized
+	}
 	token := jwt.NewWithClaims(h.method, claims)
 	return token.SignedString(h.secret)
 }
@@ -137,8 +159,14 @@ func (h *hmacSignerVerifier) Verify(tokenString string, v Claims) error {
 	}
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	if h.zeroized {
+		return errKeyZeroized
+	}
 	if h.issuer != "" {
 		parserOpts = append(parserOpts, jwt.WithIssuer(h.issuer))
+	}
+	if h.audience != "" {
+		parserOpts = append(parserOpts, jwt.WithAudience(h.audience))
 	}
 	parsed, err := jwt.ParseWithClaims(tokenString, v, func(t *jwt.Token) (any, error) {
 		if t.Method.Alg() != h.method.Alg() {
@@ -164,11 +192,13 @@ func (h *hmacSignerVerifier) Verify(tokenString string, v Claims) error {
 // the write lock and mutates priv.D; Sign/Verify take a read lock so they never
 // observe a half-zeroed scalar concurrently.
 type sm2SignerVerifier struct {
-	mu     sync.RWMutex
-	algo   Algorithm
-	priv   *sm2.PrivateKey  // *gmsmSM2.PrivateKey (embeds ecdsa.PrivateKey)
-	pub    *ecdsa.PublicKey // sm2.PublicKey is an alias for *ecdsa.PublicKey
-	issuer string
+	mu       sync.RWMutex
+	algo     Algorithm
+	priv     *sm2.PrivateKey  // *gmsmSM2.PrivateKey (embeds ecdsa.PrivateKey)
+	pub      *ecdsa.PublicKey // sm2.PublicKey is an alias for *ecdsa.PublicKey
+	issuer   string
+	audience string
+	zeroized bool
 }
 
 // NewSM2SM3 constructs an SM2-SM3 SignerVerifier.
@@ -190,9 +220,20 @@ func NewSM2SM3(priv *sm2.PrivateKey, pub *ecdsa.PublicKey, issuer string) (Signe
 
 func (s *sm2SignerVerifier) Algorithm() Algorithm { return s.algo }
 
+// SetAudience configures the expected "aud" claim enforced during Verify. See
+// hmacSignerVerifier.SetAudience for semantics. Empty disables the check.
+func (s *sm2SignerVerifier) SetAudience(aud string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.audience = aud
+}
+
 func (s *sm2SignerVerifier) Sign(claims Claims) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.zeroized {
+		return "", errKeyZeroized
+	}
 	if s.priv == nil {
 		return "", errors.New("jwt/sm2sm3: Sign called on a verify-only instance (priv is nil)")
 	}
@@ -206,6 +247,9 @@ func (s *sm2SignerVerifier) Verify(tokenString string, v Claims) error {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.zeroized {
+		return errKeyZeroized
+	}
 	if s.pub == nil {
 		return errors.New("jwt/sm2sm3: Verify called on a sign-only instance (pub is nil)")
 	}
@@ -214,6 +258,9 @@ func (s *sm2SignerVerifier) Verify(tokenString string, v Claims) error {
 	}
 	if s.issuer != "" {
 		parserOpts = append(parserOpts, jwt.WithIssuer(s.issuer))
+	}
+	if s.audience != "" {
+		parserOpts = append(parserOpts, jwt.WithAudience(s.audience))
 	}
 	parsed, err := jwt.ParseWithClaims(tokenString, v, func(t *jwt.Token) (any, error) {
 		if t.Method.Alg() != SigningMethodSM2SM3.Alg() {
@@ -249,6 +296,7 @@ func (s *sm2SignerVerifier) Zeroize() {
 	if s.priv != nil && s.priv.D != nil {
 		s.priv.D.SetInt64(0)
 	}
+	s.zeroized = true
 }
 
 // IssueWithExpiry is a convenience helper that builds standard

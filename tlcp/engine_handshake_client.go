@@ -66,9 +66,12 @@ func (c *tlcpConn) clientHandshakeReal() error {
 		return errors.New("tlcp: nil config")
 	}
 
-	// 0. Load a cached session (by remote address) so we can offer to resume.
+	// 0. Load a cached session (keyed by server identity: SNI + remote address)
+	// so we can offer to resume. Binding SNI into the key prevents reusing a
+	// session authenticated under one server identity against a different
+	// service that shares the same IP (resume skips certificate verification).
 	if config.sessionCache != nil && c.isClient {
-		if sess, ok := config.sessionCache.Get(c.conn.RemoteAddr().String()); ok && sess != nil {
+		if sess, ok := config.sessionCache.Get(sessionCacheKey(c.conn.RemoteAddr().String(), config.serverName)); ok && sess != nil {
 			c.session = sess
 		}
 	}
@@ -395,7 +398,7 @@ func (c *tlcpConn) discardSession() {
 	}
 	key := tlcpSessionKeyHex(c.session.sessionID)
 	c.config.sessionCache.Put(key, nil)
-	c.config.sessionCache.Put(c.conn.RemoteAddr().String(), nil)
+	c.config.sessionCache.Put(sessionCacheKey(c.conn.RemoteAddr().String(), c.config.serverName), nil)
 	c.session = nil
 }
 
@@ -420,7 +423,7 @@ func (c *tlcpConn) createNewClientSession(serverHello *tlcpServerHelloMsg, maste
 	}
 	key := tlcpSessionKeyHex(sess.sessionID)
 	c.config.sessionCache.Put(key, sess)
-	c.config.sessionCache.Put(c.conn.RemoteAddr().String(), sess)
+	c.config.sessionCache.Put(sessionCacheKey(c.conn.RemoteAddr().String(), c.config.serverName), sess)
 }
 
 // clientResumeHandshake drives the client-side abbreviated (resume) handshake.

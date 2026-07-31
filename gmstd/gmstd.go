@@ -37,12 +37,15 @@ func SM3HashForPublicKey(pubKey crypto.PublicKey) ([]byte, error) {
 
 // ComputeSM2UserID computes a 16-byte SM2 user identifier from a public key.
 //
+// WARNING: despite the name, this does NOT return the standard SM2 user ID.
 // Note on GM/T 0009-2012: the standard fixes the default SM2 user identifier
 // to the ASCII string "1234567812345678" (16 bytes). It does NOT define the
 // user ID as a hash of the public key. This helper instead derives a
 // public-key-bound identifier as the first 16 bytes of SM3(DER-encoded
 // public key), intended for callers that want a key-bound UID distinct from
-// the default. For standard SM2 interop, use [DefaultSM2UserID] directly.
+// the default. For standard SM2 interop, use [DefaultSM2UserID] directly —
+// using this key-bound UID where a peer expects the default UID will break
+// signature interoperation silently.
 func ComputeSM2UserID(pubKey crypto.PublicKey) ([]byte, error) {
 	h, err := SM3HashForPublicKey(pubKey)
 	if err != nil {

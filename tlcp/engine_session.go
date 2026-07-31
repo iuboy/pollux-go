@@ -157,20 +157,24 @@ func tlcpSessionKeyHex(sessionID []byte) string {
 }
 
 // sessionCacheKey returns the address-key under which a session is cached for
-// resumption by peer identity. It binds both the remote address and the
-// configured ServerName (SNI) so that a session established with one server
-// identity is NOT reused against a different service sharing the same address
-// (e.g. virtual hosts behind one IP, or NAT'd backends). TLS resumption
-// deliberately does not re-verify the peer certificate, so the cache key must
-// itself encode the identity the session was authenticated under; otherwise a
-// resume to the same IP but a different/rotated certificate silently skips
-// certificate verification (a cross-service identity-confusion risk).
+// resumption by peer identity.
 //
-// When serverName is empty the key degrades to the plain remote address to
-// preserve backward compatibility for callers that do not set ServerName.
+// When a ServerName (SNI) is configured, the key is the SNI alone: the server
+// identity is the security-relevant binding (TLS resumption deliberately does
+// not re-verify the peer certificate, so the cache key must encode the identity
+// the session was authenticated under). Keying on the SNI — rather than the
+// remote address — means a session established with one server identity is NOT
+// reused against a different service, and is stable across reconnections that
+// pick a different ephemeral source port.
+//
+// When serverName is empty the key degrades to the plain remote address,
+// preserving backward compatibility for callers that do not set ServerName.
+// This is inherently less stable (it depends on local port reuse) and less
+// precise (it keys on transport address, not identity); callers that rely on
+// resumption should set ServerName.
 func sessionCacheKey(remoteAddr, serverName string) string {
 	if serverName == "" {
 		return remoteAddr
 	}
-	return serverName + "\x00" + remoteAddr
+	return "sni:" + serverName
 }

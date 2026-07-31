@@ -69,9 +69,13 @@ func TestNative_Resume_NativeServer(t *testing.T) {
 	go serve()
 
 	// First connection: full handshake (populates the cache).
+	// Set a serverName so the session cache keys on the stable SNI identity
+	// (not the ephemeral source port, whose reuse is not guaranteed and made
+	// this test flaky across OS/build-env differences).
 	c1Config := &tlcpEngineConfig{
 		rand:               rand.Reader,
 		cipherSuites:       []uint16{SuiteECC_SM2_SM4_GCM_SM3},
+		serverName:         "test.example.com",
 		insecureSkipVerify: true,
 		sessionCache:       sharedCache,
 	}

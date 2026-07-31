@@ -24,7 +24,7 @@ func CreateRevocationList(template *x509.RevocationList, issuer *x509.Certificat
 		return nil, errors.New("smx509: nil signer")
 	}
 	if IsSM2PublicKey(signer.Public()) {
-		smIssuer, err := toSMX509Certificate(issuer)
+		smIssuer, err := ToSMX509Certificate(issuer)
 		if err != nil {
 			return nil, err
 		}

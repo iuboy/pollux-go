@@ -155,3 +155,26 @@ func (c *tlcpLRUSessionCache) Put(sessionKey string, cs *tlcpSessionState) {
 func tlcpSessionKeyHex(sessionID []byte) string {
 	return hex.EncodeToString(sessionID)
 }
+
+// sessionCacheKey returns the address-key under which a session is cached for
+// resumption by peer identity.
+//
+// When a ServerName (SNI) is configured, the key is the SNI alone: the server
+// identity is the security-relevant binding (TLS resumption deliberately does
+// not re-verify the peer certificate, so the cache key must encode the identity
+// the session was authenticated under). Keying on the SNI — rather than the
+// remote address — means a session established with one server identity is NOT
+// reused against a different service, and is stable across reconnections that
+// pick a different ephemeral source port.
+//
+// When serverName is empty the key degrades to the plain remote address,
+// preserving backward compatibility for callers that do not set ServerName.
+// This is inherently less stable (it depends on local port reuse) and less
+// precise (it keys on transport address, not identity); callers that rely on
+// resumption should set ServerName.
+func sessionCacheKey(remoteAddr, serverName string) string {
+	if serverName == "" {
+		return remoteAddr
+	}
+	return "sni:" + serverName
+}

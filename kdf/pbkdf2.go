@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+
+	"github.com/iuboy/pollux-go/internal/memsecure"
 )
 
 // ErrInvalidIteration is returned when the iteration count is not positive.
@@ -80,6 +82,11 @@ func PBKDF2(password, salt []byte, iter, keyLen int, h func() hash.Hash) ([]byte
 	var block [4]byte
 	u := make([]byte, hLen)
 	t := make([]byte, hLen)
+	// u and t carry PRF intermediate outputs (key-derivation material). Zero
+	// them before returning so the material does not linger on the heap waiting
+	// for GC. Callers remain responsible for zeroing the returned dk.
+	defer memsecure.ZeroBytes(u)
+	defer memsecure.ZeroBytes(t)
 
 	for i := 1; i <= numBlocks; i++ {
 		binary.BigEndian.PutUint32(block[:], uint32(i))

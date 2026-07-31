@@ -219,7 +219,13 @@ func (c *tlcpConn) serverHandshakeReal() error {
 		// ClientCACertificates 时非 nil。
 		if config.clientRoots != nil {
 			// RequireAndVerifyClientCert：客户端必须给证书且通过校验。
-			if config.clientAuth >= RequireAndVerifyClientCert && clientSignCert == nil {
+			// NOTE: use an explicit == comparison (not >=) so the check does not
+			// depend on the iota ordering of ClientAuthType. The iota sequence
+			// here differs from crypto/tls (VerifyClientCertIfGiven (3) sorts
+			// above RequireAnyClientCert (2)); a range check would silently bind
+			// this to that ordering and could accept an unverified client cert if
+			// the constants are ever reordered.
+			if config.clientAuth == RequireAndVerifyClientCert && clientSignCert == nil {
 				return errors.New("tlcp: client did not provide a certificate")
 			}
 			// VerifyClientCertIfGiven / RequireAndVerifyClientCert：给了就验。

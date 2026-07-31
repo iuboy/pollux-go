@@ -15,6 +15,16 @@ import (
 	"github.com/iuboy/pollux-go/sm4"
 )
 
+// errDecryptFailed is the single opaque error returned by every envelope
+// decryption failure (bad PKCS#7 structure, bad recipient cert, SM2 key
+// mismatch, symmetric decryption failure). Returning one constant message —
+// instead of distinct underlying errors — denies an attacker any oracle for
+// distinguishing which envelope layer failed, which matters when the inner
+// symmetric mode is unauthenticated (e.g. CBC). Shared by EnvelopeDecrypt and
+// EnvelopeDecryptSM4 so both decryption paths present an identical failure
+// surface; callers can also match it with errors.Is.
+var errDecryptFailed = errors.New("sm2: decryption failed")
+
 // EnvelopeResult represents a digital envelope encryption result.
 type EnvelopeResult struct {
 	// DER-encoded PKCS#7 EnvelopedData (contains SM2-encrypted SM4 key + SM4 ciphertext).
@@ -55,6 +65,16 @@ func EnvelopeEncrypt(pub *ecdsa.PublicKey, plaintext []byte) (*EnvelopeResult, e
 }
 
 // EnvelopeDecrypt decrypts digital envelope using SM2 private key.
+//
+// SECURITY NOTE: The decryption-failure path (p7.Decrypt) returns a single
+// generic "sm2: decryption failed" error instead of the underlying PKCS#7
+// error. This matches EnvelopeDecryptSM4's hardening: a digital envelope has
+// two layers (SM2 key-unwrapping + symmetric decryption), and a distinguishable
+// error (e.g. "SM2 key mismatch" vs "symmetric authentication failed") could be
+// turned into a decryption oracle, especially when the inner mode is
+// unauthenticated (e.g. CBC). Input-validation failures (nil args, missing
+// certificate) are still reported verbatim since they are caller errors, not
+// adversarial decryption outcomes.
 func EnvelopeDecrypt(priv *PrivateKey, env *EnvelopeResult) ([]byte, error) {
 	if priv == nil || env == nil {
 		return nil, errors.New("sm2: nil private key or envelope")
@@ -62,7 +82,7 @@ func EnvelopeDecrypt(priv *PrivateKey, env *EnvelopeResult) ([]byte, error) {
 
 	p7, err := gmsmPkcs7.Parse(env.EnvelopedData)
 	if err != nil {
-		return nil, err
+		return nil, errDecryptFailed
 	}
 
 	if len(env.certDER) == 0 {
@@ -70,10 +90,17 @@ func EnvelopeDecrypt(priv *PrivateKey, env *EnvelopeResult) ([]byte, error) {
 	}
 	cert, err := smx509.ParseCertificate(env.certDER)
 	if err != nil {
-		return nil, err
+		// certDER is part of the envelope; a parse failure here is a malformed
+		// envelope rather than a caller input error, so treat it as a decrypt
+		// failure (opaque) for consistency with the anti-oracle posture above.
+		return nil, errDecryptFailed
 	}
 
-	return p7.Decrypt(cert, priv)
+	plaintext, err := p7.Decrypt(cert, priv)
+	if err != nil {
+		return nil, errDecryptFailed
+	}
+	return plaintext, nil
 }
 
 // EnvelopeEncryptSM4 encrypts using SM2+SM4-GCM digital envelope (simplified, non-PKCS#7 format).
@@ -126,19 +153,19 @@ func EnvelopeDecryptSM4(priv *PrivateKey, encryptedKey, nonce, ciphertext []byte
 	// SM2-decrypt the SM4 key
 	sm4Key, err := Decrypt(priv, encryptedKey)
 	if err != nil {
-		return nil, errors.New("sm2: decryption failed")
+		return nil, errDecryptFailed
 	}
 	defer memsecure.ZeroBytes(sm4Key)
 
 	// SM4-GCM decrypt
 	aead, err := sm4.NewGCM(sm4Key)
 	if err != nil {
-		return nil, errors.New("sm2: decryption failed")
+		return nil, errDecryptFailed
 	}
 
 	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		return nil, errors.New("sm2: decryption failed")
+		return nil, errDecryptFailed
 	}
 
 	return plaintext, nil

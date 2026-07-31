@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
+	"time"
 
 	"github.com/iuboy/pollux-go/sm2"
 	"github.com/iuboy/pollux-go/sm3"
@@ -44,6 +45,11 @@ func buildHashOIDMap() map[string]crypto.Hash {
 // default-UID fallback which may change across gmsm releases.
 var defaultSM2UID = []byte("1234567812345678")
 
+// ocspFreshnessLeeway is the clock-skew tolerance applied when checking that a
+// response's ThisUpdate is not in the future. A few minutes absorbs normal NTP
+// drift between responder and relying party without rejecting a fresh response.
+const ocspFreshnessLeeway = 5 * time.Minute
+
 // parseSM2OCSPResponse is an SM2-aware variant of ocsp.ParseResponseForCert:
 // it replaces stdlib x509.CheckSignature (which rejects sm2.P256()) with
 // sm2.VerifyASN1WithSM2.
@@ -52,7 +58,13 @@ var defaultSM2UID = []byte("1234567812345678")
 // signature verification is skipped (parse-only). If the response embeds a
 // responder certificate, that certificate is also verified against issuer
 // (when issuer is non-nil) using SM2 verification.
-func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate) (*ocsp.Response, error) {
+//
+// now is the reference time for validity-period checking. A response whose
+// NextUpdate has passed (or whose ThisUpdate is more than ocspFreshnessLeeway
+// in the future) is rejected: a signature-valid but stale "Good" response can
+// otherwise be replayed to mask a revocation. Pass time.Time{} to skip the
+// time check (used only by the parse-only path).
+func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate, now time.Time) (*ocsp.Response, error) {
 	var resp sm2ResponseASN1
 	rest, err := asn1.Unmarshal(data, &resp)
 	if err != nil {
@@ -257,6 +269,23 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate) (*ocsp.Response
 		ret.Status = ocsp.Revoked
 		ret.RevokedAt = singleResp.Revoked.RevocationTime
 		ret.RevocationReason = int(singleResp.Revoked.Reason)
+	}
+
+	// Validity-period check: a signature-valid response is only authoritative
+	// within [ThisUpdate, NextUpdate]. Without this check, an attacker (or the
+	// holder of a since-revoked cert) could replay a stale "Good" response
+	// indefinitely to mask a revocation — defeating the entire purpose of OCSP.
+	//   - If NextUpdate is present and now is after it, the response is stale.
+	//   - If ThisUpdate is more than ocspFreshnessLeeway ahead of now, the
+	//     response is not-yet-valid (clock skew / forgery).
+	// A zero now disables the check (parse-only callers).
+	if !now.IsZero() {
+		if !ret.ThisUpdate.IsZero() && now.Add(ocspFreshnessLeeway).Before(ret.ThisUpdate) {
+			return nil, errors.New("smx509: OCSP response ThisUpdate is in the future")
+		}
+		if !ret.NextUpdate.IsZero() && now.After(ret.NextUpdate) {
+			return nil, errors.New("smx509: OCSP response is stale (past NextUpdate)")
+		}
 	}
 
 	return ret, nil

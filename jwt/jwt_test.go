@@ -447,3 +447,69 @@ func TestNewSM2SM3SigningMethod(t *testing.T) {
 		t.Errorf("Verify with custom-UID method failed: %v", err)
 	}
 }
+
+// TestHS256_AudienceEnforced covers the audience (aud) claim check: when
+// SetAudience is configured, Verify rejects a token whose aud claim does not
+// match, preventing a token issued for one service from being replayed against
+// another sharing the same signing key.
+func TestHS256_AudienceEnforced(t *testing.T) {
+	sv := mustHS256(t, "test-issuer")
+	// Sign a token targeted at "service-A".
+	token, err := sv.Sign(&jwt.RegisteredClaims{
+		Subject:   "user-42",
+		Issuer:    "test-issuer",
+		Audience:  []string{"service-A"},
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	// A verifier expecting service-B must reject the token.
+	verifier := mustHS256(t, "test-issuer")
+	verifier.(*hmacSignerVerifier).SetAudience("service-B")
+	got := &jwt.RegisteredClaims{}
+	if err := verifier.Verify(token, got); err == nil {
+		t.Fatal("Verify accepted a token with mismatched audience")
+	}
+
+	// A verifier expecting service-A must accept it.
+	verifierOK := mustHS256(t, "test-issuer")
+	verifierOK.(*hmacSignerVerifier).SetAudience("service-A")
+	got2 := &jwt.RegisteredClaims{}
+	if err := verifierOK.Verify(token, got2); err != nil {
+		t.Fatalf("Verify rejected a token with matching audience: %v", err)
+	}
+
+	// With no audience configured, the token is accepted regardless (default,
+	// backward-compatible behavior — documented).
+	verifierNone := mustHS256(t, "test-issuer")
+	got3 := &jwt.RegisteredClaims{}
+	if err := verifierNone.Verify(token, got3); err != nil {
+		t.Fatalf("Verify rejected a token with no audience configured: %v", err)
+	}
+}
+
+// TestHS256_ZeroizeGuard covers the Zeroize guard: after Zeroize, Sign and
+// Verify must return errKeyZeroized rather than silently operating with a
+// zeroed key.
+func TestHS256_ZeroizeGuard(t *testing.T) {
+	sv := mustHS256(t, "test-issuer")
+	token, err := sv.Sign(&jwt.RegisteredClaims{
+		Subject:   "user-42",
+		Issuer:    "test-issuer",
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("Sign before zeroize: %v", err)
+	}
+
+	sv.(*hmacSignerVerifier).Zeroize()
+
+	if _, err := sv.Sign(&jwt.RegisteredClaims{}); err == nil {
+		t.Error("Sign after Zeroize should fail")
+	}
+	if err := sv.Verify(token, &jwt.RegisteredClaims{}); err == nil {
+		t.Error("Verify after Zeroize should fail")
+	}
+}

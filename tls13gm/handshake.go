@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/iuboy/pollux-go/internal/memsecure"
@@ -907,15 +908,19 @@ type ServerConfig struct {
 
 	// AllowEarlyData, when true, lets the server accept 0-RTT data from a
 	// resuming client (the EncryptedExtensions then carries early_data). A server
-	// accepting 0-RTT MUST pair this with an AntiReplayCache (quicgm); without
-	// one, 0-RTT is rejected even if this is true.
+	// accepting 0-RTT MUST pair this with an EarlyDataAcceptor that consults an
+	// AntiReplayCache (quicgm); 0-RTT is rejected even when this is true if no
+	// acceptor is configured, because 0-RTT is replayable by design and accepting
+	// it without replay detection is unsafe.
 	AllowEarlyData bool
 
-	// EarlyDataAcceptor, if set, is called when a client offers 0-RTT (early_data
-	// + PSK). It returns true to accept the 0-RTT, false to reject (replay
-	// suspected). If nil, AllowEarlyData alone decides. The psk argument is the
-	// recovered resumption PSK (decrypted from the client's ticket identity);
-	// the acceptor typically consults an AntiReplayCache.
+	// EarlyDataAcceptor, when set, is called when a client offers 0-RTT
+	// (early_data + PSK) and AllowEarlyData is true. It returns true to accept
+	// the 0-RTT, false to reject (replay suspected). It is REQUIRED to accept
+	// 0-RTT: when nil, 0-RTT is always rejected even if AllowEarlyData is true.
+	// The psk argument is the recovered resumption PSK (decrypted from the
+	// client's ticket identity); the acceptor typically consults an
+	// AntiReplayCache.
 	EarlyDataAcceptor func(psk []byte, realAge time.Duration) bool
 }
 
@@ -1044,7 +1049,12 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 			s.clientOfferedEarlyData = true
 			// Only derive 0-RTT keys when the server is willing to accept early
 			// data; otherwise the client's 0-RTT is rejected (no early_data in EE).
-			if s.allowEarlyData && (s.earlyDataAcceptor == nil || s.earlyDataAcceptor(s.resumptionSelectedPSK, s.resumptionRealAge)) {
+			// 0-RTT is replayable by design, so accepting it without a replay
+			// guard is unsafe. Fail closed: require an EarlyDataAcceptor (which
+			// typically consults an AntiReplayCache) — AllowEarlyData alone does
+			// NOT accept 0-RTT. This matches quicgm's policy (AntiReplay != nil
+			// is required) and the ServerConfig.AllowEarlyData doc comment.
+			if s.allowEarlyData && s.earlyDataAcceptor != nil && s.earlyDataAcceptor(s.resumptionSelectedPSK, s.resumptionRealAge) {
 				s.secrets.ClientEarlyKeys, err = DeriveEarlyTrafficKeys(s.resumptionSelectedPSK, s.transcript.Sum())
 				if err != nil {
 					return fmt.Errorf("tls13gm: derive 0-RTT keys: %w", err)
@@ -1083,7 +1093,22 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 	// Reconstruct the real ticket age from the obfuscated value the client
 	// reported and the ticket_age_add encoded in the ticket (RFC 8446
 	// §4.2.11.1); forwarded to EarlyDataAcceptor for 0-RTT anti-replay (§8).
-	s.resumptionRealAge = time.Duration(int64(identities[0].ObfuscatedTicketAge-ageAdd)) * time.Millisecond
+	//
+	// ObfuscatedTicketAge and ageAdd are uint32. Guard against unsigned
+	// underflow: if ObfuscatedTicketAge < ageAdd, the subtraction wraps to a
+	// huge positive value (~49 days in ms) and the resulting age is meaningless.
+	// Rather than rely on the downstream anti-replay/acceptor to reject the
+	// wrapped value, detect it explicitly and surface a synthetic large age so
+	// the acceptor fails closed (a legitimate freshly-issued ticket always has a
+	// small positive age).
+	if identities[0].ObfuscatedTicketAge >= ageAdd {
+		s.resumptionRealAge = time.Duration(int64(identities[0].ObfuscatedTicketAge-ageAdd)) * time.Millisecond
+	} else {
+		// Underflow: client reported an obfuscated age older than the ticket's
+		// age_add. Treat as a replay/forgery signal — a sentinel far outside any
+		// plausible freshness window so the acceptor/anti-replay rejects it.
+		s.resumptionRealAge = time.Duration(math.MaxInt64)
+	}
 	// Recompute the binder over the same transcript the client used: the
 	// ClientHello truncated just before the binders field (identities included,
 	// binders excluded, pre_shared_key ext_len kept full) — RFC 8446 §4.2.11.

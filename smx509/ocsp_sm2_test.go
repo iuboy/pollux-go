@@ -471,3 +471,79 @@ func TestParseOCSPResponseWithIssuer_ResponderIDMismatch(t *testing.T) {
 		t.Fatal("expected rejection of response whose ResponderID does not match embedded cert")
 	}
 }
+
+// makeOCSPTestCA builds a self-signed SM2 CA and returns the cert and key, for
+// OCSP validity-period tests.
+func makeOCSPTestCA(t *testing.T) (*x509.Certificate, *sm2.PrivateKey) {
+	t.Helper()
+	caKey, err := sm2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		PublicKey:             caKey.Public(),
+	}
+	caDER, err := CreateCertificate(caTmpl, caTmpl, caKey.Public(), caKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate CA: %v", err)
+	}
+	caCert, err := ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("ParseCertificate CA: %v", err)
+	}
+	return caCert, caKey
+}
+
+// TestParseOCSPResponseWithIssuerAt_Stale verifies that a response past its
+// NextUpdate is rejected by the validity-period check (prevents replay of a
+// stale "Good" response to mask a revocation).
+func TestParseOCSPResponseWithIssuerAt_Stale(t *testing.T) {
+	caCert, caKey := makeOCSPTestCA(t)
+	now := time.Now().UTC()
+	tmpl := &ocsp.Response{
+		Status:       ocsp.Good,
+		SerialNumber: big.NewInt(42),
+		// Window already expired relative to now.
+		ThisUpdate:  now.Add(-2 * time.Hour),
+		NextUpdate:  now.Add(-time.Hour),
+		Certificate: caCert,
+	}
+	respBytes, err := CreateOCSPResponse(caCert, caCert, tmpl, caKey)
+	if err != nil {
+		t.Fatalf("CreateOCSPResponse: %v", err)
+	}
+	if _, err := ParseOCSPResponseWithIssuerAt(respBytes, caCert, now); err == nil {
+		t.Fatal("expected rejection of stale OCSP response (past NextUpdate)")
+	}
+	// A zero now disables the check (parse-only).
+	if _, err := ParseOCSPResponseWithIssuerAt(respBytes, caCert, time.Time{}); err != nil {
+		t.Fatalf("zero now should skip time check: %v", err)
+	}
+}
+
+// TestParseOCSPResponseWithIssuerAt_FutureThisUpdate verifies that a response
+// whose ThisUpdate is far in the future is rejected (clock-skew / forgery guard).
+func TestParseOCSPResponseWithIssuerAt_FutureThisUpdate(t *testing.T) {
+	caCert, caKey := makeOCSPTestCA(t)
+	now := time.Now().UTC()
+	tmpl := &ocsp.Response{
+		Status:       ocsp.Good,
+		SerialNumber: big.NewInt(42),
+		// ThisUpdate well beyond the leeway tolerance.
+		ThisUpdate:  now.Add(time.Hour),
+		NextUpdate:  now.Add(2 * time.Hour),
+		Certificate: caCert,
+	}
+	respBytes, err := CreateOCSPResponse(caCert, caCert, tmpl, caKey)
+	if err != nil {
+		t.Fatalf("CreateOCSPResponse: %v", err)
+	}
+	if _, err := ParseOCSPResponseWithIssuerAt(respBytes, caCert, now); err == nil {
+		t.Fatal("expected rejection of OCSP response with future ThisUpdate")
+	}
+}

@@ -135,6 +135,63 @@ func TestInteropSM2_Pollux_Encrypt_GMSM_Decrypt(t *testing.T) {
 	}
 }
 
+// TestInteropSM2_LegacyC1C2C3_Plain_Pollux_Encrypt_GMSM_Decrypt 验证 pollux 用
+// legacy C1C2C3 + Plain 编码加密，gmsm 用等价 Plain C1C2C3 选项解密成功 —— 证明与
+// 上游在非国标默认顺序/编码下互通（GM/T 0003-2012 老系统兼容）。
+func TestInteropSM2_LegacyC1C2C3_Plain_Pollux_Encrypt_GMSM_Decrypt(t *testing.T) {
+	priv, err := polluxSM2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext := []byte("legacy C1C2C3 plain interop payload")
+
+	encOpts, err := polluxSM2.NewEncrypterOpts(polluxSM2.EncodingPlain, polluxSM2.OrderC1C2C3, false)
+	if err != nil {
+		t.Fatalf("pollux NewEncrypterOpts: %v", err)
+	}
+	ciphertext, err := polluxSM2.Encrypt(rand.Reader, &priv.PublicKey, plaintext, encOpts)
+	if err != nil {
+		t.Fatalf("pollux Encrypt (C1C2C3 plain): %v", err)
+	}
+
+	decOpts := gmsmSM2.NewPlainDecrypterOpts(gmsmSM2.C1C2C3)
+	decrypted, err := priv.Decrypt(rand.Reader, ciphertext, decOpts)
+	if err != nil {
+		t.Fatalf("gmsm Decrypt (C1C2C3 plain): %v", err)
+	}
+	if !bytes.Equal(decrypted, plaintext) {
+		t.Errorf("decrypted mismatch: got %x, want %x", decrypted, plaintext)
+	}
+}
+
+// TestInteropSM2_LegacyC1C2C3_Plain_GMSM_Encrypt_Pollux_Decrypt 反向：gmsm 用
+// legacy C1C2C3 + Plain 加密，pollux 用对应选项解密。
+func TestInteropSM2_LegacyC1C2C3_Plain_GMSM_Encrypt_Pollux_Decrypt(t *testing.T) {
+	priv, err := polluxSM2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext := []byte("reverse legacy C1C2C3 plain interop")
+
+	encOpts := gmsmSM2.NewPlainEncrypterOpts(gmsmSM2.MarshalUncompressed, gmsmSM2.C1C2C3)
+	ciphertext, err := gmsmSM2.Encrypt(rand.Reader, &priv.PublicKey, plaintext, encOpts)
+	if err != nil {
+		t.Fatalf("gmsm Encrypt (C1C2C3 plain): %v", err)
+	}
+
+	decOpts, err := polluxSM2.NewDecrypterOpts(polluxSM2.EncodingPlain, polluxSM2.OrderC1C2C3)
+	if err != nil {
+		t.Fatalf("pollux NewDecrypterOpts: %v", err)
+	}
+	decrypted, err := polluxSM2.DecryptWithOpts(priv, ciphertext, decOpts)
+	if err != nil {
+		t.Fatalf("pollux DecryptWithOpts (C1C2C3 plain): %v", err)
+	}
+	if !bytes.Equal(decrypted, plaintext) {
+		t.Errorf("decrypted mismatch: got %x, want %x", decrypted, plaintext)
+	}
+}
+
 // ============================================================================
 // SM2 签名 DER 格式交叉验证 (S2-5)
 // ============================================================================

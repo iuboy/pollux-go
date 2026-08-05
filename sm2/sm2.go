@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"errors"
 	"io"
 
 	gmsmSM2 "github.com/emmansun/gmsm/sm2"
@@ -81,13 +82,57 @@ func EncryptASN1(random io.Reader, pub *PublicKey, msg []byte) ([]byte, error) {
 // Decrypt decrypts SM2-encrypted data.
 //
 // Despite the name lacking the ASN1 suffix, this is the inverse of
-// EncryptASN1: it expects ASN.1-encoded SM2 ciphertext (the same format
-// EncryptASN1 produces) and decrypts via gmsmSM2.Decrypt. The naming
+// EncryptASN1: it auto-detects the ciphertext encoding by the leading byte
+// (0x30 → ASN.1 SEQUENCE, 0x04/0x02/0x03 → plain point-prefixed) and
+// decrypts with the national-standard C1C3C2 ordering. The naming
 // asymmetry (EncryptASN1 / Decrypt) is preserved for compatibility; new
 // callers should pair EncryptASN1 with Decrypt and not assume Decrypt
 // accepts a different format.
+//
+// LIMITATION: Decrypt ALWAYS assumes C1C3C2 ordering. To decrypt a legacy
+// C1C2C3-ordered ciphertext (GM/T 0003-2012, old GmSSL / Java BC / 金融 IC
+// 卡), use DecryptWithOpts with a NewDecrypterOpts(..., OrderC1C2C3) option,
+// or first convert the ordering via AdjustCipherOrder(ct, OrderC1C2C3,
+// OrderC1C3C2) and then call Decrypt.
 func Decrypt(priv *PrivateKey, ciphertext []byte) ([]byte, error) {
 	return gmsmSM2.Decrypt(priv, ciphertext)
+}
+
+// Encrypt encrypts data with an SM2 public key under explicit cipher options.
+//
+// opts == nil selects the gmsm default (plain encoding, uncompressed point,
+// C1C3C2 order). For ASN.1 output use EncryptASN1, or construct opts via
+// NewEncrypterOpts(EncodingASN1, ...) and pass here. For legacy C1C2C3
+// ordering or plain encoding, build opts with NewEncrypterOpts.
+//
+// Unlike EncryptASN1 (which fixes ASN.1 + C1C3C2), this entry point exposes
+// the full encoding/ordering matrix and is the supported path for
+// interoperating with legacy systems.
+func Encrypt(random io.Reader, pub *PublicKey, msg []byte, opts *EncrypterOpts) ([]byte, error) {
+	if pub == nil {
+		return nil, errors.New("sm2: nil public key")
+	}
+	return gmsmSM2.Encrypt(random, pub, msg, opts)
+}
+
+// DecryptWithOpts decrypts SM2 ciphertext under explicit cipher options.
+//
+// Use this when the ciphertext uses non-default ordering (C1C2C3) or when
+// you want to pin the encoding explicitly. opts == nil falls back to the
+// same behavior as Decrypt (auto-detect encoding, C1C3C2 order). Construct
+// opts via NewDecrypterOpts.
+//
+// This is the only decryption entry point that accepts C1C2C3-ordered
+// ciphertext.
+func DecryptWithOpts(priv *PrivateKey, ciphertext []byte, opts *DecrypterOpts) ([]byte, error) {
+	if priv == nil {
+		return nil, errors.New("sm2: nil private key")
+	}
+	// gmsm's package-level Decrypt(priv, ct) does not accept opts; the opts-aware
+	// path is the method (*PrivateKey).Decrypt(rand, msg, crypto.DecrypterOpts),
+	// which *DecrypterOpts implements. rand.Reader is unused by SM2 decryption
+	// but required by the crypto.Decrypter interface.
+	return priv.Decrypt(rand.Reader, ciphertext, opts)
 }
 
 // P256 returns the SM2 elliptic curve.

@@ -48,7 +48,7 @@ QUIC TLS 1.3 传输安全 + 应用层 SM2 证书认证、HMAC-SM3、SM4-GCM 负�
 
 ```text
 算法原语（封装 gmsm）
-  sm2        SM2 签名 / 加密 / 密钥交换
+  sm2        SM2 签名 / 加密（C1C3C2/C1C2C3 + ASN.1/Plain 可选）/ 密钥交换
   sm3        SM3 哈希 / HMAC / KDF / HKDF
   sm4        SM4 分组密码（GCM/CBC/CTR/CFB）+ GCM 高级封装（SealRandomNonce + 密钥清零）
   sm9        SM9 基于身份加密

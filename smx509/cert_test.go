@@ -1,8 +1,10 @@
 package smx509
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -183,6 +185,126 @@ func TestMarshalPKIXPublicKey(t *testing.T) {
 	}
 	if len(der) == 0 {
 		t.Error("DER should not be empty")
+	}
+}
+
+// TestParsePKIXPublicKeyRoundTrip 验证 MarshalPKIXPublicKey → ParsePKIXPublicKey
+// 的 round-trip,覆盖 SM2、标准 ECDSA(P-256)、RSA、Ed25519。这是 ParsePKIXPublicKey
+// 的核心契约:它必须能解析本包 MarshalPKIXPublicKey 产出的 DER,补全 marshal/parse
+// 的对称缺口。
+func TestParsePKIXPublicKeyRoundTrip(t *testing.T) {
+	// SM2 公钥(来自证书辅助生成的密钥)
+	_, sm2Priv := generateSM2Cert(t)
+
+	// 标准 ECDSA P-256 公钥
+	ecdsaPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// RSA 公钥
+	rsaPriv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Ed25519 公钥
+	edPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		pub  any
+		// 期望解析结果的类型断言
+		assert func(t *testing.T, parsed any, original any)
+	}{
+		{
+			name: "SM2",
+			pub:  &sm2Priv.PublicKey,
+			assert: func(t *testing.T, parsed, original any) {
+				got, ok := parsed.(*ecdsa.PublicKey)
+				want := original.(*ecdsa.PublicKey)
+				if !ok {
+					t.Fatalf("SM2: parsed type = %T, want *ecdsa.PublicKey", parsed)
+				}
+				if got.Curve != sm2.P256() {
+					t.Errorf("SM2: parsed curve = %v, want SM2 P256", got.Curve)
+				}
+				if got.X.Cmp(want.X) != 0 || got.Y.Cmp(want.Y) != 0 {
+					t.Error("SM2: parsed point mismatch")
+				}
+			},
+		},
+		{
+			name: "ECDSA_P256",
+			pub:  &ecdsaPriv.PublicKey,
+			assert: func(t *testing.T, parsed, original any) {
+				got, ok := parsed.(*ecdsa.PublicKey)
+				want := original.(*ecdsa.PublicKey)
+				if !ok {
+					t.Fatalf("ECDSA: parsed type = %T, want *ecdsa.PublicKey", parsed)
+				}
+				if got.X.Cmp(want.X) != 0 || got.Y.Cmp(want.Y) != 0 {
+					t.Error("ECDSA: parsed point mismatch")
+				}
+			},
+		},
+		{
+			name: "RSA",
+			pub:  &rsaPriv.PublicKey,
+			assert: func(t *testing.T, parsed, original any) {
+				got, ok := parsed.(*rsa.PublicKey)
+				want := original.(*rsa.PublicKey)
+				if !ok {
+					t.Fatalf("RSA: parsed type = %T, want *rsa.PublicKey", parsed)
+				}
+				if got.N.Cmp(want.N) != 0 || got.E != want.E {
+					t.Error("RSA: parsed modulus/exponent mismatch")
+				}
+			},
+		},
+		{
+			name: "Ed25519",
+			pub:  edPub,
+			assert: func(t *testing.T, parsed, original any) {
+				got, ok := parsed.(ed25519.PublicKey)
+				want := original.(ed25519.PublicKey)
+				if !ok {
+					t.Fatalf("Ed25519: parsed type = %T, want ed25519.PublicKey", parsed)
+				}
+				if !bytes.Equal(got, want) {
+					t.Error("Ed25519: parsed bytes mismatch")
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			der, err := MarshalPKIXPublicKey(tc.pub)
+			if err != nil {
+				t.Fatalf("MarshalPKIXPublicKey: %v", err)
+			}
+			parsed, err := ParsePKIXPublicKey(der)
+			if err != nil {
+				t.Fatalf("ParsePKIXPublicKey: %v", err)
+			}
+			tc.assert(t, parsed, tc.pub)
+		})
+	}
+}
+
+// TestParsePKIXPublicKey_InvalidDER 验证垃圾输入返回 error 而非 panic。
+func TestParsePKIXPublicKey_InvalidDER(t *testing.T) {
+	_, err := ParsePKIXPublicKey([]byte{0x00, 0x01, 0x02})
+	if err == nil {
+		t.Error("ParsePKIXPublicKey should reject garbage DER")
+	}
+	_, err = ParsePKIXPublicKey(nil)
+	if err == nil {
+		t.Error("ParsePKIXPublicKey should reject nil input")
 	}
 }
 

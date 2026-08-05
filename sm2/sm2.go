@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	"math/big"
 
 	gmsmSM2 "github.com/emmansun/gmsm/sm2"
 )
@@ -159,6 +160,12 @@ func GenerateKeyDefault() (*PrivateKey, error) {
 // NewPrivateKey parses a DER-encoded SM2 private key.
 func NewPrivateKey(der []byte) (*PrivateKey, error) {
 	return gmsmSM2.NewPrivateKey(der)
+}
+
+// NewPrivateKeyFromInt creates an SM2 private key from a scalar value.
+// Inverse of reading (*PrivateKey).D; scalar-based counterpart to [NewPrivateKey].
+func NewPrivateKeyFromInt(key *big.Int) (*PrivateKey, error) {
+	return gmsmSM2.NewPrivateKeyFromInt(key)
 }
 
 // NewPublicKey parses a DER-encoded SM2 public key.

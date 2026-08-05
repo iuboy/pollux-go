@@ -414,6 +414,13 @@ func MarshalPKIXPublicKey(pub any) ([]byte, error) {
 	return smx509.MarshalPKIXPublicKey(pub)
 }
 
+// ParsePKIXPublicKey parses a PKIX-encoded public key, SM2-aware.
+// Inverse of [MarshalPKIXPublicKey]. Returns *ecdsa.PublicKey for SM2/ECDSA,
+// *rsa.PublicKey for RSA, ed25519.PublicKey for Ed25519.
+func ParsePKIXPublicKey(der []byte) (any, error) {
+	return smx509.ParsePKIXPublicKey(der)
+}
+
 // MarshalECPrivateKey serializes an EC (including SM2) private key to DER format.
 func MarshalECPrivateKey(key *ecdsa.PrivateKey) ([]byte, error) {
 	return smx509.MarshalECPrivateKey(key)

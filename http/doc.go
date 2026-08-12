@@ -1,8 +1,8 @@
 // Package http is a deprecated alias for [github.com/iuboy/pollux-go/https].
 //
 // This package exists solely to give downstream code a deprecation window
-// after the v2 rename from `http` to `https` (the rename avoids a name clash
-// with the Go standard library's net/http at import sites). The shim
+// after the package rename from `http` to `https` (the rename avoids a name
+// clash with the Go standard library's net/http at import sites). The shim
 // re-exports the public API of `https` via type aliases and wrapper
 // functions so existing imports keep compiling, but every use will surface
 // a deprecation notice via staticcheck SA1019 (since Go 1.18, references to
@@ -19,7 +19,10 @@
 // and update the `polluxhttp.` prefixes to `https.`. The API surface is
 // identical aside from the package name.
 //
-// This shim will be removed in the next minor release after v2.0.
+// The shim has been published in every release since v0.1.1, so the
+// migration window is well past the minimum one-tagged-release policy.
+// Removal is tracked in CONTRIBUTING.md ("已知待办"); it is a breaking
+// change targeted for the next minor release.
 package http
 
 import (

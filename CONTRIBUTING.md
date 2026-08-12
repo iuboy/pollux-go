@@ -105,16 +105,17 @@ push tag 会触发 `release.yml` workflow，GitHub 自动用 `--generate-notes`
 
 ## 已知待办
 
-### 移除 `http/` deprecation shim（计划 v0.4.0）
+### 移除 `http/` deprecation shim（计划下一个 minor 版本）
 
-`http/` 目录是 `http`→`https` 重命名（v0.3.0）留下的兼容 shim，通过类型别名
-重新导出 `https` 的公共符号，使旧的 `github.com/iuboy/pollux-go/http` import
-仍能编译（staticcheck SA1019 标记为 deprecated）。
+`http/` 目录是 `http`→`https` 重命名留下的兼容 shim，通过类型别名重新导出
+`https` 的公共符号，使旧的 `github.com/iuboy/pollux-go/http` import 仍能编译
+（staticcheck SA1019 标记为 deprecated）。
 
-按弃用策略，shim 应至少在一个带 tag 的 minor 版本中发布过（v0.3.0 → v0.4.0
-移除），给下游一个迁移窗口。**v0.4.0 移除步骤**：
+按弃用策略，shim 应至少在一个带 tag 的 minor 版本中发布过。该 shim 自 v0.1.1
+起在全部 18 个已发布版本中持续存在，迁移窗口远超最低要求，可在下一个 minor
+版本中安全移除。**移除步骤**：
 
-1. 确认迁移窗口已过（`git log --oneline -- http/doc.go`，shim 已在 v0.3.0 tag 中发布）。
+1. 确认迁移窗口已过（`git log --oneline -- http/doc.go`，shim 已在所有历史 tag 中发布）。
 2. 删除整个 `http/` 目录：`git rm -r http/`。
 3. 搜索遗漏引用并迁移到 `https`：
    ```bash

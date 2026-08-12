@@ -18,6 +18,12 @@ var keyWrapIV = [8]byte{0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6}
 // SM4 has a 128-bit block size like AES, so the algorithm is identical.
 // The Key Encryption Key (KEK) must be 16 bytes. The plaintext key must be
 // a multiple of 8 bytes and at least 16 bytes (two 8-byte semiblocks).
+//
+// Implementation status: this is a self-contained implementation of RFC 3394.
+// As of gmsm v0.44.0 and golang.org/x/crypto v0.54.0, no vetted Go library
+// exposes a standalone RFC 3394 key-wrap API, so the construction is kept
+// in-tree. The integrity check on KeyUnwrap uses crypto/subtle constant-time
+// comparison. The round-trip is covered by sm4/keywrap_test.go.
 func KeyWrap(kek, plaintextKey []byte) ([]byte, error) {
 	if len(kek) != KeySize {
 		return nil, errors.New("sm4/keywrap: KEK must be 16 bytes")

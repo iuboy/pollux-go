@@ -21,7 +21,7 @@ pollux-go 是**集成工具包，不是密码学实现**。它把 gmsm 的原语
 | **路线 A** — 标准 QUIC | `quic` | ✅ 生产 | 基于 `quic-go` |
 | **路线 C** — RFC 8998 TLS 1.3 GM | `tls13gm` | ✅ 互通已验证 | 完整握手引擎，与 Tongsuo/BabaSSL 互通（见 [互通矩阵](docs/security/interop-matrix.md)） |
 | **路线 C** — RFC 9001 QUIC GM | `quicgm` | ✅ 互通已验证 | transport-level packet protection，端到端 + 0-RTT 测试 |
-| TLCP 1.1（GB/T 38636-2020） | `tlcp` | ⚠️ 实验 | 基于 `gotlcp`，待第三方安全审计 |
+| TLCP 1.1（GB/T 38636-2020） | `tlcp` | ⚠️ 实验 | 自研实现（参考开源实现重写），待第三方安全审计 |
 | 国密套件注册 | `tls` | ✅ | 仅套件 ID/名称注册，非完整 TLS |
 
 ## 包结构

@@ -64,6 +64,38 @@ const ocspFreshnessLeeway = 5 * time.Minute
 // in the future) is rejected: a signature-valid but stale "Good" response can
 // otherwise be replayed to mask a revocation. Pass time.Time{} to skip the
 // time check (used only by the parse-only path).
+// Decoding-side ASN.1 structures, deliberately separate from the encoding
+// family in ocsp_sm2.go: the encoder's singleResponse carries revokedInfo as
+// a pre-assembled RawValue (so reason=0 can omit cRLReason), while decoding
+// needs the concrete struct. ResponseExtensions is declared explicitly so
+// nonce-carrying responses (CreateOCSPResponseExt) parse by contract rather
+// than by relying on encoding/asn1's lenient trailing-element handling.
+type parseBasicResponse struct {
+	TBSResponseData    parseResponseData
+	SignatureAlgorithm pkix.AlgorithmIdentifier
+	Signature          asn1.BitString
+	Certificates       []asn1.RawValue `asn1:"explicit,tag:0,optional"`
+}
+
+type parseResponseData struct {
+	Raw                asn1.RawContent `asn1:"optional"`
+	Version            int             `asn1:"optional,default:0,explicit,tag:0"`
+	RawResponderID     asn1.RawValue
+	ProducedAt         time.Time `asn1:"generalized"`
+	Responses          []parseSingleResponse
+	ResponseExtensions []pkix.Extension `asn1:"explicit,tag:1,optional"`
+}
+
+type parseSingleResponse struct {
+	CertID           sm2CertID
+	Good             asn1.Flag        `asn1:"tag:0,optional"`
+	Revoked          sm2RevokedInfo   `asn1:"tag:1,optional"`
+	Unknown          asn1.Flag        `asn1:"tag:2,optional"`
+	ThisUpdate       time.Time        `asn1:"generalized"`
+	NextUpdate       time.Time        `asn1:"generalized,explicit,tag:0,optional"`
+	SingleExtensions []pkix.Extension `asn1:"explicit,tag:1,optional"`
+}
+
 func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate, now time.Time) (*ocsp.Response, error) {
 	var resp sm2ResponseASN1
 	rest, err := asn1.Unmarshal(data, &resp)
@@ -80,7 +112,7 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate, now time.Time) 
 		return nil, errors.New("smx509: bad OCSP response type")
 	}
 
-	var basicResp sm2BasicResponse
+	var basicResp parseBasicResponse
 	rest, err = asn1.Unmarshal(resp.Response.Response, &basicResp)
 	if err != nil {
 		return nil, err
@@ -352,7 +384,7 @@ func isSM2OCSPResponse(data []byte) bool {
 	if !resp.Response.ResponseType.Equal(idPKIXOCSPBasic) {
 		return false
 	}
-	var basicResp sm2BasicResponse
+	var basicResp parseBasicResponse
 	if _, err := asn1.Unmarshal(resp.Response.Response, &basicResp); err != nil {
 		return false
 	}

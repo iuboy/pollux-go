@@ -31,8 +31,10 @@ type Generator interface {
 	// Get 获取缓存的 CRL
 	Get() []byte
 
-	// StartAutoUpdate 启动自动更新
-	StartAutoUpdate(interval time.Duration)
+	// StartAutoUpdate 启动自动更新。interval 必须为正：time.NewTicker 对
+	// 非正 interval 会 panic，且 panic 发生在子 goroutine 内不可 recover
+	// (直接崩溃进程)，故前置校验并返回错误。
+	StartAutoUpdate(interval time.Duration) error
 
 	// StopAutoUpdate 停止自动更新
 	StopAutoUpdate()
@@ -163,7 +165,12 @@ func (m *memoryCRLCache) Clear() {
 }
 
 // SetNumberSource 注入持久序号源（生成器构造后装配期调用）。
-func (g *crlGenerator) SetNumberSource(src NumberSource) { g.numberSource = src }
+// 与 Generate 的读取同受 g.mu 保护（装配期与首个生成请求并发的安全兜底）。
+func (g *crlGenerator) SetNumberSource(src NumberSource) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.numberSource = src
+}
 
 // NumberSource 返回该 issuer 的下一个 CRL 序号（由 server 注入持久实现）。
 type NumberSource func() (int, error)
@@ -202,7 +209,9 @@ func NewGeneratorWithIssuer(auth Authority, cache CRLCache, issuerKeyID string) 
 func (g *crlGenerator) Generate(ctx context.Context) ([]byte, error) {
 	// Number: 0 是"自动递增"哨兵——GenerateWithOptions 会用 g.crlNumber+1。
 	// RFC 5280 §5.2.3 要求 CRL number 单调递增；此前恒为 0 违反该约束。
+	g.mu.RLock()
 	validity := g.validity
+	g.mu.RUnlock()
 	if validity <= 0 {
 		validity = 24 * time.Hour // 默认有效期
 	}
@@ -215,9 +224,12 @@ func (g *crlGenerator) Generate(ctx context.Context) ([]byte, error) {
 
 // GenerateWithOptions 使用选项生成 CRL
 func (g *crlGenerator) GenerateWithOptions(ctx context.Context, opts *GenerateOptions) ([]byte, error) {
-	// 获取已撤销证书列表
+	// 获取已撤销证书列表。
+	// len()==0 即回源存储：nil 与空切片一律视为"未指定"——空切片常来自
+	// JSON 反序列化产物，若据其签发"空名单"权威 CRL，所有已撤销证书会在
+	// 依赖方恢复有效（比漏一条严重得多）。存储返回的真实空列表照常签发。
 	revokedList := opts.RevokedCertificates
-	if revokedList == nil {
+	if len(revokedList) == 0 {
 		var err error
 		// issuer 限定：多 issuer 部署时每个生成器只覆盖对应 issuer 的撤销记录。
 		if g.issuerKeyID != "" {
@@ -230,16 +242,18 @@ func (g *crlGenerator) GenerateWithOptions(ctx context.Context, opts *GenerateOp
 		}
 	}
 
-	// 构建撤销证书列表（添加 RFC 5279 撤销原因扩展）
+	// 构建撤销证书列表。序列号解析失败或非正数（RFC 5280 要求正整数）
+	// 一律 fail-closed 拒绝本轮签发：静默跳过会把缺员名单签成权威 CRL，
+	// 造成漏撤销。
 	revokedCerts := make([]x509.RevocationListEntry, 0, len(revokedList))
+	var invalidSerials []string
 	for _, revoked := range revokedList {
 		serial := new(big.Int)
 		// authority 以十进制存储序列号（cert.SerialNumber.String()），此处按十进制解析。
 		// 此前用 base 16 解析十进制串会得到数值不同的 serial，导致 CRL 里的撤销号
 		// 与实际证书号对不上（撤销检测失效）。
-		if _, ok := serial.SetString(revoked.Serial, 10); !ok {
-			// 序列号非法的记录若被静默跳过，证书会"漏撤销"；至少留痕便于排查。
-			slog.Warn("CRL 撤销记录序列号非法，已跳过", "serial", revoked.Serial)
+		if _, ok := serial.SetString(revoked.Serial, 10); !ok || serial.Sign() <= 0 {
+			invalidSerials = append(invalidSerials, revoked.Serial)
 			continue
 		}
 
@@ -258,6 +272,14 @@ func (g *crlGenerator) GenerateWithOptions(ctx context.Context, opts *GenerateOp
 		// 属错误断言。本系统不单独追踪失效感知时间，故省略该可选扩展。
 
 		revokedCerts = append(revokedCerts, entry)
+	}
+	if len(invalidSerials) > 0 {
+		shown := invalidSerials
+		if len(shown) > 5 {
+			shown = shown[:5]
+		}
+		return nil, fmt.Errorf("crl: %d 条撤销记录序列号非法（须为十进制正整数），拒绝签发以防漏撤销: %v",
+			len(invalidSerials), shown)
 	}
 
 	// 获取中级 CA 证书和私钥
@@ -279,28 +301,40 @@ func (g *crlGenerator) GenerateWithOptions(ctx context.Context, opts *GenerateOp
 	var err error
 
 	// CRL number 单调递增（RFC 5280 §5.2.3）。opts.Number == 0 表示"自动递增"
-	// 哨兵——用 g.crlNumber + 1。显式非零值则采用调用方指定（测试/外部触发用）。
+	// 哨兵；显式非零值（测试/外部触发用）同样必须大于本生成器已签发的最大
+	// 编号——显式给小号/负数会产出编号回退的 CRL，被严格依赖方拒收。
 	//
-	// 并发安全：effectiveNumber 的读取+计算+回写必须在同一把锁内完成，否则
-	// autoUpdateLoop 与 HTTP Generate 并发时两个 goroutine 可能读到相同的
-	// g.crlNumber，各自 +1 得到相同值，违反 §5.2.3 单调/唯一约束。这里在
-	// 签发前 reserve number（立即回写），签发失败会跳号（可接受，CRL Number
-	// 不要求连续）。
+	// 并发安全：编号的读取+校验+回写必须在同一临界区内完成（autoUpdateLoop
+	// 与 HTTP Generate 并发时不违反单调/唯一）。持久源（numberSource，通常
+	// 是 DB）在锁外调用以避免持锁阻塞，锁内仍校验其返回值——DB 回退同样
+	// 被拒。签发失败会跳号（可接受，§5.2.3 只要求单调不要求连续）。
+	g.mu.Lock()
+	numberSource := g.numberSource
 	effectiveNumber := opts.Number
 	if effectiveNumber == 0 {
-		if g.numberSource != nil {
-			n, nErr := g.numberSource()
+		if numberSource != nil {
+			g.mu.Unlock()
+			n, nErr := numberSource()
 			if nErr != nil {
 				return nil, fmt.Errorf("分配持久 CRL 序号失败: %w", nErr)
 			}
 			effectiveNumber = n
-		} else {
 			g.mu.Lock()
+		} else {
 			effectiveNumber = g.crlNumber + 1
-			g.crlNumber = effectiveNumber // reserve，防止并发拿到相同值
-			g.mu.Unlock()
 		}
 	}
+	if effectiveNumber < 0 {
+		g.mu.Unlock()
+		return nil, fmt.Errorf("crl: CRL number 不能为负数: %d", effectiveNumber)
+	}
+	if effectiveNumber <= g.crlNumber {
+		g.mu.Unlock()
+		return nil, fmt.Errorf("crl: CRL number %d 未大于已签发编号 %d（RFC 5280 §5.2.3 单调性）",
+			effectiveNumber, g.crlNumber)
+	}
+	g.crlNumber = effectiveNumber // reserve（含显式路径），防并发拿到相同值
+	g.mu.Unlock()
 
 	// SM2: use pollux smx509 for SM2+SM3 signing (GM/T 0009-2012)
 	if polluxsmx509.IsSM2Key(key) {
@@ -370,11 +404,20 @@ func (g *crlGenerator) Get() []byte {
 // CRL 有效期设为 2*interval，保证 ticker 触发刷新时 CRL 仍有 interval
 // 时长的有效期（RFC 5280 §5.2.6：nextUpdate 之后的 CRL 不应被信任为
 // 完整撤销集合——有效期 > 刷新间隔消除过期窗口）。
-func (g *crlGenerator) StartAutoUpdate(interval time.Duration) {
+//
+// interval 非正返回错误而非进入 ticker：time.NewTicker 对非正 interval
+// panic，且 panic 位于子 goroutine 不可 recover，会直接崩溃进程。
+func (g *crlGenerator) StartAutoUpdate(interval time.Duration) error {
+	if interval <= 0 {
+		return fmt.Errorf("crl: auto-update interval must be positive, got %v", interval)
+	}
 	g.once.Do(func() {
+		g.mu.Lock()
 		g.validity = 2 * interval
+		g.mu.Unlock()
 		go g.autoUpdateLoop(interval)
 	})
+	return nil
 }
 
 // StopAutoUpdate 停止自动更新。幂等：多次调用安全（sync.Once 保护，

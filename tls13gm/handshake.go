@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/iuboy/pollux-go/internal/memsecure"
@@ -1094,21 +1093,16 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 	// reported and the ticket_age_add encoded in the ticket (RFC 8446
 	// §4.2.11.1); forwarded to EarlyDataAcceptor for 0-RTT anti-replay (§8).
 	//
-	// ObfuscatedTicketAge and ageAdd are uint32. Guard against unsigned
-	// underflow: if ObfuscatedTicketAge < ageAdd, the subtraction wraps to a
-	// huge positive value (~49 days in ms) and the resulting age is meaningless.
-	// Rather than rely on the downstream anti-replay/acceptor to reject the
-	// wrapped value, detect it explicitly and surface a synthetic large age so
-	// the acceptor fails closed (a legitimate freshly-issued ticket always has a
-	// small positive age).
-	if identities[0].ObfuscatedTicketAge >= ageAdd {
-		s.resumptionRealAge = time.Duration(int64(identities[0].ObfuscatedTicketAge-ageAdd)) * time.Millisecond
-	} else {
-		// Underflow: client reported an obfuscated age older than the ticket's
-		// age_add. Treat as a replay/forgery signal — a sentinel far outside any
-		// plausible freshness window so the acceptor/anti-replay rejects it.
-		s.resumptionRealAge = time.Duration(math.MaxInt64)
-	}
+	// RFC 8446 §4.2.10 defines the operation as modular: age = (obfuscated −
+	// age_add) mod 2^32 — Go's uint32 subtraction IS that modular arithmetic.
+	// "obfuscated < age_add" is a legal wrap for honest clients near the end
+	// of a ticket's life (ageAdd is uniform random, ticket lifetime ≤ 7 days,
+	// so ~14% of tickets wrap in their final days); an earlier guard treated
+	// the wrap as forgery and mis-rejected those 0-RTT attempts. Freshness
+	// policy stays where it belongs: the EarlyDataAcceptor / AntiReplayCache
+	// compares the age against its max-age window (uint32's 49.7-day span is
+	// itself far outside any sane window).
+	s.resumptionRealAge = time.Duration(uint64(identities[0].ObfuscatedTicketAge-ageAdd)) * time.Millisecond
 	// Recompute the binder over the same transcript the client used: the
 	// ClientHello truncated just before the binders field (identities included,
 	// binders excluded, pre_shared_key ext_len kept full) — RFC 8446 §4.2.11.

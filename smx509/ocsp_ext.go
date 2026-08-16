@@ -35,6 +35,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/subtle"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -79,6 +80,8 @@ type OCSPResponseParams struct {
 	// Nonce, when non-empty, is echoed as an id-pkix-OCSP-noarch
 	// responseExtension (RFC 6960 §4.4.1). Responders MUST echo the exact
 	// request nonce to bind the response to the request (anti-replay).
+	// Nonces shorter than 16 bytes are rejected (RFC 8954 §2.3 floor):
+	// a 2-byte nonce has effectively no binding strength.
 	Nonce []byte
 	// ExtraExtensions are appended to responseExtensions verbatim, after the
 	// Nonce extension (caller is responsible for OID uniqueness).
@@ -158,6 +161,9 @@ func CreateOCSPResponseExt(issuer, responderCert *x509.Certificate, p *OCSPRespo
 
 	respExts := make([]pkix.Extension, 0, 1+len(p.ExtraExtensions))
 	if len(p.Nonce) > 0 {
+		if len(p.Nonce) < minOCSPNonceLen {
+			return nil, fmt.Errorf("smx509: OCSP nonce must be at least %d bytes (RFC 8954 §2.3), got %d", minOCSPNonceLen, len(p.Nonce))
+		}
 		nonceVal, err := asn1.Marshal(p.Nonce)
 		if err != nil {
 			return nil, err
@@ -269,10 +275,52 @@ func ResponseNonce(respDER []byte) ([]byte, error) {
 			if _, err := asn1.Unmarshal(ext.Value, &nonce); err != nil {
 				return nil, fmt.Errorf("smx509: malformed OCSP nonce extension: %w", err)
 			}
+			// An empty OCTET STRING decodes to a non-nil zero-length slice,
+			// indistinguishable from "valid nonce" by bytes.Equal at the
+			// caller — report it as malformed instead.
+			if len(nonce) == 0 {
+				return nil, errors.New("smx509: OCSP nonce extension is empty")
+			}
 			return nonce, nil
 		}
 	}
 	return nil, nil // no nonce present — not an error
+}
+
+// minOCSPNonceLen is the minimum nonce length accepted by both the
+// constructor and the verifier (RFC 8954 §2.3: at least 128 bits).
+const minOCSPNonceLen = 16
+
+// VerifyOCSPResponseNonce enforces the full RFC 6960 §4.4.1 nonce binding
+// for a CLIENT that sent a nonce:
+//
+//   - the response MUST carry a nonce (a response without one is replayable
+//     and MUST be rejected — the classic stripping attack where a MITM
+//     removes the request extension and replays an old window-valid response);
+//   - the echoed nonce MUST equal the sent nonce (constant-time compare —
+//     nonce equality gates trust decisions);
+//   - the nonce MUST be at least minOCSPNonceLen bytes.
+//
+// sentNonce itself must be at least minOCSPNonceLen (generate with
+// crypto/rand). Pass nil only when no nonce was sent (no-op).
+func VerifyOCSPResponseNonce(respDER, sentNonce []byte) error {
+	if len(sentNonce) == 0 {
+		return nil // no nonce sent — nothing to bind
+	}
+	if len(sentNonce) < minOCSPNonceLen {
+		return fmt.Errorf("smx509: sent nonce is %d bytes, minimum is %d", len(sentNonce), minOCSPNonceLen)
+	}
+	got, err := ResponseNonce(respDER)
+	if err != nil {
+		return err
+	}
+	if got == nil {
+		return errors.New("smx509: OCSP response carries no nonce although the request sent one — replayed/stripped response MUST be rejected (RFC 6960 §4.4.1)")
+	}
+	if subtle.ConstantTimeCompare(got, sentNonce) != 1 {
+		return errors.New("smx509: OCSP response nonce mismatch — response does not bind to the request")
+	}
+	return nil
 }
 
 // --- ASN.1 structures (encoding side; mirror the unexported x/crypto layout
@@ -338,6 +386,21 @@ func signTBSResponse(signer crypto.Signer, tbsDER []byte) (signature []byte, sig
 			Algorithm:  oidSignatureSM2WithSM3,
 			Parameters: asn1.RawValue{Tag: 5},
 		}, nil
+	}
+
+	// An *ecdsa.PrivateKey ON the SM2 curve is, per this package's own
+	// IsSM2Key convention, an SM2 key — signing it with plain ECDSA-SHA256
+	// would silently downgrade a GM key to a non-GM algorithm (violating
+	// OID allow-listing on the relying side). Reject explicitly: the caller
+	// must pass the *sm2.PrivateKey form. Also guards against a nil Curve
+	// (programmatically constructed keys) panicking in Params() below.
+	if ecdsaPub, ok := signer.Public().(*ecdsa.PublicKey); ok {
+		if ecdsaPub.Curve == nil {
+			return nil, sigAlg, errors.New("smx509: OCSP signer public key has nil curve")
+		}
+		if IsSM2PublicKey(ecdsaPub) {
+			return nil, sigAlg, errors.New("smx509: signer key is on the SM2 curve but is not *sm2.PrivateKey; pass the *sm2.PrivateKey form to sign with SM2+SM3")
+		}
 	}
 
 	switch pub := signer.Public().(type) {

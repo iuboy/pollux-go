@@ -47,12 +47,23 @@ func TestPublicKeyWireFormats(t *testing.T) {
 
 // TestBuildKRL_HostCA host KRL 与 user KRL 输出仅 CA 段不同。
 func TestBuildKRL_HostCA(t *testing.T) {
-	serials := []uint64{100, 200}
-	userKRL, err := BuildKRL([]byte("user-ca-wire"), serials, "user")
+	userKP, err := GenerateED25519KeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	hostKRL, err := BuildKRL([]byte("host-ca-wire"), serials, "host")
+	hostKP, err := GenerateED25519KeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	userWire := userKP.PublicKey.Marshal()
+	hostWire := hostKP.PublicKey.Marshal()
+
+	serials := []uint64{100, 200}
+	userKRL, err := BuildKRL(userWire, serials, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostKRL, err := BuildKRL(hostWire, serials, "host")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,14 +71,18 @@ func TestBuildKRL_HostCA(t *testing.T) {
 		t.Error("user/host KRL 应因 CA wire 不同而不同")
 	}
 	// host KRL 内含 host CA wire
-	if !bytes.Contains(hostKRL, []byte("host-ca-wire")) {
+	if !bytes.Contains(hostKRL, hostWire) {
 		t.Error("host KRL 缺少 host CA wire 段")
 	}
 }
 
 // TestKRLSerialDedup 重复序号去重 + 0 忽略。
 func TestKRLSerialDedup(t *testing.T) {
-	krl, err := BuildKRL([]byte("ca"), []uint64{5, 5, 0, 5, 6}, "")
+	caKP, err2 := GenerateED25519KeyPair()
+	if err2 != nil {
+		t.Fatal(err2)
+	}
+	krl, err := BuildKRL(caKP.PublicKey.Marshal(), []uint64{5, 5, 0, 5, 6}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

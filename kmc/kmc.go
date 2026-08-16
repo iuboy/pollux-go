@@ -12,6 +12,7 @@ import (
 	"github.com/emmansun/gmsm/pkcs8"
 	"github.com/emmansun/gmsm/sm2"
 
+	"github.com/iuboy/pollux-go/internal/memsecure"
 	"github.com/iuboy/pollux-go/smx509"
 )
 
@@ -27,6 +28,11 @@ type Manager interface {
 }
 
 // EncryptionKeyPair is the output of a KMC key generation.
+//
+// Key-material responsibility: PrivateKeyPKCS8 is plaintext key material.
+// The caller owns it after return — zero it with memsecure.ZeroBytes once
+// the enrollment protocol has wrapped it, and never log the struct
+// (fmt %v/%#v would print the raw key).
 type EncryptionKeyPair struct {
 	// PrivateKeyPKCS8 is the encryption private key, PKCS#8 DER (wrapped by
 	// the enrollment protocol before being returned to the client).
@@ -56,11 +62,23 @@ func (k *LocalKMC) GenerateEncryptionKeyPair(_ context.Context, subject pkix.Nam
 	if err != nil {
 		return nil, fmt.Errorf("kmc: generate SM2 key pair: %w", err)
 	}
+	// Key-material hygiene: zero the scalar and any intermediate DER on every
+	// failure path (the returned PrivateKeyPKCS8 copy is the caller's
+	// responsibility — see EncryptionKeyPair docs), matching the memsecure
+	// convention used across this module.
+	var privDER []byte
+	fail := func(err error) (*EncryptionKeyPair, error) {
+		if priv.D != nil {
+			priv.D.SetInt64(0)
+		}
+		memsecure.ZeroBytes(privDER)
+		return nil, err
+	}
 
 	// PKCS#8 DER via gmsm pkcs8, which understands the SM2 private key type.
-	privDER, err := pkcs8.MarshalPrivateKey(priv, nil, nil)
+	privDER, err = pkcs8.MarshalPrivateKey(priv, nil, nil)
 	if err != nil {
-		return nil, fmt.Errorf("kmc: marshal private key: %w", err)
+		return fail(fmt.Errorf("kmc: marshal private key: %w", err))
 	}
 
 	// Encryption CSR: signed with the freshly generated key so the CA can
@@ -71,7 +89,7 @@ func (k *LocalKMC) GenerateEncryptionKeyPair(_ context.Context, subject pkix.Nam
 	}
 	csrDER, err := smx509.CreateCertificateRequest(csrTemplate, priv)
 	if err != nil {
-		return nil, fmt.Errorf("kmc: build encryption CSR: %w", err)
+		return fail(fmt.Errorf("kmc: build encryption CSR: %w", err))
 	}
 	csrPEM := string(pem.EncodeToMemory(&pem.Block{
 		Type:  "CERTIFICATE REQUEST",

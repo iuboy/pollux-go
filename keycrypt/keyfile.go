@@ -11,13 +11,18 @@ import (
 
 	"github.com/emmansun/gmsm/pkcs"
 	"github.com/emmansun/gmsm/pkcs8"
+	"github.com/iuboy/pollux-go/internal/memsecure"
 	"github.com/iuboy/pollux-go/smx509"
 )
 
-// 密钥派生参数（NIST SP 800-132 推荐：PBKDF2-SHA256，≥100k 迭代）。
+// 密钥派生参数。迭代数对齐本仓库 smx509 自定的策略（"Callers creating new
+// encrypted keys MUST use at least 600,000 iterations"，引据 OWASP 2023
+// PBKDF2-HMAC-SHA256 指南）——此前 100k 与该标准自相矛盾，且 CA/SSH CA
+// 私钥是高价值长期资产，弱口令离线暴破面必须按上界设防。单次派生约
+// 0.2s，对一次性密钥落盘操作可接受。
 const (
 	pbkdf2SaltSize   = 16
-	pbkdf2Iterations = 100_000
+	pbkdf2Iterations = 600_000
 	encryptedPEMType = "ENCRYPTED PRIVATE KEY"
 )
 
@@ -42,7 +47,11 @@ func MarshalEncryptedPrivateKey(key crypto.Signer, password string) ([]byte, err
 	if password == "" {
 		return nil, ErrPasswordRequired
 	}
-	der, err := pkcs8.MarshalPrivateKey(key, []byte(password), pbes2Encrypter)
+	// 密码的堆副本用后即清（gmsm 只读取不持有引用，清同一底层数组有效），
+	// 避免口令在堆上残留到 GC——内存取证可直接取口令，削弱 KDF 的意义。
+	pw := []byte(password)
+	defer memsecure.ZeroBytes(pw)
+	der, err := pkcs8.MarshalPrivateKey(key, pw, pbes2Encrypter)
 	if err != nil {
 		return nil, fmt.Errorf("加密私钥失败: %w", err)
 	}

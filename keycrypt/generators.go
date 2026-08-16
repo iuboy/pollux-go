@@ -9,6 +9,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"errors"
 	"fmt"
 
 	"github.com/iuboy/pollux-go/sm2"
@@ -45,9 +46,13 @@ type RSAKeyGenerator struct {
 	bits int
 }
 
-// NewRSAKeyGenerator 创建 RSA 密钥生成器
-func NewRSAKeyGenerator(bits int) *RSAKeyGenerator {
-	return &RSAKeyGenerator{bits: bits}
+// NewRSAKeyGenerator 创建 RSA 密钥生成器。bits 下限 2048：< 2048 的 RSA
+// 密钥不具现代安全强度，在生成端拦截而非产出弱密钥后由下游补救。
+func NewRSAKeyGenerator(bits int) (*RSAKeyGenerator, error) {
+	if bits < 2048 {
+		return nil, fmt.Errorf("keycrypt: RSA key size %d is below the 2048-bit minimum", bits)
+	}
+	return &RSAKeyGenerator{bits: bits}, nil
 }
 
 // Generate 生成 RSA 密钥对
@@ -60,9 +65,13 @@ type ECDSAKeyGenerator struct {
 	curve elliptic.Curve
 }
 
-// NewECDSAKeyGenerator 创建 ECDSA 密钥生成器
-func NewECDSAKeyGenerator(curve elliptic.Curve) *ECDSAKeyGenerator {
-	return &ECDSAKeyGenerator{curve: curve}
+// NewECDSAKeyGenerator 创建 ECDSA 密钥生成器。curve 为 nil 立即报错
+// （历史实现延迟到 Generate 才 panic）。
+func NewECDSAKeyGenerator(curve elliptic.Curve) (*ECDSAKeyGenerator, error) {
+	if curve == nil {
+		return nil, errors.New("keycrypt: ECDSA curve must not be nil")
+	}
+	return &ECDSAKeyGenerator{curve: curve}, nil
 }
 
 // Generate 生成 ECDSA 密钥对
@@ -106,15 +115,15 @@ func (g *SM2KeyGenerator) Generate() (crypto.PrivateKey, error) {
 func NewKeyGeneratorWithType(keyType string) (KeyGenerator, error) {
 	switch KeyType(keyType) {
 	case KeyTypeRSA2048:
-		return NewRSAKeyGenerator(2048), nil
+		return NewRSAKeyGenerator(2048)
 	case KeyTypeRSA3072:
-		return NewRSAKeyGenerator(3072), nil
+		return NewRSAKeyGenerator(3072)
 	case KeyTypeRSA4096:
-		return NewRSAKeyGenerator(4096), nil
+		return NewRSAKeyGenerator(4096)
 	case KeyTypeECDSAP256:
-		return NewECDSAKeyGenerator(elliptic.P256()), nil
+		return NewECDSAKeyGenerator(elliptic.P256())
 	case KeyTypeECDSAP384:
-		return NewECDSAKeyGenerator(elliptic.P384()), nil
+		return NewECDSAKeyGenerator(elliptic.P384())
 	case KeyTypeEd25519:
 		return NewEd25519KeyGenerator(), nil
 	case KeyTypeSM2:

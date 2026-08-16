@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — 第二轮安全审查修复（18 项 Medium + 关键 Low，逐模块审查）
+
+**crl**（fail-closed 与健壮性）：
+- 空撤销列表（非 nil 空切片）回源存储——此前误传 `[]` 会签发"空名单"权威 CRL，所有已撤销证书在依赖方恢复有效
+- 非法/非正数序列号拒绝整轮签发（此前 fail-open 静默跳过 = 漏撤销）
+- 显式 CRL number 强制单调且拒绝负数（RFC 5280 §5.2.3）
+- `StartAutoUpdate` 非正 interval 返回错误（此前 ticker panic 于子 goroutine 不可 recover，崩溃进程）；接口签名变更为返回 error
+- `validity`/`numberSource` 读写纳入锁（数据竞争）；fanout stop 通道构造期创建（stop-before-start 泄漏）+ 刷新循环超时
+
+**sm2**：
+- `NewPrivateKeyFromInt` 标量域校验 [1, n-1]——越界 panic（不可信输入 DoS）与负数静默取绝对值均转为错误
+- `AdjustCipherOrder` 对 ASN.1 输入显式拒绝（此前静默输出 Plain 编码，契约违背）
+- `PlainToASN1` 拒绝压缩点输入（此前静默产出损坏 ASN.1）
+- `NewEncrypterOpts(EncodingASN1, OrderC1C2C3)` 显式报错（此前静默忽略 order）
+
+**sshca**：
+- `ValidateCertificate` 放行 force-command（`CertChecker.SupportedCriticalOptions` 此前为空，所有带 force-command 的合法证书被误拒，手写白名单成死代码）
+- 签发边界应用 critical option 白名单（force-command 非空/source-address 校验/未知拒绝——签发与验证对称）
+- `ValidateSourceAddresses` 拒绝空串与非规范 CIDR（此前签出 OpenSSH 拒收的"死证书"）
+- `BuildKRL` 预校验 CA wire 格式（非法 KRL 被 OpenSSH 整体拒收，sshd 对 KRL 解析错误拒绝所有密钥）
+- host 证书不再写 permit-* 扩展（PROTOCOL.certkeys 规定 host 证书无扩展）；`NewCertificateSigner` 校验 certType
+
+**smx509**：
+- OCSP 签名分流：SM2 曲线的 `*ecdsa.PrivateKey` 显式拒绝（此前静默降级为普通 ECDSA-SHA256，违反包内自身约定）
+- 新增 `VerifyOCSPResponseNonce`：客户端发出 nonce 后响应缺失/不匹配必须拒绝（RFC 6960 §4.4.1 完整绑定，防剥离重放）
+- nonce 最小长度 16 字节（RFC 8954 §2.3，构造与解析双侧）；空 nonce 扩展报错而非空切片
+
+**keycrypt / kmc**：
+- PBKDF2 迭代 100k → 600k（对齐仓库 smx509 自定的 MUST 标准；此前库内自相矛盾）
+- 密码副本与私钥中间态清零（memsecure 惯例对齐）；RSA <2048 位与 nil curve 构造期拒绝
+
+**tls13gm**：
+- 0-RTT age 改为 RFC 8446 §4.2.10 的 mod 2^32 语义（此前显式回绕守卫误拒约 14% ticket 生命末段的诚实客户端 0-RTT；新鲜度策略交还 acceptor）
+
 ### Added
 
 - **`smx509`: OCSP 响应级扩展支持**（自 mekbuda 的 vendored fork 上移，消除双端维护）：

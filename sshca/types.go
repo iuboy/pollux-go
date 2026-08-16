@@ -168,9 +168,9 @@ func ValidatePrincipals(principals []string) error {
 		if principal == "" {
 			return fmt.Errorf("主体不能为空字符串")
 		}
-		// 检查长度限制
+		// 检查长度限制(%q 防超长主体内的控制字符注入日志)
 		if len(principal) > 1024 {
-			return fmt.Errorf("主体 %s 超过最大长度 1024", principal)
+			return fmt.Errorf("主体 %q 超过最大长度 1024", principal)
 		}
 		// 字符白名单：alnum . _ - （POSIX 用户名/主机名常见字符）。
 		// 拒绝空格、引号、分号、管道、反引号等 shell 元字符。
@@ -199,17 +199,26 @@ func isPrincipalChar(ch rune) bool {
 	return false
 }
 
-// ValidateSourceAddresses 验证源地址列表
+// ValidateSourceAddresses 验证源地址列表。
+//
+// 拒绝两类会产出"永不匹配的 source-address"的输入（密码学有效但任何
+// 客户端永远无法认证的死证书，且本包自身的校验无法发现）：
+//   - 空串：OpenSSH 的 addr_match_cidr_list 对空条目报错，整列表无效；
+//   - 主机位非零的 CIDR（如 192.168.1.1/24）：OpenSSH 的 addr_pton_cidr
+//     要求主机位全零，否则整列表无效（裸 IP 不受影响，默认 /32 全掩码）。
 func ValidateSourceAddresses(addresses []string) error {
 	for _, addr := range addresses {
 		if addr == "" {
+			return fmt.Errorf("源地址不能为空字符串（OpenSSH 会拒绝整个 source-address 列表）")
+		}
+		if ip, network, err := net.ParseCIDR(addr); err == nil {
+			if !ip.Equal(network.IP) {
+				return fmt.Errorf("源地址 %q 的 CIDR 主机位非零（OpenSSH 要求全零，如 %s），请规范化", addr, network.String())
+			}
 			continue
 		}
-		// 验证 CIDR 格式或 IP 地址
-		if _, _, err := net.ParseCIDR(addr); err != nil {
-			if ip := net.ParseIP(addr); ip == nil {
-				return fmt.Errorf("无效的源地址: %s", addr)
-			}
+		if net.ParseIP(addr) == nil {
+			return fmt.Errorf("无效的源地址: %s", addr)
 		}
 	}
 

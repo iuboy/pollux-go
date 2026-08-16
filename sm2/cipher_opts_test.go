@@ -25,7 +25,8 @@ func TestCipherOrderRoundTripAllCombinations(t *testing.T) {
 		compress bool
 	}{
 		{"ASN1_C1C3C2", sm2.EncodingASN1, sm2.OrderC1C3C2, false},
-		{"ASN1_C1C2C3", sm2.EncodingASN1, sm2.OrderC1C2C3, false},
+		// ASN1 + C1C2C3 不存在(ASN.1 字段序固定 C1C3C2),由
+		// TestNewEncrypterOpts_RejectsASN1C1C2C3 断言显式报错。
 		{"Plain_C1C3C2_uncomp", sm2.EncodingPlain, sm2.OrderC1C3C2, false},
 		{"Plain_C1C2C3_uncomp", sm2.EncodingPlain, sm2.OrderC1C2C3, false},
 		{"Plain_C1C3C2_comp", sm2.EncodingPlain, sm2.OrderC1C3C2, true},

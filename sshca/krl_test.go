@@ -13,8 +13,26 @@ func rdString(b []byte, off int) (val []byte, next int) {
 	return b[off : off+l], off + l
 }
 
+// testCAWire 返回一个真实公钥 wire(BuildKRL 现预校验 CA wire 格式,
+// 假 blob 会被拒——见第二轮审查 L-1 修复)。
+func testCAWire(t *testing.T) []byte {
+	t.Helper()
+	kp, err := GenerateED25519KeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kp.PublicKey.Marshal()
+}
+
 func TestBuildKRL_Structure(t *testing.T) {
-	ca := []byte("fake-ca-wire")
+	// 用真实公钥 wire(审查 L1:历史用 "fake-ca-wire" 假 blob 掩盖了
+	// BuildKRL 的 CA 预校验缺失——非法 wire 的 KRL 会被 OpenSSH 整体拒收,
+	// sshd 对 KRL 解析错误的处理是拒绝所有密钥)。
+	kp, err := GenerateED25519KeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := kp.PublicKey.Marshal()
 	krl, err := BuildKRL(ca, []uint64{42, 43}, "test krl")
 	if err != nil {
 		t.Fatalf("BuildKRL: %v", err)
@@ -63,7 +81,7 @@ func TestBuildKRL_Structure(t *testing.T) {
 }
 
 func TestBuildKRL_DiscontinuousUsesList(t *testing.T) {
-	krl, err := BuildKRL([]byte("ca"), []uint64{1, 5, 9}, "")
+	krl, err := BuildKRL(testCAWire(t), []uint64{1, 5, 9}, "")
 	if err != nil {
 		t.Fatalf("BuildKRL: %v", err)
 	}
@@ -91,11 +109,11 @@ func TestBuildKRL_DiscontinuousUsesList(t *testing.T) {
 }
 
 func TestBuildKRL_EmptyAndZeroSerial(t *testing.T) {
-	krl, err := BuildKRL([]byte("ca"), nil, "")
+	krl, err := BuildKRL(testCAWire(t), nil, "")
 	if err != nil || len(krl) < 40 {
 		t.Fatalf("空吊销也应生成合法 KRL: %v len=%d", err, len(krl))
 	}
-	krl2, _ := BuildKRL([]byte("ca"), []uint64{0, 0, 7}, "")
+	krl2, _ := BuildKRL(testCAWire(t), []uint64{0, 0, 7}, "")
 	// 仅一个有效序号 7 → LIST 单元素
 	if bytes.Equal(krl, krl2) {
 		t.Fatal("serial=0 应被忽略，两者不应相同")

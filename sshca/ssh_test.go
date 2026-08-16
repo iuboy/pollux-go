@@ -227,7 +227,10 @@ func TestValidateSourceAddresses(t *testing.T) {
 	}{
 		{"正常 CIDR", []string{"192.168.0.0/16", "10.0.0.0/8"}, false},
 		{"正常 IP", []string{"192.168.1.1", "10.0.0.1"}, false},
-		{"空地址", []string{""}, false},
+		// 空串与非规范 CIDR(主机位非零)会产出 OpenSSH 拒收整个列表的
+		// source-address("死证书"),必须在签发前拒绝(第二轮审查 M-3/M-4)。
+		{"空地址拒绝", []string{""}, true},
+		{"主机位非零 CIDR 拒绝", []string{"192.168.1.1/24"}, true},
 		{"无效 CIDR", []string{"invalid"}, true},
 		{"无效 IP", []string{"999.999.999.999"}, true},
 	}

@@ -20,8 +20,9 @@ import (
 func generateCertSerial() uint64 {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		// rand.Read 失败极罕见；回退到时间戳+纳秒扰动，保证进程内递增唯一。
-		return uint64(time.Now().UnixNano())
+		// rand.Read 失败极罕见；回退到时间戳+纳秒扰动（跨进程同纳秒理论上
+		// 可碰撞，概率可忽略）。同样清最高位，与随机路径的取值域一致。
+		return uint64(time.Now().UnixNano()) &^ (1 << 63)
 	}
 	serial := binary.BigEndian.Uint64(buf[:])
 	// 清零最高位避免某些客户端的有符号 int64 溢出问题。
@@ -35,13 +36,17 @@ type CertificateSigner struct {
 	maxDuration time.Duration
 }
 
-// NewCertificateSigner 创建证书签名器
+// NewCertificateSigner 创建证书签名器。certType 必须是 UserCert 或 HostCert
+// 之一——任意 CertType 值会被原样写入证书 wire 字段，产出非法证书。
 func NewCertificateSigner(keyPair *KeyPair, certType CertType, maxDuration time.Duration) (*CertificateSigner, error) {
 	if keyPair == nil {
 		return nil, errors.New("密钥对不能为空")
 	}
 	if keyPair.PrivateKey == nil {
 		return nil, fmt.Errorf("私钥不能为空")
+	}
+	if certType != UserCert && certType != HostCert {
+		return nil, fmt.Errorf("certType 必须是 UserCert 或 HostCert, got %d", int(certType))
 	}
 
 	return &CertificateSigner{
@@ -76,8 +81,12 @@ func (s *CertificateSigner) SignCertificate(req *CertificateRequest) (*Certifica
 		// 注意：CriticalOptions 和 Extensions 需要在签名前设置
 	}
 
-	// 设置关键选项
-	cert.CriticalOptions = s.buildCriticalOptions(req)
+	// 设置关键选项(签发边界白名单校验,失败拒绝签发)
+	opts, err := s.buildCriticalOptions(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求验证失败: %w", err)
+	}
+	cert.CriticalOptions = opts
 
 	// 设置扩展
 	cert.Extensions = s.buildExtensions(req)
@@ -166,21 +175,39 @@ func (s *CertificateSigner) validateRequest(req *CertificateRequest) error {
 	return nil
 }
 
-// buildCriticalOptions 构建关键选项
-func (s *CertificateSigner) buildCriticalOptions(req *CertificateRequest) map[string]string {
+// buildCriticalOptions 构建关键选项。CA 在签发边界应用与 ValidateCertificate
+// 相同的白名单与值校验（签发/验证不对称会让 CA 签出过不了自己验证、或被
+// sshd 拒收的证书）：仅接受 force-command（值非空）与 source-address
+// （通过 ValidateSourceAddresses，含 Permissions==nil 时请求自带的情况），
+// 未知名称一律拒绝。
+func (s *CertificateSigner) buildCriticalOptions(req *CertificateRequest) (map[string]string, error) {
 	options := make(map[string]string)
 
-	// 添加请求中的关键选项
 	for _, opt := range req.CriticalOptions {
+		switch opt.Name {
+		case "force-command":
+			if opt.Value == "" {
+				return nil, errors.New("force-command 值不能为空")
+			}
+		case "source-address":
+			if err := ValidateSourceAddresses(splitCommaList(opt.Value)); err != nil {
+				return nil, fmt.Errorf("source-address 值非法: %w", err)
+			}
+		default:
+			return nil, fmt.Errorf("未识别的 critical option %q，拒绝签发", opt.Name)
+		}
 		options[opt.Name] = opt.Value
 	}
 
 	// 源地址限制
 	if req.Permissions != nil && len(req.Permissions.SourceAddresses) > 0 {
+		if err := ValidateSourceAddresses(req.Permissions.SourceAddresses); err != nil {
+			return nil, err
+		}
 		options["source-address"] = joinAddresses(req.Permissions.SourceAddresses)
 	}
 
-	return options
+	return options, nil
 }
 
 // buildExtensions 构建扩展
@@ -211,12 +238,11 @@ func (s *CertificateSigner) buildExtensions(req *CertificateRequest) map[string]
 			if req.Permissions.PermitUserRC {
 				extensions["permit-user-rc"] = ""
 			}
-		} else if s.certType == HostCert {
-			// 主机证书权限
-			if req.Permissions.PermitPortForwarding {
-				extensions["permit-port-forwarding"] = ""
-			}
 		}
+		// host 证书不写任何 permit-* 扩展:PROTOCOL.certkeys 明确
+		// "No extensions are defined for host certificates"(此前写入
+		// permit-port-forwarding 违反协议且与 GetDefaultHostPermissions
+		// 的注释矛盾)。
 	}
 
 	return extensions
@@ -364,6 +390,7 @@ func (a *sshAuthority) ValidateCertificate(cert *ssh.Certificate) error {
 	if len(cert.ValidPrincipals) > 0 {
 		principalArg = cert.ValidPrincipals[0]
 	}
+	checker.SupportedCriticalOptions = []string{"force-command"}
 	if err := checker.CheckCert(principalArg, cert); err != nil {
 		return fmt.Errorf("证书校验失败: %w", err)
 	}
@@ -371,7 +398,7 @@ func (a *sshAuthority) ValidateCertificate(cert *ssh.Certificate) error {
 	// host 证书不得携带 critical option（PROTOCOL.certkeys：host 证书唯一的
 	// 合法 critical option 是保留的空集合）。
 	if CertType(cert.CertType) == HostCert && len(cert.CriticalOptions) > 0 {
-		return fmt.Errorf("host 证书不允许携带 critical option: %v", criticalOptionNames(cert))
+		return fmt.Errorf("host 证书不允许携带 critical option: %q", criticalOptionNames(cert))
 	}
 
 	// 未识别的 critical option 必须拒绝（user 证书仅支持 force-command /

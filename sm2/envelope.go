@@ -70,23 +70,24 @@ func EnvelopeEncrypt(pub *ecdsa.PublicKey, plaintext []byte) (*EnvelopeResult, e
 // generic "sm2: decryption failed" error instead of the underlying PKCS#7
 // error. This matches EnvelopeDecryptSM4's hardening: a digital envelope has
 // two layers (SM2 key-unwrapping + symmetric decryption), and a distinguishable
-// error (e.g. "SM2 key mismatch" vs "symmetric authentication failed") could be
-// turned into a decryption oracle, especially when the inner mode is
-// unauthenticated (e.g. CBC). Input-validation failures (nil args, missing
-// certificate) are still reported verbatim since they are caller errors, not
-// adversarial decryption outcomes.
+// ERROR MESSAGE is the necessary precondition of a decryption oracle (classic
+// padding-oracle shape); unifying the messages closes that surface. Residual
+// timing differences between the layers still exist and are accepted —
+// exploiting them requires high-precision measurement typically masked by
+// network jitter. Input-validation failures (nil args, missing certificate)
+// are still reported verbatim since they are caller errors, not adversarial
+// decryption outcomes.
 func EnvelopeDecrypt(priv *PrivateKey, env *EnvelopeResult) ([]byte, error) {
 	if priv == nil || env == nil {
 		return nil, errors.New("sm2: nil private key or envelope")
+	}
+	if len(env.certDER) == 0 {
+		return nil, errors.New("sm2: missing certificate in envelope")
 	}
 
 	p7, err := gmsmPkcs7.Parse(env.EnvelopedData)
 	if err != nil {
 		return nil, errDecryptFailed
-	}
-
-	if len(env.certDER) == 0 {
-		return nil, errors.New("sm2: missing certificate in envelope")
 	}
 	cert, err := smx509.ParseCertificate(env.certDER)
 	if err != nil {

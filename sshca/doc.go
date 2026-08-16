@@ -13,10 +13,12 @@
 // # Revocation
 //
 // [BuildKRL] produces a binary SSH KRL revoking certificates by serial
-// number under one CA key. golang.org/x/crypto/ssh can PARSE KRLs but
-// cannot generate them — this is the scarce capability the package adds.
-// Serial lists are deduplicated and encoded as packed continuation-style
-// lists per the KRL wire format.
+// number under one CA key. Neither golang.org/x/crypto/ssh nor any other
+// mainstream Go library implements KRL generation — this is the scarce
+// capability the package adds (consumers are OpenSSH tools: ssh-keygen -k,
+// sshd RevokedKeys). Serial lists are deduplicated; consecutive serials are
+// compacted into RANGE sections, the rest go into plain big-endian LIST
+// sections, per the KRL wire format.
 //
 // # Validation
 //

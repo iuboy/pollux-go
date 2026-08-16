@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"time"
+
+	xssh "golang.org/x/crypto/ssh"
 )
 
 const (
@@ -22,9 +24,18 @@ const (
 // （cert.Key.Marshal()）；serials 为被吊销的证书序号列表（去重/忽略 0）。
 // caKeyWire 为空表示适用于所有 CA（宽松，不推荐）。
 func BuildKRL(caKeyWire []byte, serials []uint64, comment string) ([]byte, error) {
+	// 预校验 CA wire 格式:结构非法的 KRL 会被 OpenSSH 整体拒收,而 sshd 的
+	// auth_key_is_revoked 对 KRL 解析错误的处理是拒绝所有密钥——一次
+	// base64/wire 混用即导致全网 SSH 认证锁死,故在生成端拦截。
+	if len(caKeyWire) > 0 {
+		if _, err := xssh.ParsePublicKey(caKeyWire); err != nil {
+			return nil, fmt.Errorf("caKeyWire 不是合法的 SSH 公钥 wire 格式: %w", err)
+		}
+	}
 	now := uint64(time.Now().Unix())
-	// krl_version：每次生成单调递增（随机高 32 位 + 时间戳低位，
-	// 避免时钟回拨导致"新 KRL 版本更旧"）
+	// krl_version：随机唯一版本（同 ssh-keygen 的 arc4random_buf 做法）。
+	// 注:随机高位不保证单调——sshd 仅记录该值不做比较,单调性无消费方;
+	// 此前注释声称的"防时钟回拨的单调递增"与实现不符,已更正。
 	var nonce [4]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return nil, fmt.Errorf("生成 KRL 版本随机数失败: %w", err)

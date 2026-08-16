@@ -10,8 +10,27 @@ import (
 	"github.com/iuboy/pollux-go/sm2"
 )
 
+// mustRSA/mustECDSA 包装带校验的构造器。
+func mustRSA(t *testing.T, bits int) *RSAKeyGenerator {
+	t.Helper()
+	g, err := NewRSAKeyGenerator(bits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
+func mustECDSA(t *testing.T, curve elliptic.Curve) *ECDSAKeyGenerator {
+	t.Helper()
+	g, err := NewECDSAKeyGenerator(curve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
 func TestRSAKeyGenerator_Generate(t *testing.T) {
-	priv, err := NewRSAKeyGenerator(2048).Generate()
+	priv, err := mustRSA(t, 2048).Generate()
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -21,7 +40,7 @@ func TestRSAKeyGenerator_Generate(t *testing.T) {
 }
 
 func TestECDSAKeyGenerator_Generate(t *testing.T) {
-	priv, err := NewECDSAKeyGenerator(elliptic.P256()).Generate()
+	priv, err := mustECDSA(t, elliptic.P256()).Generate()
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -90,5 +109,19 @@ func TestGenerateKeyPairWithType_ExtractsPublicKey(t *testing.T) {
 			t.Fatalf("(%s) public key is nil", kt)
 		}
 		_ = priv
+	}
+}
+
+// TestGeneratorConstructors_RejectWeakParams 锁定第二轮审查 L2:< 2048 位
+// RSA 与 nil curve 必须在构造器拦截(历史实现产出弱密钥/延迟 panic)。
+func TestGeneratorConstructors_RejectWeakParams(t *testing.T) {
+	if _, err := NewRSAKeyGenerator(512); err == nil {
+		t.Fatal("512 位 RSA 应被构造器拒绝")
+	}
+	if _, err := NewRSAKeyGenerator(1024); err == nil {
+		t.Fatal("1024 位 RSA 应被构造器拒绝")
+	}
+	if _, err := NewECDSAKeyGenerator(nil); err == nil {
+		t.Fatal("nil curve 应被构造器拒绝")
 	}
 }

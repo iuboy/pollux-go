@@ -139,6 +139,16 @@ func (s *CertificateSigner) validateRequest(req *CertificateRequest) error {
 		return fmt.Errorf("证书请求不能为空")
 	}
 
+	// req.Type 必须与签名器的证书类型一致:历史实现完全忽略该字段,
+	// user 签名器会静默把 Type=HostCert 的请求签成 CertType=1(user),
+	// 调用方按请求语义以为签的是 host 证书。零值视为未指定,回填为
+	// 签名器类型(保持直调 SignCertificate 不填 Type 的既有用法)。
+	if req.Type == 0 {
+		req.Type = s.certType
+	} else if req.Type != s.certType {
+		return fmt.Errorf("证书请求 Type(%s)与签名器类型(%s)不一致", req.Type, s.certType)
+	}
+
 	if req.Key == nil {
 		return fmt.Errorf("公钥不能为空")
 	}
@@ -258,9 +268,14 @@ type sshAuthority struct {
 	userSigner  *CertificateSigner
 	hostSigner  *CertificateSigner
 	maxDuration time.Duration
+	// isRevoked 可选的吊销查询(由 NewAuthorityWithRevocation 注入);
+	// nil 时 ValidateCertificate 不做吊销检查(由消费方 sshd 的
+	// RevokedKeys/KRL 兜底——历史上即如此)。
+	isRevoked func(cert *ssh.Certificate) bool
 }
 
-// NewAuthority 创建 SSH 证书授权机构
+// NewAuthority 创建 SSH 证书授权机构(无吊销检查;验证侧吊销由
+// sshd RevokedKeys/KRL 兜底,或用 NewAuthorityWithRevocation 接线)。
 func NewAuthority(userKeyPair, hostKeyPair *KeyPair, maxDuration time.Duration) (Authority, error) {
 	if userKeyPair == nil {
 		return nil, fmt.Errorf("用户密钥对不能为空")
@@ -284,6 +299,20 @@ func NewAuthority(userKeyPair, hostKeyPair *KeyPair, maxDuration time.Duration) 
 		hostSigner:  hostSigner,
 		maxDuration: maxDuration,
 	}, nil
+}
+
+// NewAuthorityWithRevocation 创建带吊销查询的 SSH 证书授权机构:
+// ValidateCertificate 会把已吊销证书(按 isRevoked 谓词,通常查 serial
+// 集合/KRL)一并拒绝,而不是仅依赖消费端 sshd 的 RevokedKeys 兜底。
+func NewAuthorityWithRevocation(userKeyPair, hostKeyPair *KeyPair, maxDuration time.Duration, isRevoked func(cert *ssh.Certificate) bool) (Authority, error) {
+	a, err := NewAuthority(userKeyPair, hostKeyPair, maxDuration)
+	if err != nil {
+		return nil, err
+	}
+	if sa, ok := a.(*sshAuthority); ok {
+		sa.isRevoked = isRevoked
+	}
+	return a, nil
 }
 
 // Signer 返回签名器
@@ -391,6 +420,9 @@ func (a *sshAuthority) ValidateCertificate(cert *ssh.Certificate) error {
 		principalArg = cert.ValidPrincipals[0]
 	}
 	checker.SupportedCriticalOptions = []string{"force-command"}
+	if a.isRevoked != nil {
+		checker.IsRevoked = a.isRevoked
+	}
 	if err := checker.CheckCert(principalArg, cert); err != nil {
 		return fmt.Errorf("证书校验失败: %w", err)
 	}

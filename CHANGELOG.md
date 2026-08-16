@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — 第二轮审查剩余项(Low/Info 补完)
+
+- `smx509`:OCSP `RevocationReason` 取值域校验(RFC 5280 §5.3.1:0-6/8-10,7 未分配);无 `NextUpdate` 响应对 `ThisUpdate` 施加 7 天本地 max-age(封住无界重放窗口);内嵌 responder 证书自身有效期校验;`ExtractOCSPRequestNonce` 拒绝尾部垃圾与重复 nonce 扩展;`CurrentTime` SM2 路径限制文档标注
+- `sshca`:新增 `NewAuthorityWithRevocation`(吊销谓词接入 `CertChecker.IsRevoked`,验证端点不再仅依赖消费端 sshd 兜底);`SignCertificate` 校验 `req.Type` 与签名器类型一致(此前 user 签名器静默签出 HostCert 语义的 user 证书)
+- `crl`:撤销原因码取值域校验(同 RFC 5280 §5.3.1);`Get()` 共享数组文档标注
+- `tlcp`:session 缓存键 SNI 规范化(RFC 6066 大小写不敏感,消除缓存碎片)
+- `sm2`:导出 `ErrDecryptFailed`(调用方可 `errors.Is` 匹配信封解密失败);空消息/可变全局/`from==to` 别名行为文档标注
+- `sm4`:CMAC O(n) 缓冲内存特征文档标注(大输入调用方决策依据)
+- `tls13gm`:session ticket 注释与 newest-first 约定对齐
+
 ### Fixed — 第二轮安全审查修复（18 项 Medium + 关键 Low，逐模块审查）
 
 **crl**（fail-closed 与健壮性）：

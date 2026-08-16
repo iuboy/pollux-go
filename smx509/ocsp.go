@@ -116,8 +116,12 @@ func ParseOCSPResponseWithIssuerAt(data []byte, issuer *x509.Certificate, now ti
 		if !resp.ThisUpdate.IsZero() && now.Add(ocspFreshnessLeeway).Before(resp.ThisUpdate) {
 			return nil, errors.New("smx509: OCSP response ThisUpdate is in the future")
 		}
-		if !resp.NextUpdate.IsZero() && now.After(resp.NextUpdate) {
-			return nil, errors.New("smx509: OCSP response is stale (past NextUpdate)")
+		if !resp.NextUpdate.IsZero() {
+			if now.After(resp.NextUpdate) {
+				return nil, errors.New("smx509: OCSP response is stale (past NextUpdate)")
+			}
+		} else if !resp.ThisUpdate.IsZero() && now.Sub(resp.ThisUpdate) > maxOCSPNoNextUpdateAge {
+			return nil, errors.New("smx509: OCSP response has no NextUpdate and ThisUpdate exceeds the local maximum age")
 		}
 	}
 	return resp, nil

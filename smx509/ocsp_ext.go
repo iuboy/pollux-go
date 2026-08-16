@@ -150,6 +150,9 @@ func CreateOCSPResponseExt(issuer, responderCert *x509.Certificate, p *OCSPRespo
 	case ocsp.Unknown:
 		inner.Unknown = true
 	case ocsp.Revoked:
+		if !validCRLReason(p.RevocationReason) {
+			return nil, fmt.Errorf("smx509: revocation reason %d is outside the RFC 5280 §5.3.1 range (0-6, 8-10; 7 is unassigned)", p.RevocationReason)
+		}
 		rv, err := marshalRevokedInfoRaw(p.RevokedAt.UTC(), p.RevocationReason)
 		if err != nil {
 			return nil, err
@@ -232,18 +235,34 @@ func ExtractOCSPRequestNonce(reqBytes []byte) []byte {
 			RequestExtensions []pkix.Extension `asn1:"explicit,tag:2,optional"`
 		}
 	}
-	if _, err := asn1.Unmarshal(reqBytes, &outer); err != nil {
+	rest, err := asn1.Unmarshal(reqBytes, &outer)
+	if err != nil || len(rest) > 0 {
+		// Trailing data: not a well-formed OCSP request — treat as no nonce
+		// so the caller answers without one (clients that sent a nonce will
+		// reject the response via VerifyOCSPResponseNonce, which is the
+		// correct outcome for a malformed request).
 		return nil
 	}
+	var (
+		found      bool
+		nonceValue []byte
+	)
 	for _, ext := range outer.TBSRequest.RequestExtensions {
 		if ext.Id.Equal(oidExtOCSPNonce) {
+			if found {
+				// RFC 8954 §2.3: the nonce extension MUST appear exactly
+				// once. A duplicate makes the request malformed; returning
+				// nil (no nonce echoed) rather than an arbitrary copy.
+				return nil
+			}
 			var nonce []byte
 			if _, err := asn1.Unmarshal(ext.Value, &nonce); err == nil {
-				return nonce
+				found = true
+				nonceValue = nonce
 			}
 		}
 	}
-	return nil
+	return nonceValue
 }
 
 // ResponseNonce extracts the id-pkix-OCSP-noarch nonce from a DER-encoded
@@ -482,6 +501,12 @@ func marshalRevokedInfoRaw(at time.Time, reason int) (asn1.RawValue, error) {
 type extRevokedInfo struct {
 	RevocationTime time.Time       `asn1:"generalized"`
 	Reason         asn1.Enumerated `asn1:"explicit,tag:0,optional"`
+}
+
+// validCRLReason reports whether reason is encodable per RFC 5280 §5.3.1:
+// {0..6, 8, 9, 10}; 7 is unassigned and MUST NOT be emitted.
+func validCRLReason(reason int) bool {
+	return reason >= 0 && reason <= 10 && reason != 7
 }
 
 func sha256Sum(b []byte) []byte {

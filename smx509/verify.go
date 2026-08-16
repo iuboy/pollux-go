@@ -33,6 +33,12 @@ type VerifyOptions struct {
 	// tolerance. The standard-library path forwards it to x509.VerifyOptions;
 	// the SM2 path applies it manually (gmsm/smx509 does not support
 	// CurrentTime), matching the cert package's behavior.
+	//
+	// SM2-path limitation: gmsm's chain verification internally uses the wall
+	// clock, so CurrentTime only gates the LEAF certificate (checked after
+	// chain verification). A historical instant where the leaf was valid but
+	// is now expired still fails inside gmsm first; intermediates/roots are
+	// always checked against the wall clock on this path.
 	CurrentTime time.Time
 }
 

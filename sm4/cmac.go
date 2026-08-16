@@ -107,6 +107,12 @@ type cmacHash struct {
 }
 
 // NewCMACHash returns a hash.Hash backed by SM4-CMAC.
+//
+// Memory note: the implementation buffers the ENTIRE message before
+// computing the tag (a deliberate workaround for a gmsm StreamingMAC
+// multi-part Write defect; the tag is chunk-order independent by contract).
+// For attacker-sized inputs this is O(n) memory — callers streaming
+// untrusted large data should bound the input first.
 func NewCMACHash(key []byte) (hash.Hash, error) {
 	c, err := NewCMAC(key)
 	if err != nil {

@@ -50,6 +50,12 @@ var defaultSM2UID = []byte("1234567812345678")
 // drift between responder and relying party without rejecting a fresh response.
 const ocspFreshnessLeeway = 5 * time.Minute
 
+// maxOCSPNoNextUpdateAge caps how old ThisUpdate may be when the response
+// carries no NextUpdate (RFC 6960 makes it optional). Without the cap the
+// replay window of such responses is unbounded; 7 days matches the most
+// permissive common OCSP policy while still bounding replay.
+const maxOCSPNoNextUpdateAge = 7 * 24 * time.Hour
+
 // parseSM2OCSPResponse is an SM2-aware variant of ocsp.ParseResponseForCert:
 // it replaces stdlib x509.CheckSignature (which rejects sm2.P256()) with
 // sm2.VerifyASN1WithSM2.
@@ -259,6 +265,18 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate, now time.Time) 
 				return nil, errors.New("smx509: embedded responder cert not signed by issuer")
 			}
 		}
+		// The responder certificate itself must be within its validity period:
+		// an expired delegated responder's signature is not a valid attestation,
+		// yet the response-level time window below does not cover it. Skipped
+		// when now is zero (parse-only callers).
+		if !now.IsZero() {
+			if now.Add(ocspFreshnessLeeway).Before(embedded.NotBefore) {
+				return nil, errors.New("smx509: embedded responder certificate is not yet valid")
+			}
+			if now.After(embedded.NotAfter) {
+				return nil, errors.New("smx509: embedded responder certificate is expired")
+			}
+		}
 	} else if issuer != nil {
 		if err := verifyAgainst(issuer); err != nil {
 			return nil, errors.New("smx509: bad SM2 OCSP signature: " + err.Error())
@@ -310,13 +328,21 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate, now time.Time) 
 	//   - If NextUpdate is present and now is after it, the response is stale.
 	//   - If ThisUpdate is more than ocspFreshnessLeeway ahead of now, the
 	//     response is not-yet-valid (clock skew / forgery).
+	//   - If NextUpdate is ABSENT, RFC 6960 permits it but leaves the replay
+	//     window unbounded; a local maximum age on ThisUpdate caps it
+	//     (maxOCSPNoNextUpdateAge, aligned with common CA/B practice of
+	//     short OCSP windows).
 	// A zero now disables the check (parse-only callers).
 	if !now.IsZero() {
 		if !ret.ThisUpdate.IsZero() && now.Add(ocspFreshnessLeeway).Before(ret.ThisUpdate) {
 			return nil, errors.New("smx509: OCSP response ThisUpdate is in the future")
 		}
-		if !ret.NextUpdate.IsZero() && now.After(ret.NextUpdate) {
-			return nil, errors.New("smx509: OCSP response is stale (past NextUpdate)")
+		if !ret.NextUpdate.IsZero() {
+			if now.After(ret.NextUpdate) {
+				return nil, errors.New("smx509: OCSP response is stale (past NextUpdate)")
+			}
+		} else if !ret.ThisUpdate.IsZero() && now.Sub(ret.ThisUpdate) > maxOCSPNoNextUpdateAge {
+			return nil, errors.New("smx509: OCSP response has no NextUpdate and ThisUpdate exceeds the local maximum age")
 		}
 	}
 

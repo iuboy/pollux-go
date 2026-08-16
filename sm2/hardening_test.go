@@ -4,6 +4,7 @@ package sm2_test
 
 import (
 	"crypto/rand"
+	"errors"
 	"math/big"
 	"strings"
 	"testing"
@@ -103,5 +104,35 @@ func TestPlainToASN1_RejectsCompressedPoint(t *testing.T) {
 	_, err = sm2.PlainToASN1(ct, sm2.OrderC1C3C2)
 	if err == nil {
 		t.Fatal("压缩点 Plain 密文转 ASN.1 应显式报错")
+	}
+}
+
+// TestEnvelopeDecrypt_FailureOpaque 锁定脱敏回归(I7):EnvelopeDecrypt 的
+// 各失败路径必须统一返回 errDecryptFailed(可 errors.Is),不泄露失败分层
+// (SM2 解封装 vs 对称解密)——错误消息 oracle 的必要条件已封死。
+func TestEnvelopeDecrypt_FailureOpaque(t *testing.T) {
+	priv, err := sm2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 正常加密得到合法 envelope(certDER 由 EnvelopeEncrypt 填充)。
+	env, err := sm2.EnvelopeEncrypt(&priv.PublicKey, []byte("secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 篡改 EnvelopedData(公有字段):解密必须失败且错误为 ErrDecryptFailed。
+	env.EnvelopedData[3] ^= 0xFF
+	_, err = sm2.EnvelopeDecrypt(priv, env)
+	if err == nil || !errors.Is(err, sm2.ErrDecryptFailed) {
+		t.Fatalf("篡改 EnvelopedData 应返回 ErrDecryptFailed, got: %v", err)
+	}
+
+	// 结构彻底损坏的 EnvelopedData:同样落 opaque 错误。
+	env2, _ := sm2.EnvelopeEncrypt(&priv.PublicKey, []byte("secret2"))
+	env2.EnvelopedData = []byte{0x30, 0x03, 0x02, 0x01}
+	_, err = sm2.EnvelopeDecrypt(priv, env2)
+	if err == nil || !errors.Is(err, sm2.ErrDecryptFailed) {
+		t.Fatalf("损坏结构应返回 ErrDecryptFailed, got: %v", err)
 	}
 }

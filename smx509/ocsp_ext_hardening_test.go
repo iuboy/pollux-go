@@ -90,3 +90,50 @@ func TestVerifyOCSPResponseNonce(t *testing.T) {
 		t.Fatal("过短的 sent nonce 应拒绝")
 	}
 }
+
+// TestParseOCSPResponse_NoNextUpdateMaxAge 锁定 L2:NextUpdate 缺失时
+// ThisUpdate 超过本地 max-age(7 天)的响应被拒——封住无界重放窗口。
+func TestParseOCSPResponse_NoNextUpdateMaxAge(t *testing.T) {
+	key, _ := sm2.GenerateKey(rand.Reader)
+	cert := makeResponderKey(t, key)
+	now := time.Now().UTC()
+
+	build := func(thisUpdate time.Time) []byte {
+		t.Helper()
+		der, err := CreateOCSPResponseExt(cert, cert, &OCSPResponseParams{
+			Status: ocsp.Good, SerialNumber: big.NewInt(30),
+			ThisUpdate: thisUpdate, // NextUpdate 留零
+		}, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return der
+	}
+
+	// 3 天前的响应(无 NextUpdate):仍在窗口内,通过。
+	if _, err := ParseOCSPResponseWithIssuerAt(build(now.Add(-72*time.Hour)), cert, now); err != nil {
+		t.Fatalf("3 天内无 NextUpdate 响应应通过: %v", err)
+	}
+	// 8 天前:超 max-age,拒绝。
+	if _, err := ParseOCSPResponseWithIssuerAt(build(now.Add(-8*24*time.Hour)), cert, now); err == nil {
+		t.Fatal("超 7 天的无 NextUpdate 响应应被拒绝")
+	}
+}
+
+// TestCreateOCSPResponseExt_RejectsInvalidReason 锁定 L1:reason 越界
+// (负数/>10/未分配的 7)在构造侧拒绝。
+func TestCreateOCSPResponseExt_RejectsInvalidReason(t *testing.T) {
+	key, _ := sm2.GenerateKey(rand.Reader)
+	cert := makeResponderKey(t, key)
+	now := time.Now().UTC()
+	for _, bad := range []int{-1, 7, 11, 99} {
+		_, err := CreateOCSPResponseExt(cert, cert, &OCSPResponseParams{
+			Status: ocsp.Revoked, SerialNumber: big.NewInt(31),
+			ThisUpdate: now, NextUpdate: now.Add(time.Hour),
+			RevokedAt: now.Add(-time.Minute), RevocationReason: bad,
+		}, key)
+		if err == nil {
+			t.Fatalf("reason=%d 应被构造侧拒绝", bad)
+		}
+	}
+}

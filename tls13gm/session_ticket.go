@@ -115,7 +115,9 @@ func DecryptSessionTicket(teks [][]byte, ticket []byte) ([]byte, uint32, error) 
 			if len(pt) < 4 {
 				continue // malformed plaintext; keep trying other keys
 			}
-			// Keep the last (most recent in rotation order) successful result.
+			// Keep the first key that successfully decrypts (teks is newest-first, so
+			// the first hit IS the most recent key; rotation may list duplicates, where
+			// keeping the first avoids re-deriving with an older entry) successful result.
 			result = pt[:len(pt)-4]
 			ageAdd = binary.BigEndian.Uint32(pt[len(pt)-4:])
 			ok = true

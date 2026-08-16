@@ -15,15 +15,18 @@ import (
 	"github.com/iuboy/pollux-go/sm4"
 )
 
-// errDecryptFailed is the single opaque error returned by every envelope
+// ErrDecryptFailed is the single opaque error returned by every envelope
 // decryption failure (bad PKCS#7 structure, bad recipient cert, SM2 key
 // mismatch, symmetric decryption failure). Returning one constant message —
 // instead of distinct underlying errors — denies an attacker any oracle for
 // distinguishing which envelope layer failed, which matters when the inner
 // symmetric mode is unauthenticated (e.g. CBC). Shared by EnvelopeDecrypt and
 // EnvelopeDecryptSM4 so both decryption paths present an identical failure
-// surface; callers can also match it with errors.Is.
-var errDecryptFailed = errors.New("sm2: decryption failed")
+// surface; callers can match it with errors.Is.
+var ErrDecryptFailed = errors.New("sm2: decryption failed")
+
+// errDecryptFailed retained as an internal alias (existing call sites).
+var errDecryptFailed = ErrDecryptFailed
 
 // EnvelopeResult represents a digital envelope encryption result.
 type EnvelopeResult struct {

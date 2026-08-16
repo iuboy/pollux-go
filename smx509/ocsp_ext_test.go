@@ -253,9 +253,9 @@ func TestCreateOCSPResponseExt_ReasonOmitted(t *testing.T) {
 	}
 
 	withZero := build(0)
-	withReason := build(7)
+	withReason := build(1) // keyCompromise (7 is unassigned and now rejected)
 	if len(withZero) >= len(withReason) {
-		t.Errorf("reason=0 DER (%d bytes) should be shorter than reason=7 (%d bytes) — reason field not omitted",
+		t.Errorf("reason=0 DER (%d bytes) should be shorter than reason=1 (%d bytes) — reason field not omitted",
 			len(withZero), len(withReason))
 	}
 
@@ -266,12 +266,22 @@ func TestCreateOCSPResponseExt_ReasonOmitted(t *testing.T) {
 	if respZero.Status != ocsp.Revoked || respZero.RevocationReason != 0 {
 		t.Fatalf("reason=0: status=%v reason=%v, want Revoked/0", respZero.Status, respZero.RevocationReason)
 	}
-	respSeven, err := ParseOCSPResponseWithIssuerAt(withReason, cert, now)
+	respOne, err := ParseOCSPResponseWithIssuerAt(withReason, cert, now)
 	if err != nil {
-		t.Fatalf("parse revoked(reason=7): %v", err)
+		t.Fatalf("parse revoked(reason=1): %v", err)
 	}
-	if respSeven.RevocationReason != 7 {
-		t.Fatalf("reason=7: parsed reason=%d, want 7", respSeven.RevocationReason)
+	if respOne.RevocationReason != 1 {
+		t.Fatalf("reason=1: parsed reason=%d, want 1", respOne.RevocationReason)
+	}
+	// 未分配值 7 被构造侧拒绝(RFC 5280 §5.3.1):绕过 build 的 t.Fatalf
+	// 包装直接断言错误返回。
+	_, r7err := CreateOCSPResponseExt(cert, cert, &OCSPResponseParams{
+		Status: ocsp.Revoked, SerialNumber: big.NewInt(9),
+		ThisUpdate: now, NextUpdate: now.Add(time.Hour),
+		RevokedAt: now.Add(-time.Minute), RevocationReason: 7,
+	}, key)
+	if r7err == nil {
+		t.Error("unassigned reason 7 should be rejected at construction")
 	}
 }
 
@@ -304,9 +314,9 @@ func TestCreateOCSPResponse_ReasonOmitted_Legacy(t *testing.T) {
 	}
 
 	withZero := build(0)
-	withReason := build(7)
+	withReason := build(1)
 	if len(withZero) >= len(withReason) {
-		t.Errorf("legacy reason=0 DER (%d bytes) should be shorter than reason=7 (%d bytes)",
+		t.Errorf("legacy reason=0 DER (%d bytes) should be shorter than reason=1 (%d bytes)",
 			len(withZero), len(withReason))
 	}
 	resp, err := ParseOCSPResponseWithIssuerAt(withZero, cert, now)

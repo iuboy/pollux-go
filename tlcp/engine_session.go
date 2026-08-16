@@ -3,6 +3,7 @@ package tlcp
 import (
 	"container/list"
 	"encoding/hex"
+	"strings"
 	"sync"
 	"time"
 )
@@ -176,5 +177,7 @@ func sessionCacheKey(remoteAddr, serverName string) string {
 	if serverName == "" {
 		return remoteAddr
 	}
-	return "sni:" + serverName
+	// RFC 6066: SNI 大小写不敏感——规范化避免 "Example.com" 与
+	// "example.com" 形成两个缓存条目(复用失效 + 缓存碎片)。
+	return "sni:" + strings.ToLower(serverName)
 }

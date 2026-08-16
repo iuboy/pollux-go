@@ -18,6 +18,8 @@ import (
 // 不存在顺序转换的语义——from!=to 时对 ASN.1 输入直接返回错误（历史实现委托
 // gmsm 后会静默输出 Plain 编码，改变密文编码格式，下游期望 ASN.1 结构即错位）。
 // 要在 Plain 与 ASN.1 编码间互转，请用 ASN1ToPlain / PlainToASN1。
+//
+// from==to 时返回原切片引用（同一底层数组）——调用方修改输出即修改输入。
 func AdjustCipherOrder(ciphertext []byte, from, to CipherOrder) ([]byte, error) {
 	if err := validateOrder(from); err != nil {
 		return nil, err

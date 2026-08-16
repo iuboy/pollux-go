@@ -261,10 +261,17 @@ func (g *crlGenerator) GenerateWithOptions(ctx context.Context, opts *GenerateOp
 		// 必须经 ReasonCode 字段携带：Go 1.26 序列化只认该字段，此前手工
 		// CreateCRLReasonExtension 塞 Extensions 的写法被静默忽略——CRL 里
 		// 的原因全部退化为 unspecified。
+		reason := int(revoked.Reason)
+		// RFC 5280 §5.3.1 reasonCode ∈ {0..6, 8, 9, 10}(7 未分配)。
+		// 越界值会产出不合规格的 CRL,被严格解析方(Windows/严格 OpenSSL)
+		// 拒收整张 CRL → 撤销传播失败,故在生成端拦截。
+		if reason < 0 || reason > 10 || reason == 7 {
+			return nil, fmt.Errorf("crl: 撤销原因码 %d 超出 RFC 5280 §5.3.1 范围(0-6/8-10,7 未分配), serial %s", reason, revoked.Serial)
+		}
 		entry := x509.RevocationListEntry{
 			SerialNumber:   serial,
 			RevocationTime: revoked.RevokedAt.UTC(),
-			ReasonCode:     int(revoked.Reason),
+			ReasonCode:     reason,
 		}
 
 		// invalidityDate（2.5.29.24）不再编码：RFC 5280 §5.3.2 定义其为
@@ -386,7 +393,8 @@ func (g *crlGenerator) Update(ctx context.Context) error {
 	return err
 }
 
-// Get 获取缓存的 CRL
+// Get 获取缓存的 CRL。返回共享底层数组——调用方不得修改(需要可写
+// 副本时自行 copy)。
 func (g *crlGenerator) Get() []byte {
 	g.mu.RLock()
 	defer g.mu.RUnlock()

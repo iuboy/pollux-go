@@ -45,7 +45,6 @@
 //   - tls13gm: RFC 8998 TLS 1.3 GM cipher suites
 //   - quicgm: RFC 9001 QUIC packet protection with SM4-GCM
 //   - https: HTTP server/client helpers for TLS, TLCP, TLS 1.3, and hybrid
-//     (the deprecated `http` shim re-exports this package and will be removed)
 //
 // Internal:
 //   - internal/memsecure: Secure memory operations for key material

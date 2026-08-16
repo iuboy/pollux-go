@@ -1,22 +1,5 @@
-// Package sshca — krl.go
-// SSH KRL（Known Revocation List）生成器，二进制格式遵循 OpenSSH
-// PROTOCOL.krl。sshd 经 RevokedKeys/RevokedHostKeys 消费 KRL 文件，
-// 是 SSH 证书吊销对服务端生效的标准通道。
-//
-// 格式（多字节整数一律大端；string = u32 长度 + 字节串）：
-//
-//	magic "SSHKRL\n\0"
-//	u32  format_version = 1
-//	u64  krl_version    （每次变更递增）
-//	u64  generated_date （Unix 秒）
-//	u64  flags = 0
-//	string reserved
-//	string comment
-//	sections:
-//	  byte  section_type（1 = CERTIFICATES）
-//	  string section_data = string(ca_key_wire) + string(reserved="")
-//	              + 子节: byte 0x20(SERIAL_LIST) + string(u64 serial*)
-//	                      | byte 0x21(SERIAL_RANGE) + string(u64 min + u64 max)
+// See doc.go for the package documentation (godoc convention).
+// This file: SSH KRL (key revocation list) generation.
 package sshca
 
 import (
@@ -56,7 +39,7 @@ func BuildKRL(caKeyWire []byte, serials []uint64, comment string) ([]byte, error
 	buf = beU64(buf, 0)      // flags
 	buf = beString(buf, nil) // reserved
 	if comment == "" {
-		comment = "mekbuda SSH KRL"
+		comment = "pollux-go SSH KRL"
 	}
 	buf = beString(buf, []byte(comment))
 

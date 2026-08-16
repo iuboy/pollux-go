@@ -1,25 +1,5 @@
-// Package crl 提供证书撤销列表 (CRL) 的生成和管理功能
-//
-// 本包实现了 X.509 CRL 的生成、更新和分发功能：
-//   - CRL 生成：根据已撤销证书列表生成 CRL
-//   - CRL 更新：定期更新 CRL
-//   - CRL 缓存：缓存生成的 CRL 以提高性能
-//   - CRL 分发：通过 HTTP API 提供 CRL 下载
-//   - 国密支持：SM2 密钥自动使用 SM2+SM3 签名（符合 GM/T 0009-2012）
-//
-// 使用示例：
-//
-//	generator := crl.NewGenerator(auth)
-//	crlPEM, err := generator.Generate(ctx)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	// 保存 CRL 到文件
-//	os.WriteFile("crl.pem", crlPEM, 0644)
-//
-// SM2+SM3 CRL 支持：
-// 对于 SM2 密钥，本包自动使用 smx509.CreateRevocationList 创建符合
-// GM/T 0009-2012 标准的 CRL（使用 SM2 签名和 SM3 哈希）。
+// See doc.go for the package documentation (godoc convention).
+// This file: generator, cache, and read-only parsing helpers.
 package crl
 
 import (

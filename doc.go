@@ -24,10 +24,21 @@
 //   - sha: SHA-256/HKDF/HMAC wrappers (international counterpart to sm3)
 //   - jwt: JWT signing (SM2-SM3 and HMAC-SHA-256/512)
 //   - pwHash: PHC-format password hashing (argon2id and PBKDF2-SM3)
+//   - keycrypt: encrypted private-key at-rest storage (PKCS#8 PBES2) and
+//     key generators for RSA/ECDSA/Ed25519/SM2
+//   - kmc: Key Management Center abstraction for the GM dual-certificate
+//     model (Manager interface; LocalKMC dev placeholder; SDF/GM-T 0018
+//     implementations plug in)
 //
 // Certificate and protocol integration:
-//   - smx509: SM2-aware X.509 certificate creation, parsing, and verification
+//   - smx509: SM2-aware X.509 certificate creation, parsing, verification,
+//     and OCSP responses (including the RFC 6960 §4.4.1 nonce echo)
 //   - cert: High-level certificate management facade
+//   - crl: X.509 CRL generation/caching/fan-out with injected Authority and
+//     NumberSource abstractions (SM2 keys sign with SM2+SM3)
+//   - sshca: SSH certificate authority — user/host certificate signing,
+//     validation, and KRL generation (x/crypto/ssh parses KRLs but cannot
+//     generate them)
 //   - tls: TLS cipher suite registry (national suite IDs only)
 //   - tls13: Standard TLS 1.3 configuration builders
 //   - tlcp: TLCP 1.1 protocol (EXPERIMENTAL — pending security audit)

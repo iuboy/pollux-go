@@ -1,14 +1,4 @@
-// Package kmc provides the Key Management Center (KMC) abstraction for the
-// GM dual-certificate model.
-//
-// In the dual-certificate model (GB/T 38636 TLCP deployments and GM/T
-// enrollment flows), the ENCRYPTION certificate's private key is generated
-// and escrowed by a KMC — enabling key recovery — unlike the SIGNING key,
-// which is generated inside a USB token and is non-exportable. Manager is
-// the minimal interface capturing that responsibility; a production
-// deployment implements it against a real KMC device via the SDF interface
-// (GM/T 0018). LocalKMC is a local-SM2-keygen placeholder for development
-// and testing.
+// See doc.go for the package documentation (godoc convention).
 package kmc
 
 import (
@@ -55,7 +45,7 @@ type LocalKMC struct{}
 // NewLocalKMC creates a LocalKMC.
 func NewLocalKMC() *LocalKMC { return &LocalKMC{} }
 
-// 编译期契约:LocalKMC 实现 Manager。
+// Compile-time contract: LocalKMC implements Manager.
 var _ Manager = (*LocalKMC)(nil)
 
 // GenerateEncryptionKeyPair generates a local SM2 key pair and self-signs

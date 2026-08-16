@@ -1,9 +1,5 @@
-// Package keycrypt — 私钥落盘加密（安全加固）。
-//
-// 所有私钥（根/中级 CA、SSH CA、JWT 签名密钥）落盘必须加密为 PKCS#8 PBES2
-// 格式（AES-256-GCM + PBKDF2-SHA256）。明文 PEM 一律视为错误（破坏性，无向后兼容）。
-//
-// 加密产物与 smx509.DecryptPEMPrivateKey 解密路径格式兼容。
+// See doc.go for the package documentation (godoc convention).
+// This file: encrypted private-key marshal/load (PKCS#8 PBES2).
 package keycrypt
 
 import (

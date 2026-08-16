@@ -1,4 +1,5 @@
-// Package sshca 提供 SSH 证书签发功能
+// See doc.go for the package documentation (godoc convention).
+// This file: wire-level types (CertType, requests, permissions) and validators.
 package sshca
 
 import (

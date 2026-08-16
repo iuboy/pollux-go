@@ -1,13 +1,5 @@
-// Package keycrypt — 私钥落盘加密与密钥生成原语。
-//
-// 加密侧:所有私钥(CA、SSH CA、签名密钥)落盘加密为 PKCS#8 PBES2
-// (AES-256-GCM + PBKDF2-SHA256,NIST SP 800-132 参数)。明文 PEM 一律视为
-// 错误;加密产物与 smx509.DecryptPEMPrivateKey 解密路径格式兼容,
-// Marshal/Load 在同一包内闭环。
-//
-// 生成侧:KeyGenerator 族覆盖 RSA/ECDSA/Ed25519/SM2。算法的"默认选择"
-// 是应用策略(如按国密/国际模式),不属于本库——调用方先解析出自己的
-// KeyType 再调用 NewKeyGeneratorWithType。
+// See doc.go for the package documentation (godoc convention).
+// This file: key-type constants and the KeyGenerator family.
 package keycrypt
 
 import (

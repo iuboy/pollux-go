@@ -185,6 +185,17 @@ func copyCertFields(src, dst reflect.Value) {
 			continue // field absent on destination (smx509-only or stdlib-only)
 		}
 		srcVal := src.Field(i)
+		// 枚举字段禁止盲数值转换：stdlib 与 smx509 fork 的枚举仅在共享前缀
+		// （到 PureEd25519 / Ed25519 / KernelCodeSigning）内数值一致，尾部
+		// 各自独立扩展（fork 的 SM2WithSM3=18 与 Go 1.27 的 MLDSA44=18 冲突，
+		// fork 的 PKMLDSA44=5 与 stdlib 的 MLDSA=5 冲突）。按守卫映射处理。
+		if mapped, handled := mapEnumField(srcField.Name, srcVal, dstField); handled {
+			if mapped {
+				continue
+			}
+			// handled 但未映射（类型形态不符）：跳过，保持零值
+			continue
+		}
 		if srcVal.Type() == dstField.Type() {
 			dstField.Set(srcVal)
 			continue
@@ -881,4 +892,58 @@ func evpBytesToKey(password, salt []byte, keyLen int) []byte {
 		result = append(result, prev...)
 	}
 	return result[:keyLen]
+}
+
+// ============================================================
+// 枚举守卫映射（stdlib crypto/x509 <-> gmsm smx509 fork）
+//
+// 两个包的 SignatureAlgorithm / PublicKeyAlgorithm / ExtKeyUsage 均为
+// int-backed 枚举，共享前缀数值一致，尾部各自独立扩展：
+//
+//	SignatureAlgorithm  共享 0..PureEd25519(17)；fork 扩展 SM2WithSM3=18，
+//	                    Go 1.27 stdlib 新增 MLDSA44/65/87=18/19/20
+//	PublicKeyAlgorithm  共享 0..Ed25519(4)；fork 扩展 PKMLDSA44=5...，
+//	                    Go 1.27 stdlib 新增 MLDSA=5
+//	ExtKeyUsage         当前两侧一致（0..MicrosoftKernelCodeSigning），
+//	                    守卫以防未来单侧扩展
+//
+// 盲数值转换会让 fork 的 18 被 stdlib 解读为 MLDSA44（反之亦然），
+// 引发 "signature algorithm specifies an ML-DSA public key, but have
+// public key of type *ecdsa.PublicKey" 类错误。此处仅放行共享前缀内的
+// 数值，前缀外的值一律降级为 Unknown（语义诚实：对侧无法表达该算法），
+// KeyUsage 为位掩码（位语义两侧一致），无需守卫。
+//
+// 维护约定：Go stdlib 与 gmsm 的枚举均为尾部追加式演进，共享前缀不会
+// 变化；若任一侧在共享前缀内插入新值（理论上不会），此映射需要同步。
+func mapEnumField(name string, srcVal, dstField reflect.Value) (mapped, handled bool) {
+	kindOk := func(v reflect.Value) bool {
+		return v.Kind() == reflect.Int || v.Kind() == reflect.Int64
+	}
+	switch name {
+	case "SignatureAlgorithm":
+		if !kindOk(srcVal) || !kindOk(dstField) {
+			return false, false
+		}
+		const sharedMax = 16 // PureEd25519（两侧同值同义；fork 的 SM2WithSM3=17
+		// 与 Go 1.27 stdlib 的 MLDSA44=17 数值相撞，必须排除在共享区之外）
+		v := srcVal.Int()
+		if v < 0 || v > sharedMax {
+			v = 0 // UnknownSignatureAlgorithm
+		}
+		dstField.SetInt(v)
+		return true, true
+	case "PublicKeyAlgorithm":
+		if !kindOk(srcVal) || !kindOk(dstField) {
+			return false, false
+		}
+		const sharedMax = 4 // Ed25519（两侧同值同义）
+		v := srcVal.Int()
+		if v < 0 || v > sharedMax {
+			v = 0 // UnknownPublicKeyAlgorithm
+		}
+		dstField.SetInt(v)
+		return true, true
+	default:
+		return false, false
+	}
 }

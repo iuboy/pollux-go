@@ -17,6 +17,9 @@ import (
 	polluxsmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
+// pemTypeCRL is the PEM block type for X.509 CRLs.
+const pemTypeCRL = "X509 CRL"
+
 // Generator CRL 生成器接口
 type Generator interface {
 	// Generate 生成 CRL
@@ -87,7 +90,7 @@ const (
 // crlGenerator CRL 生成器实现
 type crlGenerator struct {
 	authority   Authority
-	cache       CRLCache
+	cache       Cache
 	issuerKeyID string // 限定该生成器只覆盖此 issuer 签发的证书（空=全量，单 issuer 兼容）
 
 	mu             sync.RWMutex
@@ -123,8 +126,8 @@ type Authority interface {
 	GetIntermediateKey() crypto.Signer
 }
 
-// CRLCache CRL 缓存接口
-type CRLCache interface {
+// Cache CRL 缓存接口
+type Cache interface {
 	// Set 设置 CRL
 	Set(crl []byte)
 
@@ -135,30 +138,38 @@ type CRLCache interface {
 	Clear()
 }
 
-// memoryCRLCache 内存 CRL 缓存实现
-type memoryCRLCache struct {
+// memoryCache 内存 CRL 缓存实现
+type memoryCache struct {
 	mu  sync.RWMutex
 	crl []byte
 }
 
-// NewMemoryCRLCache 创建内存 CRL 缓存
-func NewMemoryCRLCache() CRLCache {
-	return &memoryCRLCache{}
+// NewMemoryCache 创建内存 CRL 缓存
+func NewMemoryCache() Cache {
+	return &memoryCache{}
 }
 
-func (m *memoryCRLCache) Set(crl []byte) {
+// NewMemoryCRLCache 创建内存 CRL 缓存（NewMemoryCache 的语义化别名）。
+//
+// 保留两名的理由：通用名 NewMemoryCache 与包名 crl 组合读作 crl.NewMemoryCache
+// 已足够清晰；NewMemoryCRLCache 为自述完整名，供偏好显式命名的调用方使用。
+func NewMemoryCRLCache() Cache {
+	return &memoryCache{}
+}
+
+func (m *memoryCache) Set(crl []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.crl = crl
 }
 
-func (m *memoryCRLCache) Get() []byte {
+func (m *memoryCache) Get() []byte {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.crl
 }
 
-func (m *memoryCRLCache) Clear() {
+func (m *memoryCache) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.crl = nil
@@ -177,7 +188,7 @@ type NumberSource func() (int, error)
 
 // NewGeneratorWithNumberSource 创建带持久序号源的生成器（RFC 5280 §5.2.3：
 // 序号须跨重启/跨生成器实例单调）。
-func NewGeneratorWithNumberSource(auth Authority, cache CRLCache, issuerKeyID string, src NumberSource) Generator {
+func NewGeneratorWithNumberSource(auth Authority, cache Cache, issuerKeyID string, src NumberSource) Generator {
 	g := NewGeneratorWithIssuer(auth, cache, issuerKeyID)
 	if cg, ok := g.(*crlGenerator); ok {
 		cg.numberSource = src
@@ -186,7 +197,7 @@ func NewGeneratorWithNumberSource(auth Authority, cache CRLCache, issuerKeyID st
 }
 
 // NewGenerator 创建 CRL 生成器
-func NewGenerator(auth Authority, cache CRLCache) Generator {
+func NewGenerator(auth Authority, cache Cache) Generator {
 	return &crlGenerator{
 		authority: auth,
 		cache:     cache,
@@ -196,7 +207,7 @@ func NewGenerator(auth Authority, cache CRLCache) Generator {
 
 // NewGeneratorWithIssuer 创建限定到指定 issuer 的 CRL 生成器（多 issuer 路由用）。
 // issuerKeyID 非空时，仅覆盖该 issuer 签发的撤销记录。空则退化为全量（单 issuer）。
-func NewGeneratorWithIssuer(auth Authority, cache CRLCache, issuerKeyID string) Generator {
+func NewGeneratorWithIssuer(auth Authority, cache Cache, issuerKeyID string) Generator {
 	return &crlGenerator{
 		authority:   auth,
 		cache:       cache,
@@ -224,6 +235,12 @@ func (g *crlGenerator) Generate(ctx context.Context) ([]byte, error) {
 
 // GenerateWithOptions 使用选项生成 CRL
 func (g *crlGenerator) GenerateWithOptions(ctx context.Context, opts *GenerateOptions) ([]byte, error) {
+	// 显式拒绝 nil opts：下方直接解引用 opts.RevokedCertificates 会 panic，
+	// 且该函数被 autoUpdateLoop 后台 goroutine 调用——那里的 panic 不可
+	// recover，会打崩整个进程。
+	if opts == nil {
+		return nil, fmt.Errorf("crl: nil GenerateOptions")
+	}
 	// 获取已撤销证书列表。
 	// len()==0 即回源存储：nil 与空切片一律视为"未指定"——空切片常来自
 	// JSON 反序列化产物，若据其签发"空名单"权威 CRL，所有已撤销证书会在
@@ -292,6 +309,16 @@ func (g *crlGenerator) GenerateWithOptions(ctx context.Context, opts *GenerateOp
 	// 获取中级 CA 证书和私钥
 	x509Cert := g.authority.GetIntermediateCA()
 	key := g.authority.GetIntermediateKey()
+	// 与 SM2 路径（polluxsmx509.CreateRevocationList 的三重 nil 检查）对齐：
+	// 标准库 x509.CreateRevocationList 对 nil issuer/signer 会直接空指针
+	// panic。此处处于 autoUpdateLoop 后台 goroutine，panic 不可 recover、
+	// 打崩进程，故在调用前显式校验并返回清晰错误。
+	if x509Cert == nil {
+		return nil, fmt.Errorf("crl: Authority.GetIntermediateCA 返回 nil 证书，无法签发 CRL")
+	}
+	if key == nil {
+		return nil, fmt.Errorf("crl: Authority.GetIntermediateKey 返回 nil 密钥，无法签发 CRL")
+	}
 
 	// 设置默认时间
 	now := opts.ThisUpdate
@@ -352,7 +379,7 @@ func (g *crlGenerator) GenerateWithOptions(ctx context.Context, opts *GenerateOp
 			NextUpdate:                nextUpdate,
 		}, x509Cert, key)
 		if err != nil {
-			return nil, fmt.Errorf("SM2 CRL creation failed: %w", err)
+			return nil, fmt.Errorf("crl: SM2 CRL creation failed: %w", err)
 		}
 	} else {
 		// 非 SM2 密钥使用标准库
@@ -369,7 +396,7 @@ func (g *crlGenerator) GenerateWithOptions(ctx context.Context, opts *GenerateOp
 
 	// 编码为 PEM
 	crlPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "X509 CRL",
+		Type:  pemTypeCRL,
 		Bytes: crlBytes,
 	})
 
@@ -465,7 +492,7 @@ func IsExpired(crlPEM []byte) bool {
 	if block == nil {
 		return true
 	}
-	if block.Type != "X509 CRL" {
+	if block.Type != pemTypeCRL {
 		return true
 	}
 
@@ -498,7 +525,7 @@ func GetRevokedSerials(crlPEM []byte) ([]string, error) {
 		}
 		return nil, ErrInvalidCRL
 	}
-	if block.Type != "X509 CRL" {
+	if block.Type != pemTypeCRL {
 		return nil, fmt.Errorf("无效的 PEM 块类型: %s（期望 X509 CRL）", block.Type)
 	}
 
@@ -515,8 +542,8 @@ func GetRevokedSerials(crlPEM []byte) ([]string, error) {
 	return serials, nil
 }
 
-// CRLRecord CRL 中单条撤销记录的解析视图（控制台展示用）。
-type CRLRecord struct {
+// Record CRL 中单条撤销记录的解析视图（控制台展示用）。
+type Record struct {
 	// Serial 被撤销证书的序列号（十进制）
 	Serial string
 	// ReasonCode RFC 5280 §5.3.1 撤销原因码（0 = unspecified/未携带）
@@ -537,23 +564,23 @@ var crlReasonNames = map[int]string{
 
 // ParseCRLRecords 解析 CRL PEM，返回全部撤销条目（含原因与撤销时间）。
 // 解析只读结构、不验签，国密签名的 CRL 同样适用。
-func ParseCRLRecords(crlPEM []byte) ([]CRLRecord, error) {
+func ParseCRLRecords(crlPEM []byte) ([]Record, error) {
 	block, _ := pem.Decode(crlPEM)
-	if block == nil || block.Type != "X509 CRL" {
+	if block == nil || block.Type != pemTypeCRL {
 		return nil, ErrInvalidCRL
 	}
 	rl, err := x509.ParseRevocationList(block.Bytes)
 	if err != nil {
 		return nil, fmt.Errorf("解析 CRL 失败: %w", err)
 	}
-	records := make([]CRLRecord, 0, len(rl.RevokedCertificateEntries))
+	records := make([]Record, 0, len(rl.RevokedCertificateEntries))
 	for _, entry := range rl.RevokedCertificateEntries {
 		reason := entry.ReasonCode
 		name, ok := crlReasonNames[reason]
 		if !ok {
 			name = fmt.Sprintf("reason(%d)", reason)
 		}
-		records = append(records, CRLRecord{
+		records = append(records, Record{
 			Serial:     entry.SerialNumber.String(),
 			ReasonCode: reason,
 			Reason:     name,
@@ -563,27 +590,31 @@ func ParseCRLRecords(crlPEM []byte) ([]CRLRecord, error) {
 	return records, nil
 }
 
-// GetCRLNumber 从 CRL 中提取序列号
-func GetCRLNumber(crlPEM []byte) (int, error) {
+// GetCRLNumber 从 CRL 中提取序列号。CRL number 是任意长度的正整数
+// （RFC 5280 §5.2.3），返回拷贝的 *big.Int；CRL 未携带 number 扩展时
+// 返回 (nil, nil)。此前返回 int 会在 64 位截断/回绕后产生编号倒退的
+// 幻觉（对 big.Int 超过 int64 的 CRL 尤其危险）。
+func GetCRLNumber(crlPEM []byte) (*big.Int, error) {
 	block, rest := pem.Decode(crlPEM)
 	if block == nil {
 		if len(rest) > 0 {
-			return 0, fmt.Errorf("无效的 CRL PEM 数据（剩余 %d 字节无法解析）", len(rest))
+			return nil, fmt.Errorf("无效的 CRL PEM 数据（剩余 %d 字节无法解析）", len(rest))
 		}
-		return 0, ErrInvalidCRL
+		return nil, ErrInvalidCRL
 	}
-	if block.Type != "X509 CRL" {
-		return 0, fmt.Errorf("无效的 PEM 块类型: %s（期望 X509 CRL）", block.Type)
+	if block.Type != pemTypeCRL {
+		return nil, fmt.Errorf("无效的 PEM 块类型: %s（期望 X509 CRL）", block.Type)
 	}
 
 	crl, err := x509.ParseRevocationList(block.Bytes)
 	if err != nil {
-		return 0, fmt.Errorf("解析 CRL 失败: %w", err)
+		return nil, fmt.Errorf("解析 CRL 失败: %w", err)
 	}
 
 	if crl.Number == nil {
-		return 0, nil
+		return nil, nil
 	}
 
-	return int(crl.Number.Int64()), nil
+	// 拷贝而非返回内部指针：调用方对返回值的修改不得影响解析结构。
+	return new(big.Int).Set(crl.Number), nil
 }

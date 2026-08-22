@@ -118,6 +118,41 @@ func TestLoadKeyPairPEM_BadInputs(t *testing.T) {
 	}
 }
 
+func TestLoadKeyPairPEM_TrailingContent(t *testing.T) {
+	leafPEM, keyPEM := makeSM2KeyPairPEM(t, "trailing")
+
+	// Non-PEM garbage after the chain: tolerated (matches stdlib leniency).
+	garbageTail := append(append([]byte{}, leafPEM...), []byte("trailing garbage, not PEM")...)
+	if _, err := LoadKeyPairPEM(garbageTail, keyPEM); err != nil {
+		t.Fatalf("non-PEM tail should be ignored, got: %v", err)
+	}
+
+	// Non-CERTIFICATE PEM block after the chain (valid base64 content so it
+	// decodes as a block): tolerated.
+	commentTail := append(append([]byte{}, leafPEM...),
+		[]byte("-----BEGIN COMMENT-----\nAAAA\n-----END COMMENT-----\n")...)
+	if _, err := LoadKeyPairPEM(commentTail, keyPEM); err != nil {
+		t.Fatalf("non-certificate PEM block should be ignored, got: %v", err)
+	}
+
+	// Truncated CERTIFICATE block (no END line): must NOT be silently
+	// dropped — a chain silently losing a certificate fails open at TLS
+	// verification time.
+	for name, tail := range map[string][]byte{
+		"truncated end line": []byte("-----BEGIN CERTIFICATE-----\nAAAA\n"),
+		"corrupt base64":     []byte("-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n"),
+	} {
+		bad := append(append([]byte{}, leafPEM...), tail...)
+		_, err := LoadKeyPairPEM(bad, keyPEM)
+		if err == nil {
+			t.Fatalf("%s: expected error, got nil", name)
+		}
+		if !strings.Contains(err.Error(), "malformed CERTIFICATE PEM block") {
+			t.Fatalf("%s: error should mention the malformed block, got: %v", name, err)
+		}
+	}
+}
+
 func TestLoadKeyPairFiles_RoundTripAndMissingFile(t *testing.T) {
 	certPEM, keyPEM := makeSM2KeyPairPEM(t, "files-roundtrip")
 	dir := t.TempDir()

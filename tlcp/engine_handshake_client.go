@@ -71,7 +71,7 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	// session authenticated under one server identity against a different
 	// service that shares the same IP (resume skips certificate verification).
 	if config.sessionCache != nil && c.isClient {
-		if sess, ok := config.sessionCache.Get(sessionCacheKey(c.conn.RemoteAddr().String(), config.serverName)); ok && sess != nil {
+		if sess, ok := config.sessionCache.Get(sessionCacheKey(c.conn.RemoteAddr().String(), config.serverName)); ok && sess != nil && sessionFresh(sess) {
 			c.session = sess
 		}
 	}
@@ -413,7 +413,7 @@ func (c *tlcpConn) createNewClientSession(serverHello *tlcpServerHelloMsg, maste
 	copy(msCopy, masterSecret)
 	peerCertsCopy := make([][]byte, len(c.peerCertificates))
 	copy(peerCertsCopy, c.peerCertificates)
-	sess := &tlcpSessionState{
+	sess := &SessionState{
 		sessionID:        serverHello.sessionID,
 		version:          c.vers,
 		cipherSuite:      c.cipherSuite,
@@ -488,7 +488,10 @@ func (c *tlcpConn) readServerCCSAndFinished(transcript *tlcpFinishedHash, master
 	}
 	want := transcript.serverSum(masterSecret)
 	if constantTimeEq(fin.verifyData, want) != 1 {
-		return fmt.Errorf("tlcp: server's Finished verify_data mismatch (got %x want %x)", fin.verifyData, want)
+		// Do not leak the expected verify_data — it is derived from the master
+		// secret and transcript hash; exposing it could enable Finished-message
+		// oracle attacks (same posture as the server side, readClientCCSAndFinished).
+		return errors.New("tlcp: server's Finished verify_data mismatch")
 	}
 	// Now feed the verified serverFinished into the transcript.
 	transcript.Write(finData)

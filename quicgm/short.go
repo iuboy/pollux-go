@@ -66,16 +66,11 @@ func Seal1RTTPacket(keys *tls13gm.QUICPacketKeys, dcid []byte, pn uint64, pnLen 
 }
 
 // Open1RTTPacket removes protection from a 1-RTT short-header packet.
-// expectedDCID is the destination connection ID the receiver expects; the short
-// header carries no length prefix, so its length locates the packet-number
-// field, and its value must match exactly (QUIC §17.3 connection-ID matching).
-//
-// largestAcked is the receiver's largest acknowledged packet number, used to
-// reconstruct the full packet number from its truncated on-wire encoding via
-// DecodePacketNumber (RFC 9000 §17.1). The SM4-GCM nonce is derived from the
-// FULL packet number, so reconstruction MUST happen before decryption — pass
-// nil only when packet-number truncation is not in effect (the on-wire value is
-// already the full number, e.g. early in a connection).
+// expectedDCID is the destination connection ID the receiver expects; the
+// short header carries no length prefix, so its length locates the packet-
+// number field. NOTE: the Key Phase bit (header[0] bit 2, RFC 9001 §6) is NOT
+// consumed or returned — the caller still holds the full packet header and
+// reads the bit itself to decide whether to initiate key update.
 func Open1RTTPacket(keys *tls13gm.QUICPacketKeys, expectedDCID []byte, largestAcked *uint64, packet []byte) (pn uint64, payload []byte, err error) {
 	protector, err := NewQUICPacketProtectorFromKeys(keys)
 	if err != nil {

@@ -77,7 +77,7 @@ func (a *CCMAEAD) Overhead() int { return a.aead.Overhead() }
 func computeCCMNonce(fixedNonce []byte, seqNum uint64) []byte {
 	nonce := make([]byte, len(fixedNonce))
 	copy(nonce, fixedNonce)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		nonce[len(nonce)-1-i] ^= byte(seqNum >> (i * 8))
 	}
 	return nonce

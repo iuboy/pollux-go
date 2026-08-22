@@ -36,14 +36,14 @@ const (
 	TLS_SM2_GCM_SM3 = TLS_SM4_GCM_SM3
 )
 
-// GetCipherSuites returns cipher suites for the given mode.
+// CipherSuites returns cipher suites for the given mode.
 //
 // CryptoModeNational/CryptoModeHybrid return only GCM suites with forward
 // secrecy (ECDHE) by default — the safest selection. For legacy CBC / static
 // ECC suites, use LegacyNationalCipherSuites(). This package is a registry
 // only (it does not perform a handshake); the IDs are not understood by the
 // standard library crypto/tls.
-func GetCipherSuites(mode CryptoMode) ([]uint16, error) {
+func CipherSuites(mode CryptoMode) ([]uint16, error) {
 	switch mode {
 	case CryptoModeNational:
 		return getSecureNational(), nil
@@ -123,7 +123,7 @@ func CipherSuiteName(id uint16) string {
 // (GCM + ECDHE, forward secrecy) without error. Panics are impossible since
 // CryptoModeNational is always valid.
 func NationalCipherSuites() []uint16 {
-	suites, _ := GetCipherSuites(CryptoModeNational)
+	suites, _ := CipherSuites(CryptoModeNational)
 	return suites
 }
 

@@ -9,11 +9,13 @@ import (
 // (RFC 8446 §4.6.1), sent by the server post-handshake under the 1-RTT keys to
 // give the client a resumption PSK.
 //
-// In tls13gm the Ticket field carries the resumption PSK directly (derived via
-// DeriveResumptionPSK from the resumption master secret and TicketNonce). The
-// ticket travels inside the encrypted 1-RTT channel, so carrying the PSK
-// verbatim is confidentiality-safe and lets the client resume without a
-// server-side ticket store.
+// In tls13gm the Ticket field is an OPAQUE STATELESS TICKET (RFC 8446 model):
+// the server encrypts the PSK (derived via DeriveResumptionPSK from the
+// resumption master secret and TicketNonce) under its session-ticket key
+// (see EncryptSessionTicket / NewSessionTicket). The client never uses the
+// identity bytes as a key — it derives the same PSK locally from its
+// resumption master secret and the TicketNonce, and sends the ticket back as
+// the pre_shared_key identity when resuming.
 type NewSessionTicketMsg struct {
 	TicketLifetime uint32 // seconds; the PSK is valid for at most this long
 	TicketAgeAdd   uint32 // added to the ticket age to obfuscate it

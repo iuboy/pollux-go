@@ -8,11 +8,17 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
+
+// criticalOptionForceCommand 是 user 证书唯一允许的非 source-address
+// critical option（PROTOCOL.certkeys）；签发白名单与 ValidateCertificate
+// 校验共用。
+const criticalOptionForceCommand = "force-command"
 
 // generateCertSerial 生成加密随机的 SSH 证书序列号。
 // 此前用 time.Now().Unix() 导致同秒内签发的证书 serial 碰撞——
@@ -61,12 +67,31 @@ func (s *CertificateSigner) SignCertificate(req *CertificateRequest) (*Certifica
 	if err := s.validateRequest(req); err != nil {
 		return nil, fmt.Errorf("请求验证失败: %w", err)
 	}
+
+	// 有效期回填只作用于局部值，不修改调用方的 req（此前 validateRequest
+	// 直接回填调用方结构体，是隐藏的副作用）：零值视为未指定。
+	now := uint64(time.Now().Unix())
+	validAfter := req.ValidAfter
+	if validAfter == 0 {
+		validAfter = now
+	}
+	validBefore := req.ValidBefore
+	if validBefore == 0 {
+		validBefore = now + uint64(s.maxDuration/time.Second)
+	}
+
+	if validBefore <= validAfter {
+		return nil, fmt.Errorf("证书过期时间必须大于生效时间")
+	}
+
 	// 时长上限强制（此前仅 CreateUserCertificateRequest 检查，库层调用方可
-	// 自行填 ValidBefore 绕过 24h 上限）。
-	if s.maxDuration > 0 && req.ValidBefore > req.ValidAfter &&
-		time.Duration(req.ValidBefore-req.ValidAfter)*time.Second > s.maxDuration {
-		return nil, fmt.Errorf("证书有效期 %v 超过最大值 %v",
-			time.Duration(req.ValidBefore-req.ValidAfter)*time.Second, s.maxDuration)
+	// 自行填 ValidBefore 绕过 24h 上限）。全程 uint64 域比较：原先
+	// time.Duration(delta)*time.Second 是 int64 乘法，delta=2^55 时精确
+	// 溢出为 0，绕过检查签出超长证书。maxDuration > 0 但 < time.Second 时
+	// 商为 0，任何 delta>=1 秒的请求都会被拒绝。
+	if s.maxDuration > 0 && uint64(s.maxDuration/time.Second) < validBefore-validAfter {
+		return nil, fmt.Errorf("证书有效期 %d 秒超过最大值 %v",
+			validBefore-validAfter, s.maxDuration)
 	}
 
 	// 创建证书
@@ -76,8 +101,8 @@ func (s *CertificateSigner) SignCertificate(req *CertificateRequest) (*Certifica
 		CertType:        uint32(s.certType),
 		KeyId:           req.KeyID,
 		ValidPrincipals: req.ValidPrincipals,
-		ValidAfter:      req.ValidAfter,
-		ValidBefore:     req.ValidBefore,
+		ValidAfter:      validAfter,
+		ValidBefore:     validBefore,
 		// 注意：CriticalOptions 和 Extensions 需要在签名前设置
 	}
 
@@ -96,14 +121,15 @@ func (s *CertificateSigner) SignCertificate(req *CertificateRequest) (*Certifica
 		return nil, fmt.Errorf("签名证书失败: %w", err)
 	}
 
-	// 转换为证书对象
+	// 转换为证书对象。validateRequest 已保证原始字段 <= math.MaxInt64，
+	// 回填值为 now，此处 int64 转换不会回绕为负。
 	return &Certificate{
 		Certificate:     cert,
 		Type:            s.certType,
 		KeyID:           req.KeyID,
 		ValidPrincipals: req.ValidPrincipals,
-		ValidAfter:      time.Unix(int64(req.ValidAfter), 0),
-		ValidBefore:     time.Unix(int64(req.ValidBefore), 0),
+		ValidAfter:      time.Unix(int64(validAfter), 0),
+		ValidBefore:     time.Unix(int64(validBefore), 0),
 	}, nil
 }
 
@@ -133,7 +159,8 @@ func (s *CertificateSigner) GetType() string {
 	return s.signer.PublicKey().Type()
 }
 
-// validateRequest 验证证书请求
+// validateRequest 验证证书请求（纯校验，不修改调用方的 req——回填等
+// 副作用属于 SignCertificate 的构造逻辑，直接改写调用方结构体是隐藏副作用）。
 func (s *CertificateSigner) validateRequest(req *CertificateRequest) error {
 	if req == nil {
 		return fmt.Errorf("证书请求不能为空")
@@ -141,11 +168,9 @@ func (s *CertificateSigner) validateRequest(req *CertificateRequest) error {
 
 	// req.Type 必须与签名器的证书类型一致:历史实现完全忽略该字段,
 	// user 签名器会静默把 Type=HostCert 的请求签成 CertType=1(user),
-	// 调用方按请求语义以为签的是 host 证书。零值视为未指定,回填为
-	// 签名器类型(保持直调 SignCertificate 不填 Type 的既有用法)。
-	if req.Type == 0 {
-		req.Type = s.certType
-	} else if req.Type != s.certType {
+	// 调用方按请求语义以为签的是 host 证书。零值视为未指定(保持直调
+	// SignCertificate 不填 Type 的既有用法)。
+	if req.Type != 0 && req.Type != s.certType {
 		return fmt.Errorf("证书请求 Type(%s)与签名器类型(%s)不一致", req.Type, s.certType)
 	}
 
@@ -161,18 +186,15 @@ func (s *CertificateSigner) validateRequest(req *CertificateRequest) error {
 		return err
 	}
 
-	// 验证有效期
-	now := uint64(time.Now().Unix())
-	if req.ValidAfter == 0 {
-		req.ValidAfter = now
+	// int64 可表示范围守卫：ValidAfter/ValidBefore 超出 int64 范围时，
+	// 下游 time.Unix(int64(...)) 等转换会回绕为负值（配合超大 ValidBefore
+	// 可签出过期时间为负的废证书）。ValidAfter 允许 0（未指定，由
+	// SignCertificate 回填 now）。
+	if req.ValidAfter > math.MaxInt64 {
+		return fmt.Errorf("证书生效时间 %d 超出 int64 可表示范围", req.ValidAfter)
 	}
-
-	if req.ValidBefore == 0 {
-		req.ValidBefore = now + uint64(s.maxDuration.Seconds())
-	}
-
-	if req.ValidBefore <= req.ValidAfter {
-		return fmt.Errorf("证书过期时间必须大于生效时间")
+	if req.ValidBefore > math.MaxInt64 {
+		return fmt.Errorf("证书过期时间 %d 超出 int64 可表示范围", req.ValidBefore)
 	}
 
 	// 验证源地址（如果配置了）
@@ -195,7 +217,7 @@ func (s *CertificateSigner) buildCriticalOptions(req *CertificateRequest) (map[s
 
 	for _, opt := range req.CriticalOptions {
 		switch opt.Name {
-		case "force-command":
+		case criticalOptionForceCommand:
 			if opt.Value == "" {
 				return nil, errors.New("force-command 值不能为空")
 			}
@@ -419,7 +441,7 @@ func (a *sshAuthority) ValidateCertificate(cert *ssh.Certificate) error {
 	if len(cert.ValidPrincipals) > 0 {
 		principalArg = cert.ValidPrincipals[0]
 	}
-	checker.SupportedCriticalOptions = []string{"force-command"}
+	checker.SupportedCriticalOptions = []string{criticalOptionForceCommand}
 	if a.isRevoked != nil {
 		checker.IsRevoked = a.isRevoked
 	}
@@ -434,16 +456,17 @@ func (a *sshAuthority) ValidateCertificate(cert *ssh.Certificate) error {
 	}
 
 	// 未识别的 critical option 必须拒绝（user 证书仅支持 force-command /
-	// source-address，且值需语义合法）。
+	// source-address，且值需语义合法）。x/crypto v0.31+ 起 CriticalOptions
+	// 为 map[string]string，raw 已是 string。
 	if CertType(cert.CertType) == UserCert {
 		for name, raw := range cert.CriticalOptions {
 			switch name {
-			case "force-command":
+			case criticalOptionForceCommand:
 				if len(raw) == 0 {
 					return errors.New("force-command 值不能为空")
 				}
 			case "source-address":
-				if err := ValidateSourceAddresses(splitCommaList(string(raw))); err != nil {
+				if err := ValidateSourceAddresses(splitCommaList(raw)); err != nil {
 					return fmt.Errorf("source-address 值非法: %w", err)
 				}
 			default:

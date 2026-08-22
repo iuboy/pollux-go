@@ -1,6 +1,7 @@
 package cert
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
@@ -17,6 +18,14 @@ import (
 // CA certificates); all CERTIFICATE blocks are collected so the complete chain
 // is sent during the TLS/TLCP handshake.
 //
+// Trailing content after/between blocks is tolerated as follows (matching
+// stdlib tls.X509KeyPair's lenient behavior): non-CERTIFICATE PEM blocks
+// (comments, PRIVATE KEY, ...) and non-PEM garbage are ignored. A
+// CERTIFICATE-typed block that fails to decode (truncated END line, corrupt
+// base64) is NOT ignored — it returns an error, because silently dropping it
+// would hand TLS a chain missing a certificate and fail open at verification
+// time.
+//
 // After parsing, the private key is verified to match the leaf certificate's
 // public key (chain[0]). A mismatch — e.g. the user passed cert A's PEM with
 // key B — surfaces here as a clear error rather than as an opaque TLS handshake
@@ -32,7 +41,7 @@ func LoadKeyPairPEM(certPEM, keyPEM []byte) (tls.Certificate, error) {
 			break
 		}
 		anyPEMBlock = true
-		if block.Type != "CERTIFICATE" {
+		if block.Type != pemTypeCertificate {
 			continue
 		}
 		chain = append(chain, block.Bytes)
@@ -46,6 +55,15 @@ func LoadKeyPairPEM(certPEM, keyPEM []byte) (tls.Certificate, error) {
 			return tls.Certificate{}, fmt.Errorf("cert: PEM input contains no CERTIFICATE-typed block (got non-CERTIFICATE PEM blocks only)")
 		}
 		return tls.Certificate{}, ErrInvalidPEM
+	}
+	// pem.Decode returns nil when the remainder holds no complete, well-formed
+	// block, so at this point rest still contains any CERTIFICATE-typed block
+	// it could not decode (truncated END line / corrupt base64 — verified
+	// against encoding/pem behavior). Surface it instead of silently skipping
+	// (same fail-closed style as parsePEMCertificates' skipped-count handling
+	// in the tlcp package). Non-certificate content in rest stays ignored.
+	if bytes.Contains(rest, []byte("-----BEGIN "+pemTypeCertificate+"-----")) {
+		return tls.Certificate{}, fmt.Errorf("cert: malformed CERTIFICATE PEM block remains after chain (truncated END line or corrupt base64)")
 	}
 
 	key, err := polluxSm2.ParsePrivateKeyFromPEM(keyPEM)
@@ -87,8 +105,11 @@ func validatePrivateKeyMatchesLeaf(key any, leaf *x509.Certificate) error {
 	if !ok {
 		return fmt.Errorf("cert: leaf certificate public key is %T, not ECDSA (SM2)", leaf.PublicKey)
 	}
+	// sm2.PublicKey 是 ecdsa.PublicKey 的类型别名（pollux sm2 包约定），
+	// 故 &sm2Key.PublicKey 即 *ecdsa.PublicKey，可直接用 Equal：它同时
+	// 比较 X/Y 坐标与曲线，消除此前仅比坐标时跨曲线同坐标点的误匹配。
 	keyPub := &sm2Key.PublicKey
-	if certPub.X.Cmp(keyPub.X) != 0 || certPub.Y.Cmp(keyPub.Y) != 0 {
+	if !certPub.Equal(keyPub) {
 		return fmt.Errorf("cert: private key does not match leaf certificate's public key")
 	}
 	return nil

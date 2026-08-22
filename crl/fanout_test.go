@@ -104,3 +104,68 @@ func TestFanout_AutoUpdateDrivesAll(t *testing.T) {
 		t.Error("other was never updated by auto-update loop")
 	}
 }
+
+// crlNumberOf 读取 crlGenerator 的进程内 CRL 编号（每次 Generate 递增），
+// 用作“扇出循环是否仍在驱动子实例”的观察窗口。
+func crlNumberOf(g *crlGenerator) int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.crlNumber
+}
+
+// TestFanout_AutoUpdateSelfExitsWhenAllChildrenStopped 锁定泄漏保护修复：
+// 调用方只单独停掉全部子实例而未停扇出时，循环会在下一个 tick 探测到
+// （allStopped）并自行退出——此前 ticker 会永续空转（只监听 f.stop）。
+func TestFanout_AutoUpdateSelfExitsWhenAllChildrenStopped(t *testing.T) {
+	auth := newHardeningAuth(t)
+	g1 := NewGenerator(auth, NewMemoryCache()).(*crlGenerator)
+	g2 := NewGenerator(auth, NewMemoryCache()).(*crlGenerator)
+	fanout := NewFanout(g1, g2)
+
+	if err := fanout.StartAutoUpdate(5 * time.Millisecond); err != nil {
+		t.Fatalf("StartAutoUpdate: %v", err)
+	}
+	defer fanout.StopAutoUpdate()
+
+	// 先让若干 tick 跑起来，确认循环在驱动子实例。
+	time.Sleep(20 * time.Millisecond)
+	base := crlNumberOf(g1)
+	if base == 0 {
+		t.Fatal("fanout loop never drove children before stop")
+	}
+
+	// 只停子实例、不停扇出：泄漏场景。
+	g1.StopAutoUpdate()
+	g2.StopAutoUpdate()
+
+	// 循环最迟在下个 tick（5ms）退出；留足余量后再取基准。
+	time.Sleep(20 * time.Millisecond)
+	frozen := crlNumberOf(g1)
+
+	// 再等数个 tick 周期，编号不应继续增长（循环已退出）。
+	time.Sleep(40 * time.Millisecond)
+	if got := crlNumberOf(g1); got != frozen {
+		t.Fatalf("fanout loop still driving children after all children stopped: crlNumber %d -> %d", frozen, got)
+	}
+}
+
+// TestFanout_AutoUpdateKeepsRunningWhileAnyChildActive 锁定 allStopped 的
+// 保守面：只要有子实例仍在运行（这里 g2 未停），扇出循环就不得退出。
+func TestFanout_AutoUpdateKeepsRunningWhileAnyChildActive(t *testing.T) {
+	auth := newHardeningAuth(t)
+	g1 := NewGenerator(auth, NewMemoryCache()).(*crlGenerator)
+	g2 := NewGenerator(auth, NewMemoryCache()).(*crlGenerator)
+	fanout := NewFanout(g1, g2)
+
+	if err := fanout.StartAutoUpdate(5 * time.Millisecond); err != nil {
+		t.Fatalf("StartAutoUpdate: %v", err)
+	}
+	defer fanout.StopAutoUpdate()
+
+	g1.StopAutoUpdate() // 仅停一个子实例
+	time.Sleep(25 * time.Millisecond)
+
+	if crlNumberOf(g2) == 0 {
+		t.Fatal("fanout loop exited although g2 is still active")
+	}
+}

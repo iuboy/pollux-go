@@ -31,10 +31,10 @@ func mustGenerateSM2Key(t *testing.T) (*ecdsa.PrivateKey, *sm2.PrivateKey) {
 // smToStdCert converts a gmsm *smx509.Certificate to a stdlib *x509.Certificate
 // via field copy. gmsm v0.44 removed the ToX509() bridge, and SM2 DER cannot be
 // re-parsed by stdlib (unsupported curve), so the package's own
-// smX509ToStdCertificate helper (reflection field copy) is reused.
+// ToStdCertificate helper (reflection field copy) is reused.
 func smToStdCert(t *testing.T, cert *gmsmSMX509.Certificate) *x509.Certificate {
 	t.Helper()
-	std, err := SMX509ToStdCertificate(cert)
+	std, err := ToStdCertificate(cert)
 	if err != nil {
 		t.Fatalf("convert smx509 cert to stdlib: %v", err)
 	}

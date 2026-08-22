@@ -75,10 +75,10 @@ func TestReasonCode_RFC5280Values(t *testing.T) {
 
 // --- crlError ---
 
-// --- memoryCRLCache ---
+// --- memoryCache ---
 
-func TestMemoryCRLCache(t *testing.T) {
-	cache := NewMemoryCRLCache()
+func TestMemoryCache(t *testing.T) {
+	cache := NewMemoryCache()
 
 	// 初始为空
 	if cache.Get() != nil {
@@ -101,22 +101,22 @@ func TestMemoryCRLCache(t *testing.T) {
 	}
 }
 
-func TestMemoryCRLCache_Concurrent(t *testing.T) {
-	cache := NewMemoryCRLCache()
+func TestMemoryCache_Concurrent(t *testing.T) {
+	cache := NewMemoryCache()
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	// 并发读写
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			cache.Set([]byte{byte(i)})
 		}
 	}()
 
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			cache.Get()
 		}
 	}()
@@ -311,6 +311,52 @@ func TestGetCRLNumber_WrongType(t *testing.T) {
 	}
 }
 
+// TestGetCRLNumber_HugeNumber 锁定 *big.Int 返回语义：RFC 5280 §5.2.3
+// 允许任意长度正整数，超过 int64 的编号不得截断/回绕（旧 int 返回值在
+// 此会静默得到错误编号）。
+func TestGetCRLNumber_HugeNumber(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, _ := rand.Int(rand.Reader, big.NewInt(100000))
+	caTmpl := &x509.Certificate{
+		SerialNumber: serial,
+		NotBefore:    time.Now().Add(-1 * time.Hour),
+		NotAfter:     time.Now().Add(24 * 365 * time.Hour),
+		Subject:      pkix.Name{CommonName: "Big Number CA"},
+		KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		IsCA:         true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, priv.Public(), priv)
+	if err != nil {
+		t.Fatalf("create CA cert: %v", err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("parse CA cert: %v", err)
+	}
+
+	want := new(big.Int).Lsh(big.NewInt(1), 70) // 2^70，远超 int64
+	rl := &x509.RevocationList{
+		Number:     want,
+		ThisUpdate: time.Now().Add(-1 * time.Hour),
+		NextUpdate: time.Now().Add(23 * time.Hour),
+	}
+	rlDER, err := x509.CreateRevocationList(rand.Reader, rl, caCert, priv)
+	if err != nil {
+		t.Fatalf("create CRL: %v", err)
+	}
+
+	num, err := GetCRLNumber(pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: rlDER}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if num == nil || num.Cmp(want) != 0 {
+		t.Fatalf("expected CRL number %v, got %v", want, num)
+	}
+}
+
 // --- NewGenerator ---
 
 func TestNewGenerator(t *testing.T) {
@@ -399,8 +445,8 @@ func TestCRLIntegration_Ed25519(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if num != 1 {
-		t.Errorf("expected CRL number 1, got %d", num)
+	if num == nil || num.Cmp(big.NewInt(1)) != 0 {
+		t.Errorf("expected CRL number 1, got %v", num)
 	}
 
 	if IsExpired(crlPEM) {
@@ -537,7 +583,7 @@ func TestCRLIntegration_SM2(t *testing.T) {
 
 	// 3. 组装 mock Authority 并生成 CRL
 	auth := &sm2MockAuthority{ca: caCert, key: priv}
-	gen := NewGenerator(auth, NewMemoryCRLCache())
+	gen := NewGenerator(auth, NewMemoryCache())
 
 	ctx := context.Background()
 	crlPEM, err := gen.Generate(ctx)
@@ -583,7 +629,7 @@ func TestCRLIntegration_SM2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCRLNumber failed: %v", err)
 	}
-	if num == 0 {
+	if num == nil || num.Sign() == 0 {
 		t.Error("expected non-zero CRL number")
 	}
 }

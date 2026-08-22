@@ -639,7 +639,7 @@ func TestInteropSM4_CFB_CrossVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream := cipher.NewCFBDecrypter(gmsmBlock, iv) //nolint:staticcheck
+	stream := cipher.NewCFBDecrypter(gmsmBlock, iv)
 	decrypted := make([]byte, len(ciphertext))
 	stream.XORKeyStream(decrypted, ciphertext)
 	if !bytes.Equal(decrypted, plaintext) {

@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.5.0] - 2026-08-22
+
+> 本版本为**破坏性安全加固版本**：对全库进行对抗性 Go 最佳实践审查后，根治全部 High/Medium 缺陷及配套 Low/Info 项。多处公共 API 有破坏性变更（见文末清单）。
+
+### Fixed — 第三轮对抗性审查（5 项 High）
+
+- `https`：HybridListener.Accept 对客户端可触发错误（连上即断/明文字节/握手失败）直接返回，而 `http.Server.Serve` 对非临时 Accept 错误会退出整个服务循环——**单个 TCP 包即可永久杀死 Hybrid 服务器**。根治：重写为惰性连接（对齐 `crypto/tls.Listener` 语义），Accept 零 I/O、永不因客户端行为失败，嗅探+握手推迟到首次 Read/Write，慢速客户端不再占用 accept 循环
+- `tlcp`：握手消息 3 字节长度无上限——恶意对端每连接可驻留 ~16MB。对齐 crypto/tls：非证书消息 16KB、Certificate 128KB 硬上限
+- `tlcp`：Listener.Accept 同步握手且无 deadline——单个不发数据的连接永久阻塞全部后续连接。改为惰性握手；`DialWithDialer` 的 Timeout 现在也约束握手；新增 `DialContext`
+- `tlcp`：客户端 Finished 校验失败泄露期望 verify_data（master_secret 派生材料）——与服务端既有反 oracle 策略对齐
+- `sshca`：maxDuration 检查被 uint64 溢出精确绕过（delta=2^55 时乘积≡0），可签出 ~10^12 年有效期 SSH 证书。全 uint64 域比较 + int64 范围守卫
+
+### Fixed — 第三轮对抗性审查（Medium）
+
+- `tlcp`：加密 alert 记录此前按密文解析（CCS 后的 close_notify 被误报为错误而非 `io.EOF`）→ 先解密后解析，close_notify 映射 io.EOF；Read 路径补读锁满足 `net.Conn` 并发契约；Close 的 close_notify 写入有界化（5s deadline，任何传输不再挂起）；CBC 填充校验整体移植 crypto/tls 常量时间算法（定长扫描、统一错误、MAC 时间均衡）；会话恢复从不可达死代码接线为可用功能（`Config.SessionCache` + 导出 API + 24h 过期）；握手失败发送 fatal alert；每条记录校验版本字节；`Close` 清零 halfConn 密钥
+- `tls13gm`：客户端在服务端拒绝 PSK 时按 RFC 8446 §7.1 用全零重算 early secret（此前任何票据被拒都导致硬失败）；服务端票据解密失败优雅降级继续完全握手（§4.2.11）；`Zero()` 补 ECDHE 临时私钥清零（PFS 兜底）；pinning 模式（nil Roots + 回调）真正可用；线上中间证书参与链构建；服务端补 phase guard + 双端 Failed 终态（transcript 中途失败拒绝重试）；ECDHE 标量副本/票据明文 PSK/binder 失败路径密钥全部用后清零；扩展列表解析 fail-closed
+- `quicgm`：`Listen` 的 ctx 真正传播取消；packet protector 构造时快照密钥（解除与 `Handshaker.Zero()` 的共享别名竞争）；`Conn.Close` 清零复用材料；防重放缓存按到期分桶（`Check` 摊还 O(1)，消除持锁全量扫描延迟尖峰）
+- `smx509`：`copyCertFields` 三条静默跳过路径全部可观测（skipped 列表 + `CopyFieldDriftHook`），CRL 签发前断言撤销条目数一致（fail-closed 阻止"空名单 CRL"）；`mapEnumField` 重做 fail-closed 并补 ExtKeyUsage 守卫；OCSP ResponderID 补 ASN.1 Class 校验；`ToSMX509Certificate` 补 stdlib 回退；新增 `IsSM3CertID`（SM3 响应的 IssuerHash 谎报问题的显式判别）
+- `crl`：标准 CA 路径 nil key panic（落在无 recover 的后台 goroutine 即崩进程）、`opts==nil` panic、`GetCRLNumber` 截断全部修复；fanout 全部子生成器停止后自动退出（停机泄漏）
+- `https`：Transport 补 TLSHandshakeTimeout/IdleConnTimeout/ResponseHeaderTimeout；TLCP 拨号真传播 ctx 取消；客户端 nil Timeout 从无限改为默认 120s；删除服务端无效且误导的 `ServerOptions.InsecureSkipVerify`
+- `jwt`：HMAC signer 深拷贝 secret（`Zeroize` 不再清调用方数组）；`NewSM2SM3` 曲线 fail-fast；`IssueWithExpiry` 拒绝 ttl<=0
+- `kmc`：CSR 补默认 keyUsage 扩展；`https.DetectMode` 增加证书公钥回落判别（只配证书的客户端不再走错协议）
+
+### Changed（破坏性 API，无向后兼容）
+
+- `tlcp`：`NewLRUSessionCache`（原 `NewTLCPLRUSessionCache`）返回导出 `SessionCache`/`SessionState`；删除 `GetCipherSuites`/`IsAvailable`/`GetStandardSummary`/`Version12`；`GetCipherSuiteName`→`CipherSuiteName`；`ConnectionState` 删 `VerifiedChains`（永不填充的契约谎言）、增 `DidResume`/`NegotiatedProtocol`；`Config` 增 `SessionCache`
+- `https`：`HybridListener` 导出（主路径调用者可用调优方法）；`ServerOptions` 删 `InsecureSkipVerify`；客户端 nil Timeout 语义变更
+- `smx509`：`SMX509ToStdCertificate(s)`→`ToStdCertificate(s)`；`NewOCSPResponseTemplate` 签名变更；新增 `CopyFieldDriftHook`/`IsSM3CertID`
+- `crl`：`CRLCache`→`Cache`、`CRLRecord`→`Record`、`NewMemoryCRLCache`→`NewMemoryCache`；`GetCRLNumber` 返回 `*big.Int`
+- `tls`：`GetCipherSuites`→`CipherSuites`
+- `tlcp` 行为变更：Listener.Accept 不再内联握手（crypto/tls 语义）
+
+### Added
+
+- CI 新增 golangci-lint 门禁（errcheck/revive/gocritic/errorlint/nilerr 等，v2.13.1）+ 仓库级 `.golangci.yml`（每条豁免附理由）；当前全仓 0 告警
+- 新增约 20 个回归测试锁定本全部修复行为
+
+### Removed
+
+- `tlcp`：死代码清理（未用方法/类型/保 import 变量/冗余 Get* 包装）；`randReader` 包级可变全局；冗余 `nolint:staticcheck`（SA1019 已配置层统一豁免）
+
 ### Fixed — 第二轮审查剩余项(Low/Info 补完)
 
 - `smx509`:OCSP `RevocationReason` 取值域校验(RFC 5280 §5.3.1:0-6/8-10,7 未分配);无 `NextUpdate` 响应对 `ThisUpdate` 施加 7 天本地 max-age(封住无界重放窗口);内嵌 responder 证书自身有效期校验;`ExtractOCSPRequestNonce` 拒绝尾部垃圾与重复 nonce 扩展;`CurrentTime` SM2 路径限制文档标注

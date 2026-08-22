@@ -1,6 +1,7 @@
 package kmc
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -45,6 +46,32 @@ func TestLocalKMC_GenerateEncryptionKeyPair(t *testing.T) {
 	}
 	if err := smCSR.CheckSignature(); err != nil {
 		t.Fatalf("CSR signature does not verify: %v", err)
+	}
+	// The template deliberately leaves SignatureAlgorithm at the zero value
+	// for SM2 (stdlib has no SM2WithSM3 constant); gmsm's signer must default
+	// SM2 keys to SM2WithSM3. Lock that in so a gmsm upgrade that breaks the
+	// defaulting fails here instead of producing SHA256-mismatched CSRs.
+	if smCSR.SignatureAlgorithm != gmsmSmx509.SM2WithSM3 {
+		t.Fatalf("CSR signature algorithm = %v, want SM2WithSM3", smCSR.SignatureAlgorithm)
+	}
+	// Default keyUsage extension request: digitalSignature | keyEncipherment,
+	// critical. BIT STRING bits 0 and 2 set, trailing zeros trimmed per DER:
+	// 03 02 05 A0.
+	wantKU := []byte{0x03, 0x02, 0x05, 0xA0}
+	var foundKU bool
+	for _, ext := range smCSR.Extensions {
+		if ext.Id.Equal([]int{2, 5, 29, 15}) {
+			foundKU = true
+			if !ext.Critical {
+				t.Error("keyUsage extension is not critical")
+			}
+			if !bytes.Equal(ext.Value, wantKU) {
+				t.Errorf("keyUsage value = % X, want % X (digitalSignature|keyEncipherment)", ext.Value, wantKU)
+			}
+		}
+	}
+	if !foundKU {
+		t.Error("CSR carries no keyUsage (2.5.29.15) extension request")
 	}
 	if smCSR.Subject.CommonName != "gm-encryption" {
 		t.Fatalf("CSR CN = %q, want gm-encryption (subject parameterization)", smCSR.Subject.CommonName)

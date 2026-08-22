@@ -354,7 +354,7 @@ func TestHKDFConsistency(t *testing.T) {
 	info := []byte("consistency-info")
 
 	var prev []byte
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		out, err := sm3.HKDF(salt, ikm, info, 64)
 		if err != nil {
 			t.Fatal(err)

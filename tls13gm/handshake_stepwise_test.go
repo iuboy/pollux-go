@@ -441,7 +441,10 @@ func TestServerHandshake_VerifyPSKBinder(t *testing.T) {
 		t.Fatalf("HandleClientHello with recognized PSK: %v", err)
 	}
 
-	// Server without the PSK must reject.
+	// Server without the PSK must DECLINE it (not abort): RFC 8446 §4.2.11
+	// requires a server that cannot use the offered identity to continue with
+	// a full handshake rather than terminate. The declined server selects no
+	// PSK, so its flight must carry Certificate/CertificateVerify.
 	server2, err := NewServerHandshakerWithConfig(ServerConfig{
 		DCID:              dcid,
 		Certificate:       cert,
@@ -451,8 +454,19 @@ func TestServerHandshake_VerifyPSKBinder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
 	}
-	if err := server2.HandleClientHello(ch); err == nil {
-		t.Fatal("HandleClientHello accepted an unrecognized PSK")
+	if err := server2.HandleClientHello(ch); err != nil {
+		t.Fatalf("HandleClientHello with unrecognized PSK: %v (want graceful decline)", err)
+	}
+	sh, ee, crt, cv, fin, err := server2.ServerFlight()
+	if err != nil {
+		t.Fatalf("ServerFlight after declined PSK: %v", err)
+	}
+	if sh == nil || ee == nil || fin == nil {
+		t.Fatal("ServerFlight after declined PSK returned nil messages")
+	}
+	// Full handshake: certificate and CertificateVerify MUST be present.
+	if crt == nil || cv == nil {
+		t.Fatal("ServerFlight after declined PSK omitted Certificate/CertificateVerify (want full handshake)")
 	}
 }
 

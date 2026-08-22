@@ -60,7 +60,7 @@ func newHardeningAuth(t *testing.T) *countableAuthority {
 // CRL,所有已撤销证书在依赖方恢复有效。
 func TestGenerateWithOptions_EmptySliceFallsBackToStore(t *testing.T) {
 	auth := newHardeningAuth(t)
-	gen := NewGenerator(auth, NewMemoryCRLCache())
+	gen := NewGenerator(auth, NewMemoryCache())
 
 	// 传空切片(JSON 反序列化常见产物):必须回源拿到真实撤销记录。
 	pem, err := gen.GenerateWithOptions(context.Background(), &GenerateOptions{
@@ -102,7 +102,7 @@ func TestGenerateWithOptions_EmptySliceFallsBackToStore(t *testing.T) {
 // 非法/非正数序列号必须拒绝整轮签发(fail-closed),不得静默跳过。
 func TestGenerateWithOptions_InvalidSerialRejected(t *testing.T) {
 	auth := newHardeningAuth(t)
-	gen := NewGenerator(auth, NewMemoryCRLCache())
+	gen := NewGenerator(auth, NewMemoryCache())
 
 	for _, bad := range []string{"xyz", "-5", "0", ""} {
 		_, err := gen.GenerateWithOptions(context.Background(), &GenerateOptions{
@@ -124,7 +124,7 @@ func TestGenerateWithOptions_InvalidSerialRejected(t *testing.T) {
 // 显式编号必须为非负且大于已签发最大编号;自动路径在其后继续单调。
 func TestGenerateWithOptions_NumberMonotonicity(t *testing.T) {
 	auth := newHardeningAuth(t)
-	gen := NewGenerator(auth, NewMemoryCRLCache())
+	gen := NewGenerator(auth, NewMemoryCache())
 
 	mk := func(n int) *GenerateOptions {
 		return &GenerateOptions{Number: n}
@@ -155,8 +155,31 @@ func TestGenerateWithOptions_NumberMonotonicity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 6 {
-		t.Fatalf("自动编号应续接显式编号后为 6, got %d", n)
+	if n == nil || n.Cmp(big.NewInt(6)) != 0 {
+		t.Fatalf("自动编号应续接显式编号后为 6, got %v", n)
+	}
+}
+
+// TestGenerateWithOptions_NilOptionsRejected 锁定 nil opts 守卫：
+// 此前直接解引用 opts.RevokedCertificates 会 panic，且该路径被
+// autoUpdateLoop 后台 goroutine 调用（panic 不可 recover）。
+func TestGenerateWithOptions_NilOptionsRejected(t *testing.T) {
+	auth := newHardeningAuth(t)
+	gen := NewGenerator(auth, NewMemoryCache())
+	if _, err := gen.GenerateWithOptions(context.Background(), nil); err == nil {
+		t.Fatal("nil GenerateOptions 应返回错误而非 panic")
+	}
+}
+
+// TestGenerateWithOptions_NilCAOrKeyRejected 锁定标准 CA 路径的 nil 守卫：
+// Authority 返回 nil 证书/密钥时必须返回清晰错误，杜绝
+// x509.CreateRevocationList 空指针 panic 打崩 autoUpdateLoop。
+func TestGenerateWithOptions_NilCAOrKeyRejected(t *testing.T) {
+	// sm2MockAuthority 零值：GetIntermediateCA/GetIntermediateKey 均返回 nil。
+	gen := NewGenerator(&sm2MockAuthority{}, NewMemoryCache())
+	_, err := gen.GenerateWithOptions(context.Background(), &GenerateOptions{})
+	if err == nil {
+		t.Fatal("nil 中级 CA 证书/密钥应返回错误而非 panic")
 	}
 }
 
@@ -165,7 +188,7 @@ func TestGenerateWithOptions_NumberMonotonicity(t *testing.T) {
 // 不可 recover,会崩溃整个进程)。
 func TestStartAutoUpdate_RejectsNonPositiveInterval(t *testing.T) {
 	auth := newHardeningAuth(t)
-	single := NewGenerator(auth, NewMemoryCRLCache())
+	single := NewGenerator(auth, NewMemoryCache())
 	if err := single.StartAutoUpdate(0); err == nil {
 		t.Fatal("单实例 StartAutoUpdate(0) 应返回错误")
 	}
@@ -173,13 +196,13 @@ func TestStartAutoUpdate_RejectsNonPositiveInterval(t *testing.T) {
 		t.Fatal("单实例 StartAutoUpdate(负值) 应返回错误")
 	}
 
-	fo := NewFanout(single, NewGenerator(auth, NewMemoryCRLCache()))
+	fo := NewFanout(single, NewGenerator(auth, NewMemoryCache()))
 	if err := fo.StartAutoUpdate(0); err == nil {
 		t.Fatal("fanout StartAutoUpdate(0) 应返回错误")
 	}
 
 	// 合法 interval 正常启动并停止(顺带覆盖构造期 stop 通道的启停路径)。
-	s2 := NewGenerator(auth, NewMemoryCRLCache())
+	s2 := NewGenerator(auth, NewMemoryCache())
 	if err := s2.StartAutoUpdate(time.Hour); err != nil {
 		t.Fatalf("合法 interval: %v", err)
 	}

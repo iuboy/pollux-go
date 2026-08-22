@@ -103,9 +103,16 @@ func verifySM2(cert *x509.Certificate, opts VerifyOptions) error {
 	}
 
 	// gmsm's ExtKeyUsage is a distinct int-backed type from stdlib's; convert
-	// element-wise (constant values are identical).
+	// element-wise. Constant values are identical only within the shared
+	// prefix (0..maxSharedExtKeyUsage); a value outside it (future stdlib or
+	// fork extension) cannot be represented in the other enum and a blind
+	// cast would silently verify against the wrong usage — fail-closed with
+	// an explicit error instead.
 	var smKeyUsages []smx509.ExtKeyUsage
 	for _, ku := range opts.KeyUsages {
+		if ku < 0 || int(ku) > maxSharedExtKeyUsage {
+			return fmt.Errorf("smx509: key usage %d outside shared ExtKeyUsage range 0..%d", int(ku), maxSharedExtKeyUsage)
+		}
 		smKeyUsages = append(smKeyUsages, smx509.ExtKeyUsage(ku))
 	}
 

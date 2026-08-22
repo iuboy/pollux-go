@@ -63,7 +63,7 @@ func TestMarshalLoadEncryptedPrivateKey_RoundTrip(t *testing.T) {
 	t.Parallel()
 	algos := []string{"rsa-2048", "ecdsa-p256", "ecdsa-p384", "ed25519", "sm2"}
 	for _, algo := range algos {
-		algo := algo
+
 		t.Run(algo, func(t *testing.T) {
 			t.Parallel()
 			key := newTestSigner(t, algo)

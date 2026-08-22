@@ -48,7 +48,7 @@ func verifySM2(cert *x509.Certificate, opts VerifyOptions) error {
 		KeyUsages:     opts.KeyUsages,
 	}
 	if err := polluxSmx509.Verify(cert, smx509Opts); err != nil {
-		return err
+		return fmt.Errorf("cert: SM2 certificate verification failed: %w", err)
 	}
 
 	// Manual ExtendedKeyUsage validation (gmsm/smx509 does not support this natively).

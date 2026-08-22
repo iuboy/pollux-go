@@ -68,3 +68,14 @@ jobs:
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@latest
           go list ./... | grep -v '/quic-go' | xargs staticcheck -checks 'SA*,-SA1019'
+      - name: golangci-lint
+        # Broader best-practice surface (errcheck, revive, gocritic, errorlint,
+        # nilerr, ...) configured in .golangci.yml at the repo root. The
+        # exclusions there carry the rationale (cipher-suite naming mirrors the
+        # GB/T 38636 standard designations; SA1019 unavoidable for SM2; the
+        # vendored quic-go/ fork is upstream code). This job exists because the
+        # security review found real defects (swallowed errors, dead branches)
+        # that none of the above steps could catch.
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+          golangci-lint run --timeout 5m ./...

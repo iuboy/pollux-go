@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
+	"errors"
 	"fmt"
 
 	"github.com/emmansun/gmsm/pkcs8"
@@ -54,6 +56,58 @@ func NewLocalKMC() *LocalKMC { return &LocalKMC{} }
 // Compile-time contract: LocalKMC implements Manager.
 var _ Manager = (*LocalKMC)(nil)
 
+// oidExtensionKeyUsage is the RFC 5280 keyUsage extension OID (2.5.29.15).
+var oidExtensionKeyUsage = asn1.ObjectIdentifier{2, 5, 29, 15}
+
+// keyUsagePositions maps each x509.KeyUsage bit to its RFC 5280 keyUsage
+// extension bit position (digitalSignature=0 … decipherOnly=8).
+var keyUsagePositions = []struct {
+	usage x509.KeyUsage
+	pos   int
+}{
+	{x509.KeyUsageDigitalSignature, 0},
+	{x509.KeyUsageContentCommitment, 1},
+	{x509.KeyUsageKeyEncipherment, 2},
+	{x509.KeyUsageDataEncipherment, 3},
+	{x509.KeyUsageKeyAgreement, 4},
+	{x509.KeyUsageCertSign, 5},
+	{x509.KeyUsageCRLSign, 6},
+	{x509.KeyUsageEncipherOnly, 7},
+	{x509.KeyUsageDecipherOnly, 8},
+}
+
+// keyUsageExtension encodes ku as a critical keyUsage (2.5.29.15) extension.
+//
+// It rides in CertificateRequest.ExtraExtensions because neither crypto/x509
+// nor the gmsm/smx509 fork exposes a KeyUsage template field on
+// CertificateRequest (that field exists only on certificate templates). Both
+// CreateCertificateRequest backends copy ExtraExtensions verbatim into the
+// CSR's extensionRequest attribute. The BIT STRING is DER-canonical: trailing
+// zero bits trimmed, mirroring how Go's own certificate builder encodes
+// keyUsage.
+func keyUsageExtension(ku x509.KeyUsage) (pkix.Extension, error) {
+	var bits asn1.BitString
+	for _, u := range keyUsagePositions {
+		if ku&u.usage != 0 {
+			bits.BitLength = u.pos + 1
+		}
+	}
+	if bits.BitLength == 0 {
+		return pkix.Extension{}, errors.New("kmc: empty KeyUsage")
+	}
+	bits.Bytes = make([]byte, (bits.BitLength+7)/8)
+	for _, u := range keyUsagePositions {
+		if ku&u.usage != 0 {
+			bits.Bytes[u.pos/8] |= 0x80 >> uint(u.pos%8)
+		}
+	}
+	der, err := asn1.Marshal(bits)
+	if err != nil {
+		return pkix.Extension{}, fmt.Errorf("kmc: marshal keyUsage extension: %w", err)
+	}
+	return pkix.Extension{Id: oidExtensionKeyUsage, Critical: true, Value: der}, nil
+}
+
 // GenerateEncryptionKeyPair generates a local SM2 key pair and self-signs
 // the encryption CSR with it. ctx is currently unused (no device I/O) but
 // part of the Manager contract for real KMC implementations.
@@ -83,9 +137,25 @@ func (k *LocalKMC) GenerateEncryptionKeyPair(_ context.Context, subject pkix.Nam
 
 	// Encryption CSR: signed with the freshly generated key so the CA can
 	// issue the encryption certificate from it.
+	//
+	// Key usage: digitalSignature (self-signature / proof of possession) |
+	// keyEncipherment (the TLCP key-transport role of an encryption cert) is
+	// requested as the default extension. Extended key usage is deliberately
+	// NOT requested — usage policy is the issuing CA's call.
+	//
+	// Signature algorithm: SignatureAlgorithmForPrivateKey returns
+	// UnknownSignatureAlgorithm (the zero value) for SM2 keys because stdlib
+	// x509 has no SM2WithSM3 constant; gmsm's CreateCertificateRequest then
+	// defaults SM2 keys to SM2WithSM3, so the CSR is signed SM2-with-SM3
+	// (locked by TestLocalKMC_GenerateEncryptionKeyPair).
+	keyUsageExt, err := keyUsageExtension(x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment)
+	if err != nil {
+		return fail(err)
+	}
 	csrTemplate := &x509.CertificateRequest{
 		Subject:            subject,
 		SignatureAlgorithm: smx509.SignatureAlgorithmForPrivateKey(priv),
+		ExtraExtensions:    []pkix.Extension{keyUsageExt},
 	}
 	csrDER, err := smx509.CreateCertificateRequest(csrTemplate, priv)
 	if err != nil {

@@ -2,7 +2,6 @@ package tlcp
 
 import (
 	"bytes"
-	"crypto/ecdsa"
 	"crypto/rand"
 	"io"
 	"net"
@@ -11,22 +10,6 @@ import (
 
 	polluxSM2 "github.com/iuboy/pollux-go/sm2"
 )
-
-// makeECDHEDualCerts generates a fresh signing + encryption SM2 cert pair for
-// use as either a server or client dual certificate set.
-func makeECDHEDualCerts(t *testing.T) (signDER, encDER []byte, signPriv, encPriv *polluxSM2.PrivateKey) {
-	t.Helper()
-	curve := polluxSM2.P256()
-	sPriv, _ := ecdsa.GenerateKey(curve, rand.Reader)
-	ePriv, _ := ecdsa.GenerateKey(curve, rand.Reader)
-	sm2Sign := new(polluxSM2.PrivateKey)
-	sm2Sign.FromECPrivateKey(sPriv)
-	sm2Enc := new(polluxSM2.PrivateKey)
-	sm2Enc.FromECPrivateKey(ePriv)
-	// Reuse generateTestCertPair's cert-creation by building minimal self-signed certs.
-	sc, ec := generateTestCertPair(t)
-	return sc.Certificate[0], ec.Certificate[0], sm2Sign, sm2Enc
-}
 
 // TestECDHE_NativeServer_NativeClient verifies an ECDHE (SM2 MQV) handshake
 // with mutual authentication end-to-end, both sides native. This exercises the

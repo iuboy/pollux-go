@@ -98,7 +98,7 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Conn, error) {
 		MaxIdleTimeout: cfg.idleTimeout(),
 	})
 	if err != nil {
-		udpConn.Close()
+		_ = udpConn.Close()
 		return nil, err
 	}
 	return &Conn{inner: qc, udpConn: udpConn}, nil

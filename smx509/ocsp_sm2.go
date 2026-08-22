@@ -89,7 +89,7 @@ func createSM2OCSPResponse(issuer, responderCert *x509.Certificate, template ocs
 		PublicKey asn1.BitString
 	}
 	if _, err := asn1.Unmarshal(issuer.RawSubjectPublicKeyInfo, &publicKeyInfo); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("smx509: parse issuer SubjectPublicKeyInfo: %w", err)
 	}
 
 	if template.IssuerHash == 0 {
@@ -163,7 +163,7 @@ func createSM2OCSPResponse(issuer, responderCert *x509.Certificate, template ocs
 
 	tbsResponseDataDER, err := asn1.Marshal(tbsResponseData)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("smx509: marshal tbsResponseData: %w", err)
 	}
 
 	// SM2 signing: pass the raw TBS ResponseData DER (no pre-hash) to
@@ -193,16 +193,20 @@ func createSM2OCSPResponse(issuer, responderCert *x509.Certificate, template ocs
 	}
 	responseDER, err := asn1.Marshal(response)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("smx509: marshal basic OCSP response: %w", err)
 	}
 
-	return asn1.Marshal(sm2ResponseASN1{
+	finalDER, err := asn1.Marshal(sm2ResponseASN1{
 		Status: asn1.Enumerated(ocsp.Success),
 		Response: sm2ResponseBytes{
 			ResponseType: idPKIXOCSPBasic,
 			Response:     responseDER,
 		},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("smx509: marshal OCSP response: %w", err)
+	}
+	return finalDER, nil
 }
 
 // oidFromHashAlgorithm mirrors the private helper in x/crypto/ocsp

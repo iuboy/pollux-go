@@ -90,7 +90,7 @@ func BenchmarkZeroBytes(b *testing.B) {
 		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
 			data := make([]byte, size)
 			b.SetBytes(int64(size))
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				// Fill with non-zero data
 				for j := range data {
 					data[j] = 0xFF

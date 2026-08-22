@@ -14,33 +14,6 @@ func TestDefaultCipherSuites(t *testing.T) {
 	}
 }
 
-// TestGetCipherSuites 确认 GetCipherSuites 与 DefaultCipherSuites 一致。
-func TestGetCipherSuites(t *testing.T) {
-	got := GetCipherSuites()
-	if len(got) != len(DefaultCipherSuites()) {
-		t.Fatalf("GetCipherSuites = %v, want %v", got, DefaultCipherSuites())
-	}
-}
-
-// TestLegacyCipherSuites 验证 legacy 列表包含全部 4 个套件(含 CBC)。
-func TestLegacyCipherSuites(t *testing.T) {
-	suites := LegacyCipherSuites()
-	want := map[uint16]bool{
-		SuiteECDHE_SM2_SM4_GCM_SM3: true,
-		SuiteECDHE_SM2_SM4_CBC_SM3: true,
-		SuiteECC_SM2_SM4_GCM_SM3:   true,
-		SuiteECC_SM2_SM4_CBC_SM3:   true,
-	}
-	if len(suites) != len(want) {
-		t.Fatalf("legacy suites count = %d, want %d", len(suites), len(want))
-	}
-	for _, s := range suites {
-		if !want[s] {
-			t.Errorf("unexpected legacy suite 0x%04X", s)
-		}
-	}
-}
-
 // TestAllCipherSuites 确认 AllCipherSuites 委托 LegacyCipherSuites。
 func TestAllCipherSuites(t *testing.T) {
 	all := AllCipherSuites()
@@ -81,10 +54,10 @@ func TestIsCipherSuite(t *testing.T) {
 
 // TestGetCipherSuiteName 验证套件名称查询。
 func TestGetCipherSuiteName(t *testing.T) {
-	name := GetCipherSuiteName(SuiteECDHE_SM2_SM4_GCM_SM3)
+	name := CipherSuiteName(SuiteECDHE_SM2_SM4_GCM_SM3)
 	if name == "" {
-		t.Fatal("GetCipherSuiteName returned empty for valid TLCP suite")
+		t.Fatal("CipherSuiteName returned empty for valid TLCP suite")
 	}
 	// 未知套件委托给 stdlib tls.CipherSuiteName,不应 panic
-	_ = GetCipherSuiteName(0x0000)
+	_ = CipherSuiteName(0x0000)
 }

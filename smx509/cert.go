@@ -106,8 +106,12 @@ func CreateCertificateRequest(template *x509.CertificateRequest, priv any) ([]by
 // helpers and direct casts were removed).
 //
 // Two cases:
-//   - Signed certificate (Raw populated): round-trip via DER for a faithful,
-//     lossless copy (smx509 parses the same X.509 DER).
+//   - Signed certificate (Raw populated): re-parse the DER via gmsm first
+//     (lossless), falling back to stdlib x509.ParseCertificate + reflection
+//     copy — the same gmsm-then-stdlib dual-backend order as ParseCertificate,
+//     so a DER the fork rejects but stdlib accepts still converts. When both
+//     backends reject the DER the two errors are joined (errors.Join), also
+//     matching ParseCertificate.
 //   - Template (Raw empty, e.g. passed to CreateCertificate before signing):
 //     reflection-based field copy. smx509.Certificate is a superset of the
 //     stdlib layout with the same field names; enum-typed fields
@@ -121,16 +125,31 @@ func CreateCertificateRequest(template *x509.CertificateRequest, priv any) ([]by
 // gmsm upgrade changes the field layout (adds/removes/renames fields, or changes
 // enum backing), re-run the round-trip and CA-chain tests
 // (smx509/ca_chain_test.go) to confirm ToSMX509Certificate /
-// SMX509ToStdCertificate remain lossless for every field a GM certificate uses.
+// ToStdCertificate remain lossless for every field a GM certificate uses.
 func ToSMX509Certificate(cert *x509.Certificate) (*smx509.Certificate, error) {
 	if cert == nil {
 		return nil, nil
 	}
 	if len(cert.Raw) > 0 {
-		return smx509.ParseCertificate(cert.Raw)
+		smCert, err := smx509.ParseCertificate(cert.Raw)
+		if err == nil {
+			return smCert, nil
+		}
+		// gmsm rejected the DER — retry stdlib before failing (dual-backend
+		// parity with ParseCertificate, which parses the same bytes
+		// gmsm-first-stdlib-second). On success, field-copy the stdlib result
+		// into the smx509 type via the same reflection copy as the template
+		// path; Raw and all shared fields carry over.
+		stdCert, stdErr := x509.ParseCertificate(cert.Raw)
+		if stdErr == nil {
+			sm := &smx509.Certificate{}
+			reportCopyDrift(copyCertFields(reflect.ValueOf(stdCert).Elem(), reflect.ValueOf(sm).Elem()))
+			return sm, nil
+		}
+		return nil, fmt.Errorf("smx509: failed to parse certificate from Raw: %w", errors.Join(err, stdErr))
 	}
 	sm := &smx509.Certificate{}
-	copyCertFields(reflect.ValueOf(cert).Elem(), reflect.ValueOf(sm).Elem())
+	reportCopyDrift(copyCertFields(reflect.ValueOf(cert).Elem(), reflect.ValueOf(sm).Elem()))
 	return sm, nil
 }
 
@@ -160,8 +179,25 @@ func toSMX509CertificateRequest(csr *x509.CertificateRequest) (*smx509.Certifica
 		return smx509.ParseCertificateRequest(csr.Raw)
 	}
 	sm := &smx509.CertificateRequest{}
-	copyCertFields(reflect.ValueOf(csr).Elem(), reflect.ValueOf(sm).Elem())
+	reportCopyDrift(copyCertFields(reflect.ValueOf(csr).Elem(), reflect.ValueOf(sm).Elem()))
 	return sm, nil
+}
+
+// CopyFieldDriftHook is an optional, dependency-free diagnostic hook invoked
+// whenever a copyCertFields-based conversion silently skips one or more fields
+// (field absent on the destination side, enum value outside the shared range,
+// or incompatible types). It exists so tests and debugging tooling can observe
+// struct drift between crypto/x509 and the gmsm/smx509 fork; production code
+// leaves it nil (a no-op). The hook must not panic and must not retain the
+// slice. Skips do NOT fail the conversion — they are surfaced only.
+var CopyFieldDriftHook func(skipped []string)
+
+// reportCopyDrift forwards skipped-field diagnostics to CopyFieldDriftHook.
+func reportCopyDrift(skipped []string) {
+	if len(skipped) == 0 || CopyFieldDriftHook == nil {
+		return
+	}
+	CopyFieldDriftHook(skipped)
 }
 
 // copyCertFields copies exported fields by name from src to dst using reflection.
@@ -173,27 +209,35 @@ func toSMX509CertificateRequest(csr *x509.CertificateRequest) (*smx509.Certifica
 // Fields present on only one side, or with non-convertible types, are skipped
 // (they keep their zero value). This mirrors how smx509 is a superset fork of
 // stdlib crypto/x509: shared fields carry over, smx509-only fields stay zero.
-func copyCertFields(src, dst reflect.Value) {
+//
+// Every silent skip is reported: the names of the skipped fields (with a short
+// reason each) are returned so callers can surface drift via CopyFieldDriftHook
+// or assert on it (see toSMX509RevocationList). Nothing is logged and no error
+// is returned — skipping is part of the normal conversion contract.
+func copyCertFields(src, dst reflect.Value) (skipped []string) {
 	srcType := src.Type()
-	for i := 0; i < srcType.NumField(); i++ {
+	// intrange cannot auto-fix: NumField() is a method call it must not
+	// re-evaluate per iteration, so the classic loop stays.
+	for i := 0; i < srcType.NumField(); i++ { //nolint:intrange // bound is a method call; a range-int form would be identical
+
 		srcField := srcType.Field(i)
 		if !srcField.IsExported() {
 			continue
 		}
 		dstField := dst.FieldByName(srcField.Name)
 		if !dstField.IsValid() {
-			continue // field absent on destination (smx509-only or stdlib-only)
+			skipped = append(skipped, srcField.Name+" (absent on destination)")
+			continue
 		}
 		srcVal := src.Field(i)
 		// 枚举字段禁止盲数值转换：stdlib 与 smx509 fork 的枚举仅在共享前缀
-		// （到 PureEd25519 / Ed25519 / KernelCodeSigning）内数值一致，尾部
-		// 各自独立扩展（fork 的 SM2WithSM3=18 与 Go 1.27 的 MLDSA44=18 冲突，
-		// fork 的 PKMLDSA44=5 与 stdlib 的 MLDSA=5 冲突）。按守卫映射处理。
-		if mapped, handled := mapEnumField(srcField.Name, srcVal, dstField); handled {
-			if mapped {
-				continue
+		// （到 PureEd25519 / Ed25519 / MicrosoftKernelCodeSigning）内数值一致，
+		// 尾部各自独立扩展（fork 的 SM2WithSM3=17 与 Go stdlib 的 MLDSA44=17
+		// 冲突，fork 的 PKMLDSA44=5 与 stdlib 的 MLDSA=5 冲突）。按守卫映射处理。
+		if handled, dropReason := mapEnumField(srcField.Name, srcVal, dstField); handled {
+			if dropReason != "" {
+				skipped = append(skipped, dropReason)
 			}
-			// handled 但未映射（类型形态不符）：跳过，保持零值
 			continue
 		}
 		if srcVal.Type() == dstField.Type() {
@@ -204,25 +248,28 @@ func copyCertFields(src, dst reflect.Value) {
 			dstField.Set(srcVal.Convert(dstField.Type()))
 			continue
 		}
-		// Slice/array with element-wise convertible types (e.g. []x509.ExtKeyUsage
-		// <-> []smx509.ExtKeyUsage): Go won't convert the slice types directly,
-		// so rebuild element by element. This is the case that matters for the
-		// enum-typed slices (ExtKeyUsage) shared between stdlib and smx509.
-		// Guard the dst kind + Elem() call: dstField.Type().Elem() panics if the
-		// destination is not Array/Chan/Map/Ptr/Slice (a cross-fork field-type
-		// drift would surface as a panic here without the kind check).
+		// Slice/array with element-wise convertible types (e.g. struct slices
+		// like []x509.RevocationListEntry <-> []smx509.RevocationListEntry):
+		// Go won't convert the slice types directly, so rebuild element by
+		// element. Guard the dst kind + Elem() call: dstField.Type().Elem()
+		// panics if the destination is not Array/Chan/Map/Ptr/Slice (a
+		// cross-fork field-type drift would surface as a panic here without
+		// the kind check).
 		if (srcVal.Kind() == reflect.Slice || srcVal.Kind() == reflect.Array) &&
 			(dstField.Kind() == reflect.Slice || dstField.Kind() == reflect.Array) &&
 			srcVal.Type().Elem().ConvertibleTo(dstField.Type().Elem()) {
 			n := srcVal.Len()
 			out := reflect.MakeSlice(dstField.Type(), n, n)
-			for j := 0; j < n; j++ {
+			for j := range n {
 				out.Index(j).Set(srcVal.Index(j).Convert(dstField.Type().Elem()))
 			}
 			dstField.Set(out)
+			continue
 		}
-		// else: incompatible types (e.g. []OID with different OID structs) — skip.
+		skipped = append(skipped, fmt.Sprintf("%s (%s -> %s not convertible)",
+			srcField.Name, srcVal.Type(), dstField.Type()))
 	}
+	return skipped
 }
 
 // ParseCertificate parses a DER-encoded certificate.
@@ -247,7 +294,7 @@ func copyCertFields(src, dst reflect.Value) {
 func ParseCertificate(der []byte) (*x509.Certificate, error) {
 	smCert, smErr := smx509.ParseCertificate(der)
 	if smErr == nil {
-		return SMX509ToStdCertificate(smCert)
+		return ToStdCertificate(smCert)
 	}
 	stdCert, stdErr := x509.ParseCertificate(der)
 	if stdErr == nil {
@@ -260,29 +307,29 @@ func ParseCertificate(der []byte) (*x509.Certificate, error) {
 	return nil, fmt.Errorf("smx509: failed to parse certificate: %w", errors.Join(smErr, stdErr))
 }
 
-// SMX509ToStdCertificate converts a gmsm *smx509.Certificate to a stdlib
+// ToStdCertificate converts a gmsm *smx509.Certificate to a stdlib
 // *x509.Certificate via reflection-based field copy (see copyCertFields).
 // This replaces the ToX509() bridge removed in gmsm v0.44. The Raw DER is
 // preserved, so callers that re-marshal (e.g. x509.MarshalX509) get identical
 // bytes. SM2 public keys survive as *ecdsa.PublicKey in the any-typed PublicKey
 // field — stdlib never needs to re-parse the curve.
-func SMX509ToStdCertificate(smCert *smx509.Certificate) (*x509.Certificate, error) {
+func ToStdCertificate(smCert *smx509.Certificate) (*x509.Certificate, error) {
 	if smCert == nil {
 		return nil, nil
 	}
 	std := &x509.Certificate{}
-	copyCertFields(reflect.ValueOf(smCert).Elem(), reflect.ValueOf(std).Elem())
+	reportCopyDrift(copyCertFields(reflect.ValueOf(smCert).Elem(), reflect.ValueOf(std).Elem()))
 	return std, nil
 }
 
-// SMX509ToStdCertificates converts a slice of gmsm *smx509.Certificate to
-// []*x509.Certificate (batch form of SMX509ToStdCertificate). A nil/empty input
+// ToStdCertificates converts a slice of gmsm *smx509.Certificate to
+// []*x509.Certificate (batch form of ToStdCertificate). A nil/empty input
 // returns an empty (non-nil) slice. On error, the index of the failing cert is
 // wrapped into the returned error.
-func SMX509ToStdCertificates(certs []*smx509.Certificate) ([]*x509.Certificate, error) {
+func ToStdCertificates(certs []*smx509.Certificate) ([]*x509.Certificate, error) {
 	out := make([]*x509.Certificate, len(certs))
 	for i, c := range certs {
-		std, err := SMX509ToStdCertificate(c)
+		std, err := ToStdCertificate(c)
 		if err != nil {
 			return nil, fmt.Errorf("convert certificate[%d]: %w", i, err)
 		}
@@ -320,7 +367,7 @@ func ParseCertificateRequest(der []byte) (*x509.CertificateRequest, error) {
 	smCSR, smErr := smx509.ParseCertificateRequest(der)
 	if smErr == nil {
 		std := &x509.CertificateRequest{}
-		copyCertFields(reflect.ValueOf(smCSR).Elem(), reflect.ValueOf(std).Elem())
+		reportCopyDrift(copyCertFields(reflect.ValueOf(smCSR).Elem(), reflect.ValueOf(std).Elem()))
 		return std, nil
 	}
 	stdCSR, stdErr := x509.ParseCertificateRequest(der)
@@ -483,7 +530,7 @@ func DecryptPEMPrivateKeyDER(pemData []byte, password string) ([]byte, error) {
 
 func decryptPEMBlock(block *pem.Block, password []byte) ([]byte, error) {
 	switch block.Type {
-	case "ENCRYPTED PRIVATE KEY":
+	case pemTypeEncryptedPrivateKey:
 		der, err := decryptPKCS8(block.Bytes, password)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt PKCS#8 private key failed: %w", err)
@@ -500,7 +547,7 @@ func decryptPEMBlock(block *pem.Block, password []byte) ([]byte, error) {
 }
 
 func isPEMEncrypted(block *pem.Block) bool {
-	if block.Type == "ENCRYPTED PRIVATE KEY" {
+	if block.Type == pemTypeEncryptedPrivateKey {
 		return true
 	}
 	return strings.Contains(block.Headers["Proc-Type"], "ENCRYPTED")
@@ -516,7 +563,7 @@ func detectKeyType(der []byte) string {
 	if _, err := ParseECPrivateKey(der); err == nil {
 		return "EC PRIVATE KEY"
 	}
-	return "PRIVATE KEY"
+	return pemTypePrivateKey
 }
 
 // --- PKCS#8 encrypted key decryption (PBES2) ---
@@ -900,50 +947,98 @@ func evpBytesToKey(password, salt []byte, keyLen int) []byte {
 // 两个包的 SignatureAlgorithm / PublicKeyAlgorithm / ExtKeyUsage 均为
 // int-backed 枚举，共享前缀数值一致，尾部各自独立扩展：
 //
-//	SignatureAlgorithm  共享 0..PureEd25519(17)；fork 扩展 SM2WithSM3=18，
-//	                    Go 1.27 stdlib 新增 MLDSA44/65/87=18/19/20
-//	PublicKeyAlgorithm  共享 0..Ed25519(4)；fork 扩展 PKMLDSA44=5...，
-//	                    Go 1.27 stdlib 新增 MLDSA=5
-//	ExtKeyUsage         当前两侧一致（0..MicrosoftKernelCodeSigning），
-//	                    守卫以防未来单侧扩展
+//	SignatureAlgorithm  共享 0..PureEd25519(16)；fork 扩展 SM2WithSM3=17，
+//	                    MLDSA44/65/87=18/19/20；Go stdlib(1.27) 的
+//	                    MLDSA44/65/87=17/18/19 —— SM2WithSM3 与 MLDSA44 在
+//	                    17 处数值相撞，共享区必须在 16 截止
+//	PublicKeyAlgorithm  共享 0..Ed25519(4)；fork 扩展 SM2=4 后的
+//	                    PKMLDSA44=5...，Go stdlib 的 MLDSA=5 —— 在 5 处相撞，
+//	                    共享区在 4 截止
+//	ExtKeyUsage         当前两侧一致（0..MicrosoftKernelCodeSigning(13)），
+//	                    逐元素守卫以防未来单侧扩展
 //
-// 盲数值转换会让 fork 的 18 被 stdlib 解读为 MLDSA44（反之亦然），
+// 盲数值转换会让 fork 的 17 被 stdlib 解读为 MLDSA44（反之亦然），
 // 引发 "signature algorithm specifies an ML-DSA public key, but have
 // public key of type *ecdsa.PublicKey" 类错误。此处仅放行共享前缀内的
 // 数值，前缀外的值一律降级为 Unknown（语义诚实：对侧无法表达该算法），
 // KeyUsage 为位掩码（位语义两侧一致），无需守卫。
 //
+// 返回语义：handled=false 表示该字段不是枚举守卫字段，交回通用拷贝路径；
+// handled=true 表示已独占处理（无论成败），通用路径不得再碰枚举字段——
+// 尤其是类型形态不符（fork 结构漂移）时也 fail-closed 保持零值，绝不让
+// 枚举字段落入通用 ConvertibleTo 数值盲转换。dropReason 非空描述被丢弃/
+// 降级的字段及原因，由 copyCertFields 汇入 skipped。
+//
 // 维护约定：Go stdlib 与 gmsm 的枚举均为尾部追加式演进，共享前缀不会
 // 变化；若任一侧在共享前缀内插入新值（理论上不会），此映射需要同步。
-func mapEnumField(name string, srcVal, dstField reflect.Value) (mapped, handled bool) {
-	kindOk := func(v reflect.Value) bool {
+//
+// maxSharedExtKeyUsage 是两侧 ExtKeyUsage 枚举共享前缀的上限
+// （MicrosoftKernelCodeSigning）。verify.go 的 ExtKeyUsage 转换共用此常量。
+const maxSharedExtKeyUsage = 13
+
+func mapEnumField(name string, srcVal, dstField reflect.Value) (handled bool, dropReason string) {
+	intKind := func(v reflect.Value) bool {
 		return v.Kind() == reflect.Int || v.Kind() == reflect.Int64
 	}
 	switch name {
 	case "SignatureAlgorithm":
-		if !kindOk(srcVal) || !kindOk(dstField) {
-			return false, false
+		if !intKind(srcVal) || !intKind(dstField) {
+			return true, name + " (enum kind drift; kept zero value)"
 		}
 		const sharedMax = 16 // PureEd25519（两侧同值同义；fork 的 SM2WithSM3=17
-		// 与 Go 1.27 stdlib 的 MLDSA44=17 数值相撞，必须排除在共享区之外）
+		// 与 stdlib 的 MLDSA44=17 数值相撞，必须排除在共享区之外）
 		v := srcVal.Int()
 		if v < 0 || v > sharedMax {
-			v = 0 // UnknownSignatureAlgorithm
+			reason := fmt.Sprintf("%s=%d (outside shared range 0..%d; downgraded to Unknown)",
+				name, v, sharedMax)
+			return true, reason
 		}
 		dstField.SetInt(v)
-		return true, true
+		return true, ""
 	case "PublicKeyAlgorithm":
-		if !kindOk(srcVal) || !kindOk(dstField) {
-			return false, false
+		if !intKind(srcVal) || !intKind(dstField) {
+			return true, name + " (enum kind drift; kept zero value)"
 		}
 		const sharedMax = 4 // Ed25519（两侧同值同义）
 		v := srcVal.Int()
 		if v < 0 || v > sharedMax {
-			v = 0 // UnknownPublicKeyAlgorithm
+			reason := fmt.Sprintf("%s=%d (outside shared range 0..%d; downgraded to Unknown)",
+				name, v, sharedMax)
+			return true, reason
 		}
 		dstField.SetInt(v)
-		return true, true
+		return true, ""
+	case "ExtKeyUsage":
+		// 形态守卫：两侧均为 int-backed 元素的切片。形态不符（结构漂移）
+		// 时 fail-closed 保持零值，不落入通用逐元素转换。
+		intType := func(t reflect.Type) bool {
+			return t.Kind() == reflect.Int || t.Kind() == reflect.Int64
+		}
+		if srcVal.Kind() != reflect.Slice || dstField.Kind() != reflect.Slice ||
+			!intType(srcVal.Type().Elem()) || !intType(dstField.Type().Elem()) {
+			return true, name + " (enum slice kind drift; kept zero value)"
+		}
+		n := srcVal.Len()
+		if srcVal.IsNil() {
+			return true, "" // nil 切片原样保留（dst 保持零值 nil）
+		}
+		out := reflect.MakeSlice(dstField.Type(), 0, n)
+		for j := range n {
+			ev := srcVal.Index(j).Int()
+			// 超出共享前缀（0..MicrosoftKernelCodeSigning）的值对侧无法
+			// 表达：丢弃该元素并记入 dropReason。丢弃使证书声明的用途
+			// 变少（更收紧），不是放宽。注意不能降级为 ExtKeyUsageAny(0)
+			// —— 那会把"未知用途"放大成"任意用途"，属 fail-open。
+			if ev < 0 || ev > maxSharedExtKeyUsage {
+				dropReason += fmt.Sprintf("%s[%d]=%d (outside shared range 0..%d; dropped)",
+					name, j, ev, maxSharedExtKeyUsage)
+				continue
+			}
+			out = reflect.Append(out, reflect.ValueOf(ev).Convert(dstField.Type().Elem()))
+		}
+		dstField.Set(out)
+		return true, dropReason
 	default:
-		return false, false
+		return false, ""
 	}
 }

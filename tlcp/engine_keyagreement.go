@@ -28,12 +28,6 @@ import (
 
 const tlcpPreMasterSecretLength = 48
 
-// tlcpECCKeyExchange implements the ECC key-agreement role for one side of the
-// handshake. It holds no persistent state between the two client-side methods
-// (processServerKeyExchange / generateClientKeyExchange) beyond the random
-// source, which is supplied by the handshake state.
-type tlcpECCKeyExchange struct{}
-
 // --- Client side ---
 
 // tlcpECCProcessServerKeyExchange verifies the server's signed_params: the
@@ -301,7 +295,7 @@ func tlcpECDHEServerGenerateSKE(sigType tlcpSigType, signer crypto.Signer, encPr
 	if err != nil {
 		return nil, nil, err
 	}
-	sponsorEph, err := generateECDHEKey(randReader)
+	sponsorEph, err := generateECDHEKey(rand.Reader)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -311,7 +305,7 @@ func tlcpECDHEServerGenerateSKE(sigType tlcpSigType, signer crypto.Signer, encPr
 	}
 	// Signature over client_random || server_random || ECDHEParams.
 	tbs := tlcpECDHESignedParams(clientRandom, serverRandom, params)
-	sig, err := tlcpSignHandshake(randReader, sigType, signer, tbs)
+	sig, err := tlcpSignHandshake(rand.Reader, sigType, signer, tbs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -408,7 +402,7 @@ func tlcpECDHEClientGenerateCKE(state *tlcpECDHEClientState, clientEncPriv crypt
 	if err != nil {
 		return nil, nil, err
 	}
-	responderEph, err := generateECDHEKey(randReader)
+	responderEph, err := generateECDHEKey(rand.Reader)
 	if err != nil {
 		return nil, nil, err
 	}

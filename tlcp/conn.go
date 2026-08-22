@@ -181,11 +181,13 @@ func (c *Conn) ConnectionState() ConnectionState {
 	}
 	es := c.inner.ConnectionState()
 	result := ConnectionState{
-		Version:           es.Version,
-		HandshakeComplete: es.HandshakeComplete,
-		CipherSuite:       es.CipherSuite,
-		ServerName:        es.ServerName,
-		PeerCertificates:  es.PeerCertificates,
+		Version:            es.Version,
+		HandshakeComplete:  es.HandshakeComplete,
+		CipherSuite:        es.CipherSuite,
+		ServerName:         es.ServerName,
+		PeerCertificates:   es.PeerCertificates,
+		DidResume:          es.DidResume,
+		NegotiatedProtocol: es.NegotiatedProtocol,
 	}
 	// TLCP convention: [0]=signing, [1]=encryption.
 	// Defensively validate certificate count before indexing.

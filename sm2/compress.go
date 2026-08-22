@@ -49,13 +49,13 @@ func MarshalUncompressed(pub *ecdsa.PublicKey) []byte {
 	if pub == nil {
 		return nil
 	}
-	return elliptic.Marshal(P256(), pub.X, pub.Y) //nolint:staticcheck
+	return elliptic.Marshal(P256(), pub.X, pub.Y)
 }
 
 // UnmarshalUncompressed parses SM2 public key from uncompressed format.
 func UnmarshalUncompressed(data []byte) (*ecdsa.PublicKey, error) {
 	curve := P256()
-	x, y := elliptic.Unmarshal(curve, data) //nolint:staticcheck
+	x, y := elliptic.Unmarshal(curve, data)
 	if x == nil {
 		return nil, errInvalidCompressedKey
 	}

@@ -90,9 +90,8 @@ func TestBuildKRL_DiscontinuousUsesList(t *testing.T) {
 	if _, off = rdString(krl, off); off == 0 {
 		t.Fatal("reserved")
 	}
-	if c, off2 := rdString(krl, off); string(c) != "pollux-go SSH KRL" {
+	if c, _ := rdString(krl, off); string(c) != "pollux-go SSH KRL" {
 		t.Fatalf("默认 comment: %q", c)
-		_ = off2
 	}
 	off += 4 + len("pollux-go SSH KRL")
 	off++ // section tag

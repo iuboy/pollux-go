@@ -61,7 +61,7 @@ func KeyWrap(kek, plaintextKey []byte) ([]byte, error) {
 		}
 	}()
 
-	for j := 0; j <= 5; j++ {
+	for j := range 6 {
 		for i := 1; i <= n; i++ {
 			// B = AES(KEK, A || R[i])
 			var input [16]byte

@@ -36,6 +36,11 @@ type ticketKeyRotator struct {
 // silently replaced: in a multi-replica deployment every replica must derive
 // the same TEK from the same seed, so quietly substituting a random key on a
 // short seed would make tickets issued by one replica undecryptable by another.
+// rotationPeriod is production-constant (defaultTicketKeyRotation) but kept
+// parameterized: pskstore_test.go exercises the rotation window with varying
+// periods, and a future ServerConfig field can expose it without churn.
+//
+//nolint:unparam // see above
 func newTicketKeyRotator(seed []byte, rotationPeriod time.Duration) (*ticketKeyRotator, error) {
 	if rotationPeriod <= 0 {
 		return nil, errors.New("quicgm: ticket-key rotation period must be positive")

@@ -6,15 +6,6 @@ import (
 	"testing"
 )
 
-// roundTripMsg marshals m, unmarshals into a fresh zero value via the provided
-// closure, and reports whether the fields match the original. The comparison
-// closure returns true if equal.
-type tlcpMsgRoundTrip[T any] struct {
-	name      string
-	marshal   func(m *T) ([]byte, error)
-	unmarshal func(out *T, data []byte) bool
-}
-
 // --- ClientHello ---
 
 func TestTLCPMsg_ClientHello_RoundTrip(t *testing.T) {

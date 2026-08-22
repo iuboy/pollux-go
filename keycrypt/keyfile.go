@@ -43,6 +43,10 @@ var ErrPlaintextKeyRejected = errors.New("拒绝加载明文私钥（安全策�
 //
 // password 为空返回 ErrPasswordRequired（破坏性：不允许明文落盘）。
 // 支持 SM2/ECDSA(所有曲线)/RSA/Ed25519（pkcs8.MarshalPrivateKey 通过标准 PKCS#8 编码）。
+//
+// 安全局限：password 以 Go string 传入，string 不可变且无法可靠清零，口令的
+// string 副本会存活至 GC；[]byte 副本已 best-effort 清零。高安全场景请从受控
+// 缓冲区构造口令并接受此残留风险。
 func MarshalEncryptedPrivateKey(key crypto.Signer, password string) ([]byte, error) {
 	if password == "" {
 		return nil, ErrPasswordRequired
@@ -62,7 +66,11 @@ func MarshalEncryptedPrivateKey(key crypto.Signer, password string) ([]byte, err
 //
 // password 为空返回 ErrPasswordRequired。
 // 若 PEM 为明文（类型不是 ENCRYPTED PRIVATE KEY），返回 ErrPlaintextKeyRejected（破坏性）。
-// 返回解密后的原始私钥 DER 字节，由调用方根据算法（SM2/ECDSA/RSA/Ed25519）解析。
+// 返回解密后的原始私钥 DER，由调用方根据算法（SM2/ECDSA/RSA/Ed25519）解析。
+//
+// 安全局限：与 MarshalEncryptedPrivateKey 相同——password 的 string 副本
+// 不可变且无法可靠清零，会存活至 GC。高安全场景请从受控缓冲区构造口令并
+// 接受此残留风险。
 func LoadEncryptedPrivateKey(pemData []byte, password string) ([]byte, error) {
 	if password == "" {
 		return nil, ErrPasswordRequired

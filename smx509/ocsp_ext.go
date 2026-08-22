@@ -109,7 +109,7 @@ func CreateOCSPResponseExt(issuer, responderCert *x509.Certificate, p *OCSPRespo
 		PublicKey asn1.BitString
 	}
 	if _, err := asn1.Unmarshal(issuer.RawSubjectPublicKeyInfo, &publicKeyInfo); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("smx509: parse issuer SubjectPublicKeyInfo: %w", err)
 	}
 
 	issuerHash := p.IssuerHash

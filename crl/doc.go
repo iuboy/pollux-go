@@ -6,7 +6,7 @@
 //
 //   - [Authority] supplies the revoked-certificate list, the issuer chain and
 //     the signing key (an application implements it over its own storage).
-//   - [CRLCache] caches the generated CRL ([NewMemoryCRLCache] provides an
+//   - [Cache] caches the generated CRL ([NewMemoryCache] provides an
 //     in-process implementation).
 //   - [NumberSource] supplies monotonically increasing CRL numbers across
 //     restarts (RFC 5280 §5.2.3); without one the generator falls back to an

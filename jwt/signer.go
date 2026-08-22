@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"errors"
 	"fmt"
 	"reflect"
@@ -53,9 +54,26 @@ type hmacSignerVerifier struct {
 	zeroized bool
 }
 
+// cloneSecret returns a copy of secret owned by the signer. The HMAC
+// constructors deliberately do NOT retain the caller's slice: sharing the
+// backing array would make Zeroize destructively clear the caller's buffer,
+// and would let a caller who reuses the buffer flip the signer's key
+// underneath it, silently signing with the wrong secret.
+func cloneSecret(secret []byte) []byte {
+	c := make([]byte, len(secret))
+	copy(c, secret)
+	return c
+}
+
 // NewHS256 constructs an HS256 SignerVerifier backed by the given symmetric
 // secret. issuer is recorded for the verifier's iss enforcement if the
 // caller wires one via jwt.WithIssuer at parse time.
+//
+// The secret is deep-copied into a buffer owned by the returned signer:
+// [hmacSignerVerifier.Zeroize] clears only that private copy, and later
+// mutations of the caller's slice (including reuse of its backing array) do
+// not affect the signer. The caller's original buffer remains the caller's
+// responsibility to zero.
 //
 // Returns [ErrInvalidKeySize] if secret is shorter than 32 bytes (256 bits),
 // the minimum key length for HMAC-SHA-256 to reach its full security strength
@@ -67,12 +85,13 @@ func NewHS256(secret []byte, issuer string) (SignerVerifier, error) {
 	return &hmacSignerVerifier{
 		method: jwt.SigningMethodHS256,
 		algo:   AlgHS256,
-		secret: secret,
+		secret: cloneSecret(secret),
 		issuer: issuer,
 	}, nil
 }
 
-// NewHS512 constructs an HS512 SignerVerifier. See [NewHS256].
+// NewHS512 constructs an HS512 SignerVerifier. See [NewHS256] — including
+// the deep-copy ownership of the secret.
 //
 // Returns [ErrInvalidKeySize] if secret is shorter than 64 bytes (512 bits).
 func NewHS512(secret []byte, issuer string) (SignerVerifier, error) {
@@ -82,7 +101,7 @@ func NewHS512(secret []byte, issuer string) (SignerVerifier, error) {
 	return &hmacSignerVerifier{
 		method: jwt.SigningMethodHS512,
 		algo:   AlgHS512,
-		secret: secret,
+		secret: cloneSecret(secret),
 		issuer: issuer,
 	}, nil
 }
@@ -99,7 +118,7 @@ func checkClaimsPtr(v Claims) error {
 		return errors.New("jwt: Verify requires a non-nil Claims pointer")
 	}
 	switch reflect.ValueOf(v).Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if reflect.ValueOf(v).IsNil() {
 			return errors.New("jwt: Verify requires a non-nil Claims pointer")
 		}
@@ -111,10 +130,13 @@ func checkClaimsPtr(v Claims) error {
 	}
 }
 
-// Zeroize securely clears the HMAC secret held by the SignerVerifier. Callers
-// should invoke it (typically via defer) once the SignerVerifier is no longer
-// needed, to keep the secret's lifetime bounded — consistent with the
-// ZeroKey/ZeroNonce helpers in the aes and sm4 packages.
+// Zeroize securely clears the HMAC secret held by the SignerVerifier. It
+// clears only the signer's private copy made at construction (see
+// [NewHS256]/[NewHS512]); the caller's original buffer is untouched and
+// remains the caller's responsibility. Callers should invoke Zeroize
+// (typically via defer) once the SignerVerifier is no longer needed, to keep
+// the secret's lifetime bounded — consistent with the ZeroKey/ZeroNonce
+// helpers in the aes and sm4 packages.
 func (h *hmacSignerVerifier) Zeroize() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -201,6 +223,34 @@ type sm2SignerVerifier struct {
 	zeroized bool
 }
 
+// ErrInvalidSM2Curve is returned by [NewSM2SM3] when a supplied key is not on
+// the SM2 P-256 curve. Signing/verifying with, say, a stdlib P-256 key would
+// produce tokens that can never interoperate, so it is rejected fail-fast at
+// construction instead of failing per-Sign/Verify.
+var ErrInvalidSM2Curve = errors.New("jwt/sm2sm3: key is not on the SM2 P-256 curve")
+
+// isSM2Curve reports whether c is the SM2 P-256 curve. The comparison matches
+// by named curve parameters (P/N/B/Gx/Gy) rather than interface equality:
+// gmsm and stdlib may expose distinct *elliptic.CurveParams-backed instances
+// for the same curve, so == on the Curve interface is unreliable. This
+// mirrors the comparison in https.DetectMode, kept local to avoid an import
+// cycle on the https package.
+func isSM2Curve(c elliptic.Curve) bool {
+	want := sm2.P256().Params()
+	if c == nil || want == nil {
+		return false
+	}
+	got := c.Params()
+	if got == nil {
+		return false
+	}
+	return got.P.Cmp(want.P) == 0 &&
+		got.N.Cmp(want.N) == 0 &&
+		got.B.Cmp(want.B) == 0 &&
+		got.Gx.Cmp(want.Gx) == 0 &&
+		got.Gy.Cmp(want.Gy) == 0
+}
+
 // NewSM2SM3 constructs an SM2-SM3 SignerVerifier.
 //
 // For signing, priv MUST be non-nil. For verifying, pub MUST be non-nil.
@@ -209,11 +259,26 @@ type sm2SignerVerifier struct {
 // only pub set is verify-only (a resource service validating tokens issued
 // by a central auth service).
 //
-// Both keys MUST be on the SM2 P-256 curve. Use [github.com/iuboy/pollux-go/sm2]
-// helpers (GenerateKey, PEM loaders) to obtain them.
+// Both keys MUST be on the SM2 P-256 curve; keys on any other curve (or a
+// nil curve) are rejected with [ErrInvalidSM2Curve]. Use
+// [github.com/iuboy/pollux-go/sm2] helpers (GenerateKey, PEM loaders) to
+// obtain them.
+//
+// Unlike the HMAC constructors, the signer ALIASES (does not copy) the
+// caller's key pointers: an EC scalar cannot be securely copied-and-cleared
+// anyway (big.Int hides its backing words, see Zeroize), and duplicating it
+// would only multiply non-clearable copies of the secret. Callers must
+// therefore not zero or otherwise mutate the passed keys while the
+// SignerVerifier is still live.
 func NewSM2SM3(priv *sm2.PrivateKey, pub *ecdsa.PublicKey, issuer string) (SignerVerifier, error) {
 	if priv == nil && pub == nil {
 		return nil, errors.New("jwt: NewSM2SM3 requires at least one of priv/pub")
+	}
+	if priv != nil && !isSM2Curve(priv.Curve) {
+		return nil, fmt.Errorf("%w: private key curve", ErrInvalidSM2Curve)
+	}
+	if pub != nil && !isSM2Curve(pub.Curve) {
+		return nil, fmt.Errorf("%w: public key curve", ErrInvalidSM2Curve)
 	}
 	return &sm2SignerVerifier{algo: AlgSM2SM3, priv: priv, pub: pub, issuer: issuer}, nil
 }
@@ -299,22 +364,43 @@ func (s *sm2SignerVerifier) Zeroize() {
 	s.zeroized = true
 }
 
+// ErrInvalidTTL is returned by [IssueWithExpiry] when ttl is zero or
+// negative: such a token would be expired (or expire the instant it is
+// issued) and a zero-ttl token would render ExpiresAt meaningless under
+// golang-jwt's WithExpirationRequired check.
+var ErrInvalidTTL = errors.New("jwt: ttl must be positive")
+
+// nbfLeeway is the amount IssueWithExpiry backdates the NotBefore claim to
+// tolerate clock skew between the issuing host and verifying hosts. A
+// verifier whose clock runs a few seconds behind the issuer would otherwise
+// reject a freshly issued token as "not yet valid". 30s matches the leeway
+// golang-jwt documents for jwt.WithLeeway; backdating at issuance is chosen
+// over per-verifier leeway so verifiers need no extra configuration.
+const nbfLeeway = 30 * time.Second
+
 // IssueWithExpiry is a convenience helper that builds standard
 // RegisteredClaims with sub, issuer, and an expiry offset, then signs with sv.
 // Returned for callers that want a one-shot issue API without constructing
 // claims manually.
 //
+// NotBefore is backdated by nbfLeeway (see its doc); ExpiresAt is now+ttl.
+//
 // Note: the issuer argument here populates the token's iss claim directly; it
 // is independent of any issuer stored on sv at construction. Callers that
 // later validate with jwt.WithIssuer MUST pass the same issuer to both sites,
 // or verification will reject the token.
+//
+// Returns [ErrInvalidTTL] if ttl <= 0.
 func IssueWithExpiry(sv Signer, subject, issuer string, ttl time.Duration) (string, error) {
+	if ttl <= 0 {
+		return "", fmt.Errorf("%w: got %v", ErrInvalidTTL, ttl)
+	}
 	now := time.Now()
 	claims := jwt.RegisteredClaims{
 		Subject:   subject,
 		Issuer:    issuer,
 		IssuedAt:  jwt.NewNumericDate(now),
-		NotBefore: jwt.NewNumericDate(now),
+		NotBefore: jwt.NewNumericDate(now.Add(-nbfLeeway)),
 		ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 	}
 	return sv.Sign(&claims)

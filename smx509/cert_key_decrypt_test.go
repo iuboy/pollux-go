@@ -48,7 +48,7 @@ func TestDecryptPEMPrivateKey_RSAPKCSEncrypted(t *testing.T) {
 	password := []byte("test-password")
 	der := x509.MarshalPKCS1PrivateKey(key)
 
-	encBlock, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY", der, password, x509.PEMCipherAES256) //nolint:staticcheck
+	encBlock, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY", der, password, x509.PEMCipherAES256)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestDecryptPEMPrivateKey_ECPKCSEncrypted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	encBlock, err := x509.EncryptPEMBlock(rand.Reader, "EC PRIVATE KEY", der, password, x509.PEMCipherAES256) //nolint:staticcheck
+	encBlock, err := x509.EncryptPEMBlock(rand.Reader, "EC PRIVATE KEY", der, password, x509.PEMCipherAES256)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestDecryptPEMPrivateKey_WrongPassword(t *testing.T) {
 	}
 
 	der := x509.MarshalPKCS1PrivateKey(key)
-	encBlock, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY", der, []byte("correct"), x509.PEMCipherAES256) //nolint:staticcheck
+	encBlock, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY", der, []byte("correct"), x509.PEMCipherAES256)
 	if err != nil {
 		t.Fatal(err)
 	}

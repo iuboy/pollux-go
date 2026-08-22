@@ -133,8 +133,12 @@ func newTLCPFinishedHash() *tlcpFinishedHash {
 	return &tlcpFinishedHash{msgHash: polluxSM3.New()}
 }
 
-func (h *tlcpFinishedHash) Write(msg []byte) (int, error) {
-	return h.msgHash.Write(msg)
+// Write feeds msg into the transcript hash. It returns nothing: the
+// underlying hash.Hash never returns a non-nil error (and callers could not
+// act on one mid-handshake anyway), so the write is unchecked by design.
+func (h *tlcpFinishedHash) Write(msg []byte) {
+	// hash.Hash.Write never returns a non-nil error.
+	h.msgHash.Write(msg)
 }
 
 // sum returns the current handshake transcript hash.

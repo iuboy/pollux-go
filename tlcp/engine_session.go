@@ -16,16 +16,20 @@ import (
 //
 // Reference: gotlcp/tlcp/session.go (logic consulted, independently written).
 
-// tlcpSessionState captures the resumption material from a full handshake.
+// SessionState captures the resumption material from a full handshake.
 // masterSecret is stored as a copy; the cache zeroes it on eviction.
 //
-// Concurrency note: tlcpLRUSessionCache.Get returns a *shallow copy* of the
+// The fields are intentionally unexported (mirroring crypto/tls
+// ClientSessionState): callers pass SessionState values through the
+// [SessionCache] and must not inspect or forge resumption material.
+//
+// Concurrency note: lruSessionCache.Get returns a *shallow copy* of the
 // cached state (independent slice headers for masterSecret/peerCertificates),
 // so a caller reading the returned state cannot race with a concurrent Put
 // that zeroes the cached masterSecret on eviction. The copy is made under the
 // cache lock; callers receive an independent object they own for the duration
 // of the handshake.
-type tlcpSessionState struct {
+type SessionState struct {
 	sessionID        []byte
 	version          uint16
 	cipherSuite      uint16
@@ -34,14 +38,26 @@ type tlcpSessionState struct {
 	createdAt        time.Time
 }
 
+// sessionLifetime bounds how long a cached session may be resumed. TLCP
+// resumption skips certificate verification, so a long window extends the
+// blast radius of a compromised master secret; 24h mirrors conservative TLS
+// 1.2 session-ticket deployments (RFC 5077 caps at 7 days).
+const sessionLifetime = 24 * time.Hour
+
+// sessionFresh reports whether a cached session is still resumable. Expired
+// sessions are ignored (never resumed) by both endpoints.
+func sessionFresh(s *SessionState) bool {
+	return s != nil && time.Since(s.createdAt) <= sessionLifetime
+}
+
 // clone returns a deep-enough copy of the state for safe handoff to a caller
 // that may outlive the cache entry. masterSecret and peerCertificates get
 // fresh backing arrays; scalar fields copy by value.
-func (s *tlcpSessionState) clone() *tlcpSessionState {
+func (s *SessionState) clone() *SessionState {
 	if s == nil {
 		return nil
 	}
-	out := &tlcpSessionState{
+	out := &SessionState{
 		version:     s.version,
 		cipherSuite: s.cipherSuite,
 		createdAt:   s.createdAt,
@@ -57,71 +73,66 @@ func (s *tlcpSessionState) clone() *tlcpSessionState {
 	return out
 }
 
-// tlcpSessionCache is the contract for a session store. Implementations must be
-// safe for concurrent use. A Get with the empty key returns the most-recently
-// used session (LRU front); Put with a nil state deletes the entry.
-type tlcpSessionCache interface {
-	Get(sessionKey string) (*tlcpSessionState, bool)
-	Put(sessionKey string, cs *tlcpSessionState)
+// SessionCache is the contract for a TLCP session store used for connection
+// resumption (GB/T 38636-2020 §6.4.5.2.1). Wire it into [Config.SessionCache]
+// to enable resumption. Implementations must be safe for concurrent use.
+// Put with a nil state deletes the entry. Entries expire after
+// sessionLifetime; caches should treat old entries as opaque and may evict
+// them at will (the engine re-checks freshness on every Get result).
+type SessionCache interface {
+	Get(sessionKey string) (*SessionState, bool)
+	Put(sessionKey string, cs *SessionState)
 }
 
-// tlcpLRUSessionCache is a bounded LRU session cache. On eviction the evicted
+// lruSessionCache is a bounded LRU session cache. On eviction the evicted
 // masterSecret is zeroed so it does not linger in memory.
-type tlcpLRUSessionCache struct {
+type lruSessionCache struct {
 	mu    sync.Mutex
 	m     map[string]*list.Element
 	order *list.List
 	cap   int
 }
 
-// NewTLCPLRUSessionCache returns an LRU session cache with the given capacity.
+// NewLRUSessionCache returns an LRU session cache with the given capacity.
 // A capacity < 1 defaults to 64.
-func NewTLCPLRUSessionCache(capacity int) tlcpSessionCache {
+func NewLRUSessionCache(capacity int) SessionCache {
 	if capacity < 1 {
 		capacity = 64
 	}
-	return &tlcpLRUSessionCache{
+	return &lruSessionCache{
 		m:     make(map[string]*list.Element),
 		order: list.New(),
 		cap:   capacity,
 	}
 }
 
-type tlcpLruEntry struct {
+type lruEntry struct {
 	key string
-	cs  *tlcpSessionState
+	cs  *SessionState
 }
 
 // Get returns a *clone* of the cached session state (independent slice
 // backing arrays), so the caller cannot race with a concurrent Put that
 // zeroes the cached masterSecret on eviction. Callers receive an independent
 // object they own for the duration of the handshake.
-func (c *tlcpLRUSessionCache) Get(sessionKey string) (*tlcpSessionState, bool) {
+func (c *lruSessionCache) Get(sessionKey string) (*SessionState, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if sessionKey == "" {
-		// Empty key: return the most-recently used entry, if any.
-		front := c.order.Front()
-		if front == nil {
-			return nil, false
-		}
-		return front.Value.(*tlcpLruEntry).cs.clone(), true
-	}
 	el, ok := c.m[sessionKey]
 	if !ok || el == nil {
 		return nil, false
 	}
 	c.order.MoveToFront(el)
-	return el.Value.(*tlcpLruEntry).cs.clone(), true
+	return el.Value.(*lruEntry).cs.clone(), true
 }
 
-func (c *tlcpLRUSessionCache) Put(sessionKey string, cs *tlcpSessionState) {
+func (c *lruSessionCache) Put(sessionKey string, cs *SessionState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if cs == nil {
 		// Delete semantics.
 		if el, ok := c.m[sessionKey]; ok {
-			oldEntry := el.Value.(*tlcpLruEntry)
+			oldEntry := el.Value.(*lruEntry)
 			zeroBytes(oldEntry.cs.masterSecret)
 			c.order.Remove(el)
 			delete(c.m, sessionKey)
@@ -129,13 +140,13 @@ func (c *tlcpLRUSessionCache) Put(sessionKey string, cs *tlcpSessionState) {
 		return
 	}
 	if el, ok := c.m[sessionKey]; ok {
-		oldEntry := el.Value.(*tlcpLruEntry)
+		oldEntry := el.Value.(*lruEntry)
 		zeroBytes(oldEntry.cs.masterSecret)
 		oldEntry.cs = cs
 		c.order.MoveToFront(el)
 		return
 	}
-	entry := &tlcpLruEntry{key: sessionKey, cs: cs}
+	entry := &lruEntry{key: sessionKey, cs: cs}
 	el := c.order.PushFront(entry)
 	c.m[sessionKey] = el
 	// Evict the least-recently used if over capacity.
@@ -144,7 +155,7 @@ func (c *tlcpLRUSessionCache) Put(sessionKey string, cs *tlcpSessionState) {
 		if oldest == nil {
 			break
 		}
-		oldEntry := oldest.Value.(*tlcpLruEntry)
+		oldEntry := oldest.Value.(*lruEntry)
 		c.order.Remove(oldest)
 		delete(c.m, oldEntry.key)
 		// Zero the evicted master secret so it does not linger.

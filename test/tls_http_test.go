@@ -41,7 +41,7 @@ func TestTLSServerWithRSACert(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status: got %d, want 200", resp.StatusCode)
 	}
 }

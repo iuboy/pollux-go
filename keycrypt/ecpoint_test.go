@@ -11,12 +11,12 @@ import (
 // TestMarshalECPointUncompressed_MatchesDeprecatedMarshal 锁定与
 // elliptic.Marshal 的逐字节等价性（迁移自弃用 API 的守卫测试）。
 func TestMarshalECPointUncompressed_MatchesDeprecatedMarshal(t *testing.T) {
-	for _, curve := range []elliptic.Curve{elliptic.P256(), elliptic.P384(), elliptic.P521()} { //nolint:staticcheck // 等价性守卫必须对照弃用实现
+	for _, curve := range []elliptic.Curve{elliptic.P256(), elliptic.P384(), elliptic.P521()} { // 等价性守卫必须对照弃用实现
 		key, err := ecdsa.GenerateKey(curve, rand.Reader)
 		if err != nil {
 			t.Fatalf("generate key: %v", err)
 		}
-		want := elliptic.Marshal(curve, key.X, key.Y) //nolint:staticcheck // 对照基准
+		want := elliptic.Marshal(curve, key.X, key.Y) // 对照基准
 		got := MarshalECPointUncompressed(curve, key.X, key.Y)
 		if string(got) != string(want) {
 			t.Errorf("%s: output mismatch\n got %X\nwant %X", curve.Params().Name, got, want)

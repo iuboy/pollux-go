@@ -65,9 +65,8 @@ type ServerOptions struct {
 	// paths read it; callers running both protocols on one ServerOptions
 	// should leave this empty so each path falls back to its own safe default
 	// (tlcp.DefaultCipherSuites for TLCP, tls.Config defaults for TLS).
-	CipherSuites       []uint16
-	ClientAuth         tlcp.ClientAuthType
-	InsecureSkipVerify bool
+	CipherSuites []uint16
+	ClientAuth   tlcp.ClientAuthType
 
 	// TLS 客户端认证（标准 TLS 服务端）
 	TLSClientAuth tls.ClientAuthType
@@ -143,11 +142,10 @@ func (o *ServerOptions) buildTLCPConfig() (*tlcp.Config, error) {
 		return nil, errMissingTLCPCertificate
 	}
 	cfg := &tlcp.Config{
-		SignCertificate:    o.SignCert,
-		EncCertificate:     o.EncCert,
-		CipherSuites:       o.CipherSuites,
-		ClientAuth:         o.ClientAuth,
-		InsecureSkipVerify: o.InsecureSkipVerify,
+		SignCertificate: o.SignCert,
+		EncCertificate:  o.EncCert,
+		CipherSuites:    o.CipherSuites,
+		ClientAuth:      o.ClientAuth,
 	}
 	if o.SignRootCAs != nil {
 		cfg.SignRootCAs = o.SignRootCAs.ToStandardPool()
@@ -166,12 +164,11 @@ func (o *ServerOptions) buildTLCPConfig() (*tlcp.Config, error) {
 // buildTLSConfig converts options into a tls.Config.
 func (o *ServerOptions) buildTLSConfig() (*tls.Config, error) {
 	cfg := &tls.Config{
-		Certificates:       o.Certificates,
-		ClientAuth:         o.TLSClientAuth,
-		CipherSuites:       o.CipherSuites,
-		InsecureSkipVerify: o.InsecureSkipVerify,
-		MinVersion:         tls.VersionTLS12,
-		CurvePreferences:   defaultTLSCurvePreferences,
+		Certificates:     o.Certificates,
+		ClientAuth:       o.TLSClientAuth,
+		CipherSuites:     o.CipherSuites,
+		MinVersion:       tls.VersionTLS12,
+		CurvePreferences: defaultTLSCurvePreferences,
 	}
 	if o.RootCAs != nil {
 		cfg.RootCAs = o.RootCAs.ToStandardPool()

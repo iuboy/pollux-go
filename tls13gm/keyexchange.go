@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/iuboy/pollux-go/internal/memsecure"
 	"github.com/iuboy/pollux-go/sm2"
 )
 
@@ -55,7 +56,7 @@ func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]b
 	// prevent invalid-curve attacks. Callers arriving via sm2.UnmarshalUncompressed
 	// have already validated this, but CurveSM2ECDHE is a public API and must not
 	// rely on that invariant.
-	if !peerPublic.Curve.IsOnCurve(peerPublic.X, peerPublic.Y) { //nolint:staticcheck // SM2 curve; crypto/ecdh has no SM2 support
+	if !peerPublic.Curve.IsOnCurve(peerPublic.X, peerPublic.Y) { // SM2 curve; crypto/ecdh has no SM2 support
 		return nil, errors.New("tls13gm: peer public key is not on the SM2 curve")
 	}
 	// privateKey.D is populated by sm2.GenerateKey, but CurveSM2ECDHE is a public
@@ -79,8 +80,13 @@ func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]b
 	dBytes := make([]byte, scalarSize)
 	rawD := privateKey.D.Bytes()
 	copy(dBytes[scalarSize-len(rawD):], rawD)
+	// Two heap copies of the ephemeral private scalar exist from here on
+	// (rawD and its padded copy); both are wiped as soon as ScalarMult has
+	// consumed them so they do not outlive the call.
+	defer memsecure.ZeroBytes(dBytes)
+	defer memsecure.ZeroBytes(rawD)
 
-	x, _ := peerPublic.Curve.ScalarMult(peerPublic.X, peerPublic.Y, dBytes) //nolint:staticcheck // SM2 raw ECDHE; crypto/ecdh has no SM2 support, scalar padded to 32B for gmsm constant-time path
+	x, _ := peerPublic.Curve.ScalarMult(peerPublic.X, peerPublic.Y, dBytes) // SM2 raw ECDHE; crypto/ecdh has no SM2 support, scalar padded to 32B for gmsm constant-time path
 	if x == nil {
 		return nil, errors.New("tls13gm: ECDH scalar multiplication failed")
 	}

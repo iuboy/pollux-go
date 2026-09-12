@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `https`：SM2 私钥/证书匹配校验改用 `sm2.Equal`（曲线身份优先 + 参数回落，防跨曲线坐标碰撞），去除废弃的 `ecdsa.PublicKey.X/Y` 直接访问
 - 门禁：`.golangci.yml` 中 staticcheck 的 `SA1019`（废弃 API）从全局禁用改为**启用** + 路径级豁免（仅 `sm2/` 原始点运算与测试文件）——Go 1.26 新废弃面（如 ecdsa big.Int 字段）今后在提交时即被拦截，非豁免包引入废弃用法将 fail CI（已用金丝雀验证门禁生效）；CI golangci-lint v2.13.1→v2.13.2
 
+### Changed — 依赖与 CI 全面刷新
+
+- 依赖：`x/net` v0.59.0（根+fork）；fork 开发依赖 `go.uber.org/mock` v0.5.2→v0.6.0、`gcassert`/`x/tools` 随升，fork 对 pollux-go 的 require 对齐已发布版本（本地仍由 replace 覆盖）
+- CI：`actions/checkout` v5→v6、`actions/setup-go` v6→v7（已核验 v6 的破坏性变更同时存在于 v5.1 回移版，v7 仅 ESM 内部迁移，输入面不变）
+- CI：新增 **govulncheck** 步骤（Go 漏洞库可达性扫描）——本地预跑根+fork 均 0 可达漏洞（唯一模块级通告 GO-2026-5932 为 x/crypto/openpgp 弃用提示，无人导入、无修复版本、不影响门禁）
+
 ## [v0.5.0] - 2026-08-22
 
 > 本版本为**破坏性安全加固版本**：对全库进行对抗性 Go 最佳实践审查后，根治全部 High/Medium 缺陷及配套 Low/Info 项。多处公共 API 有破坏性变更（见文末清单）。

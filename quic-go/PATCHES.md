@@ -1,6 +1,6 @@
 # quic-go fork — patch set relative to upstream
 
-**Upstream**: `github.com/quic-go/quic-go` v0.61.0
+**Upstream**: `github.com/quic-go/quic-go` v0.62.0
 **Fork location**: `quic-go/` at the repo root (module name preserved as
 `github.com/quic-go/quic-go`, referenced via `replace` in the repo-root
 `go.mod`, so internal imports need no rewriting).
@@ -21,7 +21,7 @@ required to route into the GM hooks.
 
 | File | Change | Phase | Status |
 |------|--------|-------|--------|
-| (baseline — verbatim copy of v0.60.0) | — | P0a | ✅ done |
+| (baseline — verbatim copy of v0.60.0, since synced to v0.62.0 via `git subtree pull`) | — | P0a | ✅ done |
 | `internal/handshake/gm_sealer.go` (new) | 4 sealer/opener adapters driving `tls13gm.AEAD` + SM4-ECB header mask (not reusing upstream `longHeaderSealer` — nonce-size incompatible). | P0c | ✅ done |
 | `internal/handshake/gm_sealer_test.go` (new) | adapter byte-consistency / round-trip tests. | P0c | ✅ done |
 | `gm_config.go` (new) | `GMHandshakeConfig` type + `copyGMConfigFields` helper; keeps `config.go`'s `populateConfig` free of GM field literals (returns to near-upstream form). | P0f | ✅ done |
@@ -32,12 +32,22 @@ required to route into the GM hooks.
 | `connection.go` | Two `NewCryptoSetup{Client,Server}` call sites now call `newGMCryptoSetup{Server,Client}Hook`; the `if conf.GMSM4GCM { ... } else { ... }` blocks were replaced by `if cs, ok := ...hook(...); ok { ... } else { upstream }`. | P0d/P0f | ✅ done |
 | `internal/handshake/gm_crypto_setup.go` (new) | `GMCryptoSetup` implementing the full `CryptoSetup` interface over `tls13gm` handshakers. | P0d | ✅ done |
 | `internal/handshake/gm_crypto_setup_test.go` (new) | end-to-end (no-UDP) handshake + 1-RTT cross-decrypt + transport-parameter exchange. | P0d | ✅ done |
+| `internal/handshake/gm_crypto_setup.go` (v0.62.0 adaptation) | Upstream split `EventReceivedReadKeys` into `EventReceived0RTTReadKeys` / `EventReceivedHandshakeReadKeys` / `EventReceived1RTTReadKeys`; `connection.go` now keys `cryptoStreamManager.Finish` on the per-level events. `installHandshakeKeys` emits the 0-RTT event first when the server has `ClientEarlyKeys` (retry of buffered 0-RTT packets), then the Handshake event. The 1-RTT event is role-timed: the client emits it after consuming the server flight; the server defers it to after the client Finished is verified — emitting it at ClientHello time (when tls13gm's key schedule first derives the secrets) would finish the Handshake CRYPTO stream early and reject the client's Finished as a protocol violation. | v0.62.0 | ✅ done |
+| `internal/handshake/gm_crypto_setup_test.go` (v0.62.0 adaptation) | Comment sync only (the new event kinds; no assertion depended on the old single event). | v0.62.0 | ✅ done |
 
 Note: `internal/handshake/crypto_setup.go` is **not** modified — the GM branch
 lives in `connection.go` (the call sites), not inside the `cryptoSetup` struct.
 As of P0f the call sites delegate to `gm_hook.go`, so the only upstream files
 the fork touches are `interface.go` (3 struct fields), `config.go` (1 function
 call), and `connection.go` (2 hook calls).
+
+v0.61.0→v0.62.0 merge note: the v0.60.0→v0.61.0 sync had been done by manual
+copy, so this subtree pull's merge base still reflected v0.60.0 — files the
+fork had never touched (workflows, framer, send_stream, capsule, …) showed
+content conflicts that were resolved by verifying `git diff v0.61.0:<path>
+HEAD:quic-go/<path>` was empty and taking the upstream side. From this commit
+on the subtree merge base is correct, so future pulls conflict only where the
+fork actually diverges.
 
 ## Upgrade procedure
 

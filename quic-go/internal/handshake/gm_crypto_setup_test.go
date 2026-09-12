@@ -131,7 +131,7 @@ func TestGMCryptoSetup_FullHandshake(t *testing.T) {
 	if err := client.HandleMessage(serverHello, protocol.EncryptionInitial); err != nil {
 		t.Fatalf("client HandleMessage(ServerHello): %v", err)
 	}
-	drainGMEvents(client) // EventReceivedReadKeys
+	drainGMEvents(client) // EventReceivedHandshakeReadKeys
 
 	// 4. Client consumes EE+Cert+CertVerify+Finished (Handshake level).
 	if err := client.HandleMessage(serverHandshake, protocol.EncryptionHandshake); err != nil {

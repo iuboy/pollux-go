@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed — 依赖升级与 Go 1.26 加解密适配（破坏性 API，无向后兼容）
 
+- vendored quic-go fork：subtree 升级到上游 **v0.62.0**（根模块 require 同步 v0.62.0）。适配上游事件枚举拆分：`GMCryptoSetup` 按 0-RTT/Handshake/1-RTT 三级分别发出读密钥事件；服务端 `EventReceived1RTTReadKeys` 推迟到客户端 Finished 验证后（对齐 crypto/tls 语义，避免提前 `Finish` Handshake CRYPTO 流）。上游同版本带来的改进随之生效：`errors.AsType`、流优先级调度（RFC 9218）、`dropEncryptionLevel` 简化、pre-Go1.26 构建标签清理。注意：v0.60→v0.61 曾手工同步导致本次 subtree 合并基线偏旧，17 个 fork 零增量文件的冲突已逐一验证取上游侧，此后合并基线恢复正常（见 quic-go/PATCHES.md）
+
 - 依赖：`emmansun/gmsm` v0.44.0→v0.44.1、`golang.org/x/crypto` v0.54.0→v0.57.0、`stretchr/testify` v1.11.1→v1.12.1（间接 `x/net`/`x/sys` 随升；vendored quic-go fork 不变）
 - `tls13gm`：`GenerateCurveSM2KeyPair` **去掉 `io.Reader` 参数**——对齐 Go 1.26 随机数硬化语义（`crypto/ecdh.Curve.GenerateKey` 等已忽略调用方 reader），临时密钥恒取 `crypto/rand`
 - `tls13gm`：`CurveSM2ECDHE` 内部从废弃的 `elliptic.Curve.ScalarMult` 手工裸乘迁移到 gmsm `ecdh`（`crypto/ecdh` 的 SM2 等价实现，常数时间点运算）：私钥标量校验 [1, N-1]、对端点在曲线校验、无穷远点拒绝、输出定长 32 字节；行为等价（KAT/互通测试不变）

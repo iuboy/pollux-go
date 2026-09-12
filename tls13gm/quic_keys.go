@@ -114,7 +114,7 @@ func DeriveQUICInitialSecret(destinationConnectionID []byte) ([]byte, error) {
 	if len(destinationConnectionID) == 0 {
 		return nil, errors.New("tls13gm: QUIC destination connection ID must not be empty")
 	}
-	return sm3.HKDFExtract(quicV1InitialSalt[:], destinationConnectionID), nil
+	return sm3.HKDFExtract(quicV1InitialSalt[:], destinationConnectionID)
 }
 
 // DeriveQUICInitialSecrets derives both the client and server Initial secrets

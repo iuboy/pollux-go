@@ -289,7 +289,7 @@ func NewClientHandshakerWithConfig(cfg ClientConfig) (*ClientHandshaker, error) 
 	if !cfg.InsecureSkipVerify && cfg.VerifyPeerCertificate == nil && cfg.Roots == nil {
 		return nil, errors.New("tls13gm: ClientConfig.Roots is required (use InsecureSkipVerify only for testing)")
 	}
-	priv, err := GenerateCurveSM2KeyPair(rand.Reader)
+	priv, err := GenerateCurveSM2KeyPair()
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: generate ECDHE keypair: %w", err)
 	}
@@ -552,7 +552,11 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 	if !c.pskMode {
 		earlyPSK = nil
 	}
-	earlySecret := DeriveEarlySecret(earlyPSK)
+	earlySecret, err := DeriveEarlySecret(earlyPSK)
+	if err != nil {
+		c.phase = clientFailed // key schedule inputs are unusable; fail terminally
+		return fmt.Errorf("tls13gm: derive early secret: %w", err)
+	}
 	c.handshakeSecret, err = DeriveHandshakeSecret(earlySecret, sharedSecret)
 	if err != nil {
 		c.phase = clientFailed // transcript already includes SH; retries would double-add
@@ -1023,7 +1027,7 @@ func NewServerHandshakerWithConfig(cfg ServerConfig) (*ServerHandshaker, error) 
 	if cfg.Certificate == nil || cfg.PrivateKey == nil {
 		return nil, errors.New("tls13gm: server certificate and key are required")
 	}
-	priv, err := GenerateCurveSM2KeyPair(rand.Reader)
+	priv, err := GenerateCurveSM2KeyPair()
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: generate ECDHE keypair: %w", err)
 	}
@@ -1283,7 +1287,10 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	}
 	// PSK resumption: derive the early secret from the selected PSK; otherwise
 	// (nil) DeriveEarlySecret uses zeros. psk_dhe_ke still mixes ECDHE below.
-	earlySecret := DeriveEarlySecret(s.resumptionSelectedPSK)
+	earlySecret, err := DeriveEarlySecret(s.resumptionSelectedPSK)
+	if err != nil {
+		return fail(fmt.Errorf("tls13gm: derive early secret: %w", err))
+	}
 	s.handshakeSecret, err = DeriveHandshakeSecret(earlySecret, sharedSecret)
 	if err != nil {
 		return fail(err)

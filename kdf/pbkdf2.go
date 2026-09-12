@@ -1,11 +1,10 @@
 package kdf
 
 import (
+	stdpbkdf2 "crypto/pbkdf2"
 	"errors"
 	"fmt"
 	"hash"
-
-	xpbkdf2 "golang.org/x/crypto/pbkdf2"
 )
 
 // ErrInvalidIteration is returned when the iteration count is not positive.
@@ -33,10 +32,11 @@ const maxKeyLen = 1 << 20 // 1 MiB
 // PBKDF2 derives a key of keyLen bytes from password and salt using PBKDF2
 // (RFC 2898 / PKCS#5 v2.0 Section 5.2) with the given hash as the PRF.
 //
-// The derivation is delegated to golang.org/x/crypto/pbkdf2 (a vetted
-// implementation); this wrapper preserves the package's input-validation
-// boundary and (result, error) signature so callers — notably the pwhash
-// package's pbkdf2-sm3 hasher — are unaffected.
+// The derivation is delegated to the standard library crypto/pbkdf2 (added in
+// Go 1.24; golang.org/x/crypto/pbkdf2 is its frozen ancestor); this wrapper
+// preserves the package's input-validation boundary and (result, error)
+// signature so callers — notably the pwhash package's pbkdf2-sm3 hasher — are
+// unaffected by the underlying switch.
 //
 // The hash factory h lets the caller pick the underlying PRF without binding
 // this package to a specific hash:
@@ -58,6 +58,11 @@ const maxKeyLen = 1 << 20 // 1 MiB
 // iter and keyLen are bounded above to reject attacker-controlled pathological
 // values (e.g. those parsed from untrusted PHC strings) that would otherwise
 // cause CPU exhaustion. Both bounds are well above any legitimate use.
+//
+// FIPS note: under GODEBUG=fips140=only the stdlib rejects non-approved
+// hashes (SM3 among them); the error is propagated rather than silently
+// deriving GM keys inside a process that explicitly opted into FIPS-only
+// crypto.
 func PBKDF2(password, salt []byte, iter, keyLen int, h func() hash.Hash) ([]byte, error) {
 	if iter <= 0 {
 		return nil, ErrInvalidIteration
@@ -75,7 +80,13 @@ func PBKDF2(password, salt []byte, iter, keyLen int, h func() hash.Hash) ([]byte
 		return nil, errors.New("kdf: hash factory must not be nil")
 	}
 
-	// golang.org/x/crypto/pbkdf2.Key signature matches exactly:
-	// Key(password, salt, iter, keyLen, h func() hash.Hash) []byte
-	return xpbkdf2.Key(password, salt, iter, keyLen, h), nil
+	// stdlib crypto/pbkdf2.Key signature: Key(h, password string, salt, iter,
+	// keyLength) ([]byte, error). The password crosses the boundary as string
+	// (the stdlib convention to discourage retaining attacker data); the
+	// conversion never outlives this call.
+	dk, err := stdpbkdf2.Key(h, string(password), salt, iter, keyLen)
+	if err != nil {
+		return nil, fmt.Errorf("kdf: pbkdf2: %w", err)
+	}
+	return dk, nil
 }

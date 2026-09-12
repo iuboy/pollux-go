@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — 依赖升级与 Go 1.26 加解密适配（破坏性 API，无向后兼容）
+
+- 依赖：`emmansun/gmsm` v0.44.0→v0.44.1、`golang.org/x/crypto` v0.54.0→v0.57.0、`stretchr/testify` v1.11.1→v1.12.1（间接 `x/net`/`x/sys` 随升；vendored quic-go fork 不变）
+- `tls13gm`：`GenerateCurveSM2KeyPair` **去掉 `io.Reader` 参数**——对齐 Go 1.26 随机数硬化语义（`crypto/ecdh.Curve.GenerateKey` 等已忽略调用方 reader），临时密钥恒取 `crypto/rand`
+- `tls13gm`：`CurveSM2ECDHE` 内部从废弃的 `elliptic.Curve.ScalarMult` 手工裸乘迁移到 gmsm `ecdh`（`crypto/ecdh` 的 SM2 等价实现，常数时间点运算）：私钥标量校验 [1, N-1]、对端点在曲线校验、无穷远点拒绝、输出定长 32 字节；行为等价（KAT/互通测试不变）
+- `tls13gm`：`DeriveEarlySecret` 返回 `([]byte, error)`（随 `sm3.HKDFExtract` 签名变化级联）
+- `sm3`：HKDF 构造从 `golang.org/x/crypto/hkdf` 迁移到标准库 `crypto/hkdf`（Go 1.25+）；`HKDFExtract` 返回 `([]byte, error)`。`GODEBUG=fips140=only` 下按标准库语义 fail-closed（拒绝在 FIPS-only 进程内做 SM3 派生）
+- `kdf`：PBKDF2 从 `golang.org/x/crypto/pbkdf2` 迁移到标准库 `crypto/pbkdf2`（Go 1.24+），导出签名不变
+- `smx509`：PBES2 解密同迁标准库 `crypto/pbkdf2`；新增攻击者可控 PBKDF2 迭代次数上界（10,000,000，对齐 `kdf` 包 `maxIteration` 的 CPU 耗尽防护，此前仅有下界）
+- 已核验（Go 1.27.1 实测）：smx509 枚举守卫共享前缀仍然准确（SignatureAlgorithm≤16 / PublicKeyAlgorithm≤4 / ExtKeyUsage≤13），stdlib ML-DSA 值冲突防护不变
+
 ## [v0.5.0] - 2026-08-22
 
 > 本版本为**破坏性安全加固版本**：对全库进行对抗性 Go 最佳实践审查后，根治全部 High/Medium 缺陷及配套 Low/Info 项。多处公共 API 有破坏性变更（见文末清单）。

@@ -43,7 +43,7 @@ func (t *TrafficKeys) Zero() {
 // NewClientHandshakerWithConfig / NewServerHandshakerWithConfig constructors
 // route the PSK correctly; direct callers of DeriveEarlySecret should check
 // len(ikm) > 0 before calling if they intend PSK mode.
-func DeriveEarlySecret(ikm []byte) []byte {
+func DeriveEarlySecret(ikm []byte) ([]byte, error) {
 	if len(ikm) == 0 {
 		ikm = make([]byte, sm3.Size)
 	}
@@ -66,7 +66,7 @@ func DeriveHandshakeSecret(earlySecret, sharedSecret []byte) ([]byte, error) {
 	if len(sharedSecret) == 0 {
 		sharedSecret = make([]byte, sm3.Size)
 	}
-	return sm3.HKDFExtract(derivedSecret, sharedSecret), nil
+	return sm3.HKDFExtract(derivedSecret, sharedSecret)
 }
 
 // DeriveMasterSecret derives the master secret from the handshake secret.
@@ -78,7 +78,7 @@ func DeriveMasterSecret(handshakeSecret []byte) ([]byte, error) {
 	}
 	// IKM is all zeros for master secret.
 	ikm := make([]byte, sm3.Size)
-	return sm3.HKDFExtract(derivedSecret, ikm), nil
+	return sm3.HKDFExtract(derivedSecret, ikm)
 }
 
 // DeriveTrafficKeys derives the key and IV from a traffic secret.
@@ -142,7 +142,10 @@ func DeriveExporterMasterSecret(masterSecret []byte, transcriptHash []byte) ([]b
 // uses these keys to encrypt early data before the server responds; the server
 // derives the same keys from the PSK to decrypt it.
 func DeriveEarlyTrafficKeys(psk, transcriptHash []byte) (*QUICPacketKeys, error) {
-	earlySecret := DeriveEarlySecret(psk)
+	earlySecret, err := DeriveEarlySecret(psk)
+	if err != nil {
+		return nil, fmt.Errorf("tls13gm: derive early secret for 0-RTT keys: %w", err)
+	}
 	earlyTraffic, err := DeriveSecret(earlySecret, LabelClientEarlyTraffic, transcriptHash)
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: derive client early traffic secret: %w", err)

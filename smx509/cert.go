@@ -8,6 +8,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/md5"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -29,7 +30,6 @@ import (
 	smx509 "github.com/emmansun/gmsm/smx509"
 	"github.com/iuboy/pollux-go/internal/memsecure"
 	polluxSM4 "github.com/iuboy/pollux-go/sm4"
-	"golang.org/x/crypto/pbkdf2"
 )
 
 // IsSM2Key reports whether a private key is an SM2 key.
@@ -646,6 +646,15 @@ func decryptPKCS8(encryptedDER, password []byte) ([]byte, error) {
 	if kdfParams.IterationCount < 10000 {
 		return nil, fmt.Errorf("PBKDF2 iterations %d below minimum 10000", kdfParams.IterationCount)
 	}
+	// Upper bound on the attacker-controlled iteration count: PBES2 parameters
+	// come from the file being decrypted, so a crafted count near MaxInt would
+	// pin a CPU for minutes per attempt (CPU-exhaustion DoS). 10,000,000
+	// iterations ≈ tens of seconds of PBKDF2-HMAC-SHA256 on commodity
+	// hardware — far above any legitimately-created key, matching the kdf
+	// package's maxIteration rationale.
+	if kdfParams.IterationCount > 10_000_000 {
+		return nil, fmt.Errorf("PBKDF2 iterations %d above maximum 10000000", kdfParams.IterationCount)
+	}
 	prf := newPRF(kdfParams.PRF.Algorithm)
 	if prf == nil {
 		// Fail-closed: PBKDF2 PRFs outside the allowlist (SHA-256/384/512, SM3)
@@ -659,7 +668,13 @@ func decryptPKCS8(encryptedDER, password []byte) ([]byte, error) {
 	if keyLen == 0 {
 		return nil, fmt.Errorf("smx509: unsupported encryption scheme: %v", params.ES.Algorithm)
 	}
-	derivedKey := pbkdf2.Key(password, kdfParams.Salt, kdfParams.IterationCount, keyLen, prf)
+	// stdlib crypto/pbkdf2 (Go 1.24+): Key(h, password string, salt, iter,
+	// keyLength). The password crosses the boundary as string per the stdlib
+	// convention; the conversion never outlives this call.
+	derivedKey, err := pbkdf2.Key(prf, string(password), kdfParams.Salt, kdfParams.IterationCount, keyLen)
+	if err != nil {
+		return nil, fmt.Errorf("smx509: pbkdf2: %w", err)
+	}
 	defer memsecure.ZeroBytes(derivedKey)
 
 	return decryptBlock(params.ES, derivedKey, encInfo.EncryptedData)

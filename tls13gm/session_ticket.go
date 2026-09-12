@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+
+	"github.com/iuboy/pollux-go/internal/memsecure"
 )
 
 // SessionTicketKeyLen is the length of a session-ticket encryption key (TEK) in
@@ -59,6 +61,9 @@ func EncryptSessionTicket(tek, psk []byte, ticketAgeAdd uint32) ([]byte, error) 
 	ticket = append(ticket, sessionTicketVersion)
 	ticket = append(ticket, nonce[:]...)
 	ticket = append(ticket, ct...)
+	// plaintext holds the bare PSK; it now lives only inside the sealed
+	// ticket, so wipe the local copy.
+	memsecure.ZeroBytes(plaintext)
 	return ticket, nil
 }
 
@@ -115,7 +120,9 @@ func DecryptSessionTicket(teks [][]byte, ticket []byte) ([]byte, uint32, error) 
 			if len(pt) < 4 {
 				continue // malformed plaintext; keep trying other keys
 			}
-			// Keep the last (most recent in rotation order) successful result.
+			// Keep the first key that successfully decrypts (teks is newest-first, so
+			// the first hit IS the most recent key; rotation may list duplicates, where
+			// keeping the first avoids re-deriving with an older entry) successful result.
 			result = pt[:len(pt)-4]
 			ageAdd = binary.BigEndian.Uint32(pt[len(pt)-4:])
 			ok = true

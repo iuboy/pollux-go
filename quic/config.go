@@ -23,11 +23,11 @@ const defaultIdleTimeout = 30 * time.Second
 // almost always indicates an arithmetic overflow or default-zero arithmetic
 // mistake rather than a deliberate "no timeout" intent, which QUIC does not
 // support anyway).
-func resolveIdleTimeout(max time.Duration) time.Duration {
-	if max <= 0 {
+func resolveIdleTimeout(maxIdle time.Duration) time.Duration {
+	if maxIdle <= 0 {
 		return defaultIdleTimeout
 	}
-	return max
+	return maxIdle
 }
 
 // ServerConfig holds QUIC server configuration.

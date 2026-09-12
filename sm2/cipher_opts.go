@@ -58,6 +58,10 @@ var (
 // （C1C3C2/C1C2C3/MarshalUncompressed/MarshalCompressed）已导出。Go 允许把导出
 // 常量作为实参传给接受该非导出类型的函数，但不能在外部包声明该类型的变量或返回值。
 // 因此下面的构造函数把 CipherOrder 映射成对 gmsm 构造函数的直接调用，常量在调用点内联。
+//
+// 注意: ASN1EncrypterOpts / ASN1DecrypterOpts 是可变全局 var(与 gmsm
+// 包级变量同指针)——调用方重新赋值会污染全局,应视为只读;需要自定义
+// 值时用 NewEncrypterOpts(其内部复制值)。
 
 // NewEncrypterOpts 构造一个加密选项。
 //
@@ -74,9 +78,13 @@ func NewEncrypterOpts(encoding CipherEncoding, order CipherOrder, compress bool)
 
 	switch encoding {
 	case EncodingASN1:
-		// ASN.1 编码固定使用未压缩点，忽略 compress。
-		// ASN.1 路径只产出 C1C3C2（与 EncryptASN1 一致）；如需 ASN.1 + C1C2C3，
-		// 先用 ASN1EncrypterOpts 产出再 AdjustCipherOrder 转换。
+		// ASN.1 编码固定使用未压缩点，忽略 compress；其字段序固定为 C1C3C2
+		// （标准结构自描述，不存在 C1C2C3 的 ASN.1 形态）。历史实现静默忽略
+		// order 并产出 C1C3C2——调用方按参数预期得到的格式与实际不符，
+		// 遗留互操作场景最易踩中，故显式拒绝。
+		if order == OrderC1C2C3 {
+			return nil, errors.New("sm2: ASN.1 encoding has fixed C1C3C2 field order; C1C2C3 exists only in Plain encoding (use EncodingPlain)")
+		}
 		opts := *gmsmSM2.ASN1EncrypterOpts // 复制默认值，避免共享可变状态
 		return &opts, nil
 	case EncodingPlain:

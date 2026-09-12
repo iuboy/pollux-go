@@ -16,12 +16,16 @@ pollux-go 是**集成工具包，不是密码学实现**。它把 gmsm 的原语
 | SM4 分组密码（GCM/CBC/CTR/CFB） | `sm4` | ✅ | 封装 gmsm/sm4 |
 | SM9 基于身份加密 | `sm9` | ✅ | 封装 gmsm/sm9 |
 | ZUC 序列密码 | `zuc` | ✅ | 封装 gmsm/zuc |
-| SM2 感知 X.509 | `smx509`、`cert` | ✅ | 证书创建 / 解析 / 验证 |
+| SM2 感知 X.509 | `smx509`、`cert` | ✅ | 证书创建 / 解析 / 验证 / OCSP（含 nonce 回显） |
+| CRL 生成与管理 | `crl` | ✅ | 接口注入式 Generator / 多 CA fanout / 解析族 |
+| 私钥加密落盘与生成 | `keycrypt` | ✅ | PKCS#8 PBES2（AES-256-GCM）+ RSA/ECDSA/Ed25519/SM2 生成器 |
+| SSH CA | `sshca` | ✅ | 用户/主机证书签发 / 校验 / KRL 生成 |
+| KMC（双证密钥托管） | `kmc` | ✅ | Manager 抽象 + LocalKMC 占位（GM/T 0018 SDF 可替换） |
 | **路线 A** — 标准 TLS 1.3 | `tls13`、`https` | ✅ 生产 | 基于 `crypto/tls` |
 | **路线 A** — 标准 QUIC | `quic` | ✅ 生产 | 基于 `quic-go` |
 | **路线 C** — RFC 8998 TLS 1.3 GM | `tls13gm` | ✅ 互通已验证 | 完整握手引擎，与 Tongsuo/BabaSSL 互通（见 [互通矩阵](docs/security/interop-matrix.md)） |
 | **路线 C** — RFC 9001 QUIC GM | `quicgm` | ✅ 互通已验证 | transport-level packet protection，端到端 + 0-RTT 测试 |
-| TLCP 1.1（GB/T 38636-2020） | `tlcp` | ⚠️ 实验 | 基于 `gotlcp`，待第三方安全审计 |
+| TLCP 1.1（GB/T 38636-2020） | `tlcp` | ⚠️ 实验 | 自研实现（参考开源实现重写），待第三方安全审计 |
 | 国密套件注册 | `tls` | ✅ | 仅套件 ID/名称注册，非完整 TLS |
 
 ## 包结构
@@ -29,6 +33,10 @@ pollux-go 是**集成工具包，不是密码学实现**。它把 gmsm 的原语
 ```text
 sm2 sm3 sm4 sm9 zuc           # 国密算法封装
 smx509 cert                   # SM2 感知 X.509
+crl                           # CRL 生成 / 缓存 / fanout / 解析
+keycrypt                      # 私钥加密落盘（PKCS#8 PBES2）+ 密钥生成器
+sshca                         # SSH 证书 CA（签发 / 校验 / KRL 生成）
+kmc                           # 国密双证 KMC 抽象（密钥托管）
 gmstd                         # GM/T 标准辅助函数
 tlcp                          # TLCP 1.1（GB/T 38636-2020）
 tls13gm quicgm                # RFC 8998 / RFC 9001 GM 栈（Route C，已与 Tongsuo 互通验证）

@@ -171,7 +171,7 @@ func BenchmarkHeaderProtectionMask(b *testing.B) {
 	hpKey := bytes.Repeat([]byte{0x01}, 16)
 	sample := bytes.Repeat([]byte{0x02}, 16)
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _ = HeaderProtectionMask(hpKey, sample)
 	}
 }
@@ -179,7 +179,7 @@ func BenchmarkHeaderProtectionMask(b *testing.B) {
 func BenchmarkDeriveQUICPacketKeys(b *testing.B) {
 	secret := quicTestSecret()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		keys, _ := DeriveQUICPacketKeys(secret)
 		keys.Zero()
 	}
@@ -188,7 +188,7 @@ func BenchmarkDeriveQUICPacketKeys(b *testing.B) {
 func BenchmarkDeriveQUICInitialSecrets(b *testing.B) {
 	dcid := []byte{0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, _, _ = DeriveQUICInitialSecrets(dcid)
 	}
 }

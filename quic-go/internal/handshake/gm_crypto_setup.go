@@ -310,6 +310,13 @@ func (g *GMCryptoSetup) handleOneServer(msgType uint8, msg []byte, encLevel prot
 			return err
 		}
 		g.handshakeDone = true
+		// The client Finished is the last Handshake-level CRYPTO message —
+		// only now are the server's 1-RTT read keys usable. Signaling at
+		// ClientHello time (when the key schedule first derives the secrets)
+		// would let the connection finish the Handshake CRYPTO stream early
+		// and reject this very Finished as "crypto data after change of
+		// encryption level".
+		g.enqueue(Event{Kind: EventReceived1RTTReadKeys})
 		g.enqueue(Event{Kind: EventHandshakeComplete})
 		return nil
 	default:
@@ -344,13 +351,22 @@ func (g *GMCryptoSetup) emitServerFlight() error {
 
 // installHandshakeKeys builds the Handshake-level sealer/opener once the
 // handshake secret is derived, and signals that read keys are available so the
-// connection layer reattempts previously undecryptable packets.
+// connection layer reattempts previously undecryptable packets (and finishes
+// the Initial CRYPTO stream — upstream v0.62.0 keys that on the per-level
+// read-keys events).
 func (g *GMCryptoSetup) installHandshakeKeys(secrets tls13gm.HandshakeSecrets) error {
 	var sealKeys, openKeys *tls13gm.QUICPacketKeys
 	if g.perspective == protocol.PerspectiveClient {
 		sealKeys, openKeys = secrets.ClientHandshakeKeys, secrets.ServerHandshakeKeys
 	} else {
 		sealKeys, openKeys = secrets.ServerHandshakeKeys, secrets.ClientHandshakeKeys
+	}
+	// 0-RTT read keys (server only): derived from the accepted resumption PSK
+	// at the same moment as the handshake keys (both follow ClientHello
+	// processing). Emit the 0-RTT signal first so the connection retries
+	// buffered 0-RTT packets before the Initial stream is finished.
+	if g.perspective == protocol.PerspectiveServer && secrets.ClientEarlyKeys != nil {
+		g.enqueue(Event{Kind: EventReceived0RTTReadKeys})
 	}
 	sealer, err := newGMLongSealer(sealKeys)
 	if err != nil {
@@ -361,12 +377,21 @@ func (g *GMCryptoSetup) installHandshakeKeys(secrets tls13gm.HandshakeSecrets) e
 		return err
 	}
 	g.handshakeSealer, g.handshakeOpener = sealer, opener
-	g.enqueue(Event{Kind: EventReceivedReadKeys})
+	g.enqueue(Event{Kind: EventReceivedHandshakeReadKeys})
 	return nil
 }
 
 // install1RTTKeys builds the 1-RTT sealer/opener once the application secret is
 // derived, fixed at key phase 0 for P0.
+//
+// Event timing is role-dependent (upstream v0.62.0 keys
+// cryptoStreamManager.Finish(EncryptionHandshake) on this event, so it must
+// only fire once the Handshake-level CRYPTO stream has been fully consumed):
+//   - client: emitted here — install1RTTKeys runs from completeClientFlight,
+//     after the whole server flight (including Finished) was consumed;
+//   - server: NOT emitted here — at ClientHello time (emitServerFlight) the
+//     client's Finished has not arrived yet. The server emits it from
+//     handleOneServer once that Finished is verified.
 func (g *GMCryptoSetup) install1RTTKeys(secrets tls13gm.HandshakeSecrets) error {
 	var sealKeys, openKeys *tls13gm.QUICPacketKeys
 	var sealSecret, openSecret []byte
@@ -382,7 +407,9 @@ func (g *GMCryptoSetup) install1RTTKeys(secrets tls13gm.HandshakeSecrets) error 
 		return err
 	}
 	g.oneRTTAEAD = aead
-	g.enqueue(Event{Kind: EventReceivedReadKeys})
+	if g.perspective == protocol.PerspectiveClient {
+		g.enqueue(Event{Kind: EventReceived1RTTReadKeys})
+	}
 	return nil
 }
 

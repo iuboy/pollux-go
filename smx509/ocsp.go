@@ -99,6 +99,12 @@ func ParseOCSPResponseWithIssuer(data []byte, issuer *x509.Certificate) (*ocsp.R
 // time.Time{} (the zero value) to disable the time check — intended only for
 // parsing already-trusted or historical responses where staleness is not
 // meaningful.
+//
+// SM3 CertIDs: if the response's CertID hashes with SM3 (GM/T 0009-2012),
+// resp.IssuerHash is reported as crypto.SHA256 — x/crypto's ocsp.Response
+// cannot express SM3 (no crypto.Hash constant exists). Do NOT recompute
+// CertID hashes from resp.IssuerHash for such a response; distinguish it with
+// IsSM3CertID(resp) and hash with github.com/iuboy/pollux-go/sm3.
 func ParseOCSPResponseWithIssuerAt(data []byte, issuer *x509.Certificate, now time.Time) (*ocsp.Response, error) {
 	if issuer == nil {
 		return nil, errors.New("smx509: issuer certificate is required for OCSP response verification")
@@ -116,20 +122,36 @@ func ParseOCSPResponseWithIssuerAt(data []byte, issuer *x509.Certificate, now ti
 		if !resp.ThisUpdate.IsZero() && now.Add(ocspFreshnessLeeway).Before(resp.ThisUpdate) {
 			return nil, errors.New("smx509: OCSP response ThisUpdate is in the future")
 		}
-		if !resp.NextUpdate.IsZero() && now.After(resp.NextUpdate) {
-			return nil, errors.New("smx509: OCSP response is stale (past NextUpdate)")
+		if !resp.NextUpdate.IsZero() {
+			if now.After(resp.NextUpdate) {
+				return nil, errors.New("smx509: OCSP response is stale (past NextUpdate)")
+			}
+		} else if !resp.ThisUpdate.IsZero() && now.Sub(resp.ThisUpdate) > maxOCSPNoNextUpdateAge {
+			return nil, errors.New("smx509: OCSP response has no NextUpdate and ThisUpdate exceeds the local maximum age")
 		}
 	}
 	return resp, nil
 }
 
 // NewOCSPResponseTemplate creates an OCSP response template for a certificate.
-func NewOCSPResponseTemplate(cert, issuer *x509.Certificate, status int, thisUpdate, nextUpdate time.Time) ocsp.Response {
-	return ocsp.Response{
+// A nil cert returns an error: the template must carry the serial number of the
+// certificate being responded about, and dereferencing a nil cert would panic.
+//
+// The template's IssuerHash is left zero; both signing paths (createSM2OCSPResponse
+// and x/crypto's CreateResponse) then default the CertID hash to SHA-256, since
+// ocsp.Response.IssuerHash (crypto.Hash) cannot express SM3. SM3-CertID
+// responses are produced by third-party GM responders only; when parsing such a
+// response the parser reports IssuerHash = crypto.SHA256 — see IsSM3CertID for
+// how to distinguish SM3 before recomputing CertID hashes.
+func NewOCSPResponseTemplate(cert, issuer *x509.Certificate, status int, thisUpdate, nextUpdate time.Time) (*ocsp.Response, error) {
+	if cert == nil {
+		return nil, errors.New("smx509: certificate is required for OCSP response template")
+	}
+	return &ocsp.Response{
 		Status:       status,
 		SerialNumber: cert.SerialNumber,
 		ThisUpdate:   thisUpdate,
 		NextUpdate:   nextUpdate,
 		Certificate:  issuer,
-	}
+	}, nil
 }

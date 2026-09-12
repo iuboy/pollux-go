@@ -198,14 +198,14 @@ func TestBlackBox_SM4_CFB_RoundTrip(t *testing.T) {
 	_, _ = rand.Read(iv)
 	plaintext := []byte("SM4-CFB mode streaming test")
 
-	enc, err := polluxSM4.NewCFBEncrypter(key, iv) //nolint:staticcheck
+	enc, err := polluxSM4.NewCFBEncrypter(key, iv)
 	if err != nil {
 		t.Fatalf("NewCFBEncrypter: %v", err)
 	}
 	ciphertext := make([]byte, len(plaintext))
 	enc.XORKeyStream(ciphertext, plaintext)
 
-	dec, err := polluxSM4.NewCFBDecrypter(key, iv) //nolint:staticcheck
+	dec, err := polluxSM4.NewCFBDecrypter(key, iv)
 	if err != nil {
 		t.Fatalf("NewCFBDecrypter: %v", err)
 	}

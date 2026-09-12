@@ -56,7 +56,7 @@ func TestConfig_Validate(t *testing.T) {
 
 	// 版本错误
 	c := valid()
-	c.Version = Version12
+	c.Version = "1.2"
 	if err := c.Validate(); !errors.Is(err, ErrInvalidVersion) {
 		t.Errorf("Version12 Validate() err = %v, want ErrInvalidVersion", err)
 	}
@@ -384,4 +384,17 @@ func TestConfigToNative_WithRootCerts(t *testing.T) {
 	if len(nc.rootCAs) == 0 {
 		t.Error("nc.rootCAs empty, want populated DER list")
 	}
+}
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || indexOfStr(s, sub) >= 0)
+}
+
+func indexOfStr(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
 }

@@ -44,7 +44,7 @@ func BenchmarkFullHandshake(b *testing.B) {
 	dcid := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
 	cert, serverKey := benchSM2Cert(b)
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		server, err := NewServerHandshaker(dcid, cert, serverKey)
 		if err != nil {
 			b.Fatal(err)
@@ -82,14 +82,14 @@ func BenchmarkTranscriptRehash(b *testing.B) {
 	// EncryptedExtensions+Certificate+CertificateVerify+Finished).
 	t := NewTranscript()
 	body := make([]byte, 200)
-	for j := 0; j < 5; j++ {
+	for range 5 {
 		t.AddMessage(HandshakeTypeCertificate, body)
 	}
 	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		// 8 full rehashes, as in DeriveSecret over the growing transcript.
-		for k := 0; k < 8; k++ {
+		for range 8 {
 			_ = t.Sum()
 		}
 	}

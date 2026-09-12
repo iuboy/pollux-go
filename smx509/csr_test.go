@@ -244,3 +244,35 @@ func TestVerifyDualCerts_InvalidKeyUsage(t *testing.T) {
 		t.Error("should reject certs with invalid key usage")
 	}
 }
+
+// TestParseCertificateRequest_SM2EnumGuard 回归：fork 的 SM2WithSM3(17) 与
+// Go 1.27 stdlib 的 MLDSA44(17) 数值相撞。fork CSR 转换为 stdlib 时，
+// 超出共享前缀（PureEd25519=16）的枚举必须降级为 UnknownSignatureAlgorithm，
+// 使 CheckCertificateRequestSignature 走 ErrUnsupportedAlgorithm → SM2 重试路径，
+// 而非被 stdlib 当作 ML-DSA 校验报错。
+func TestParseCertificateRequest_SM2EnumGuard(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(sm2.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm2Priv := new(sm2.PrivateKey)
+	if _, err := sm2Priv.FromECPrivateKey(priv); err != nil {
+		t.Fatal(err)
+	}
+	der, err := CreateCertificateRequest(&x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "enum-guard"},
+	}, sm2Priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := ParseCertificateRequest(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if csr.SignatureAlgorithm != x509.UnknownSignatureAlgorithm {
+		t.Errorf("fork SM2WithSM3 转换后应为 Unknown(0)，实际 %d（若为 17 说明被数值直拷为 MLDSA44，守卫失效）", int(csr.SignatureAlgorithm))
+	}
+	if err := CheckCertificateRequestSignature(csr); err != nil {
+		t.Errorf("SM2 CSR 校验应经降级+重试路径成功: %v", err)
+	}
+}

@@ -47,6 +47,8 @@ func (h *Argon2id) Algorithm() string { return argon2idAlgo }
 // each call via crypto/rand.
 func (h *Argon2id) Hash(password string) (string, error) {
 	salt := make([]byte, h.params.SaltLength)
+	// readRandom is a test-only seam — see its declaration doc; never replace
+	// it in production.
 	if _, err := readRandom(salt); err != nil {
 		return "", fmt.Errorf("pwhash/argon2id: %w", err)
 	}
@@ -224,7 +226,7 @@ func parseArgon2idParamBlock(block string) (Argon2idParams, error) {
 			return Argon2idParams{}, fmt.Errorf("%w: unknown param %q", ErrMalformedHash, k)
 		}
 	}
-	if !(gotM && gotT && gotP) {
+	if !gotM || !gotT || !gotP {
 		return Argon2idParams{}, fmt.Errorf("%w: missing m/t/p", ErrMalformedHash)
 	}
 	return p, nil
@@ -233,8 +235,11 @@ func parseArgon2idParamBlock(block string) (Argon2idParams, error) {
 // ErrMalformedHash is returned when an encoded hash cannot be parsed.
 var ErrMalformedHash = errors.New("pwhash: malformed encoded hash")
 
-// readRandom fills b with cryptographically secure random bytes. It is a
-// package-level variable (not a plain func) so tests can replace it with a
-// deterministic source via `readRandom = mockRead`. Production uses
-// crypto/rand.Read.
+// readRandom fills b with cryptographically secure random bytes.
+//
+// TEST-ONLY HOOK: this is a package-level variable (not a plain func) solely
+// so tests can substitute a deterministic source via `readRandom = mockRead`.
+// Production code MUST NOT replace it — swapping the entropy source of a
+// password hasher for anything but crypto/rand quietly weakens every salt it
+// generates. Keep it assigned to crypto/rand.Read outside tests.
 var readRandom = rand.Read

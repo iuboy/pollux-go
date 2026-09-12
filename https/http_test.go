@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -131,7 +132,7 @@ func TestTLCPServer(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status: got %d, want 200", resp.StatusCode)
 	}
 
@@ -155,7 +156,7 @@ func TestTLSServer(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status: got %d, want 200", resp.StatusCode)
 	}
 }
@@ -195,7 +196,7 @@ func TestListenAndServeTLCP(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status: got %d", resp.StatusCode)
 	}
 }
@@ -213,6 +214,98 @@ func TestDetectMode(t *testing.T) {
 	mode = DetectMode(nil)
 	if mode != ModeTLS {
 		t.Errorf("nil cert: got %v, want ModeTLS", mode)
+	}
+}
+
+// TestDetectModeCertOnly 覆盖"只配证书无私钥"的客户端场景：DetectMode 应回落到
+// 证书叶子公钥判别（SM2 公钥 => ModeTLCP），同时保留既有行为——有明确私钥信号
+// （含非 SM2 私钥）时维持原判定。
+func TestDetectModeCertOnly(t *testing.T) {
+	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "detect-mode-test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+
+	// SM2 证书：与 generateTestTLCPConfig 相同的构造方式（SM2 曲线上的
+	// ECDSA 密钥 + gmsm 后端签名）。
+	sm2EcdsaPriv, err := ecdsa.GenerateKey(sm2.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm2Priv := new(sm2.PrivateKey)
+	if _, err := sm2Priv.FromECPrivateKey(sm2EcdsaPriv); err != nil {
+		t.Fatal(err)
+	}
+	sm2DER, err := polluxSmx509.CreateCertificate(tmpl, tmpl, &sm2EcdsaPriv.PublicKey, sm2Priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm2Leaf, err := polluxSmx509.ParseCertificate(sm2DER)
+	if err != nil {
+		t.Fatalf("parse SM2 cert: %v", err)
+	}
+
+	// 标准 P-256 证书（stdlib 自签）。
+	p256Priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p256DER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &p256Priv.PublicKey, p256Priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// RSA 私钥（用于"明确非 SM2 私钥信号"的兼容性用例）。
+	rsaPriv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		cert *tls.Certificate
+		want Mode
+	}{
+		{
+			name: "SM2 cert without private key detects TLCP via cert public key",
+			cert: &tls.Certificate{Certificate: [][]byte{sm2DER}},
+			want: ModeTLCP,
+		},
+		{
+			name: "caller-populated Leaf with SM2 public key detects TLCP",
+			cert: &tls.Certificate{Leaf: sm2Leaf},
+			want: ModeTLCP,
+		},
+		{
+			name: "typed-nil ECDSA key is unjudgeable, SM2 cert decides TLCP",
+			cert: &tls.Certificate{Certificate: [][]byte{sm2DER}, PrivateKey: (*ecdsa.PrivateKey)(nil)},
+			want: ModeTLCP,
+		},
+		{
+			name: "explicit RSA private key keeps ModeTLS even with an SM2 cert",
+			cert: &tls.Certificate{Certificate: [][]byte{sm2DER}, PrivateKey: rsaPriv},
+			want: ModeTLS,
+		},
+		{
+			name: "P-256 cert without private key detects TLS",
+			cert: &tls.Certificate{Certificate: [][]byte{p256DER}},
+			want: ModeTLS,
+		},
+		{
+			name: "empty certificate and no key stays TLS",
+			cert: &tls.Certificate{},
+			want: ModeTLS,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := DetectMode(tt.cert); got != tt.want {
+				t.Errorf("DetectMode() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -304,10 +397,9 @@ func TestHybridServer(t *testing.T) {
 
 	addr := ln.Addr().String()
 	tlcpCfg, _ := (&ServerOptions{
-		SignCert:           tlcpConfig.SignCertificate,
-		EncCert:            tlcpConfig.EncCertificate,
-		CipherSuites:       []uint16{polluxTlcp.SuiteECDHE_SM2_SM4_GCM_SM3},
-		InsecureSkipVerify: true,
+		SignCert:     tlcpConfig.SignCertificate,
+		EncCert:      tlcpConfig.EncCertificate,
+		CipherSuites: []uint16{polluxTlcp.SuiteECDHE_SM2_SM4_GCM_SM3},
 	}).buildTLCPConfig()
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{tlsCert},
@@ -333,7 +425,7 @@ func TestHybridServer(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Errorf("TLCP status: got %d, want 200", resp.StatusCode)
 	}
 
@@ -353,7 +445,7 @@ func TestHybridServer(t *testing.T) {
 	}
 	defer resp2.Body.Close()
 
-	if resp2.StatusCode != 200 {
+	if resp2.StatusCode != http.StatusOK {
 		t.Errorf("TLS status: got %d, want 200", resp2.StatusCode)
 	}
 

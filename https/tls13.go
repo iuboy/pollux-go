@@ -66,11 +66,19 @@ func NewTLS13Client(opts TLS13ClientOptions) (*http.Client, error) {
 	}
 	client := &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig: cfg,
+			TLSClientConfig:       cfg,
+			TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
+			IdleConnTimeout:       defaultIdleConnTimeout,
+			ResponseHeaderTimeout: defaultResponseHeaderTimeout,
 		},
 	}
+	// A zero Timeout leaves requests unlimited; the convenience constructor
+	// applies the package default unless the caller opts out with an explicit
+	// zero/negative-free choice (Timeout > 0 required to override).
 	if opts.Timeout > 0 {
 		client.Timeout = opts.Timeout
+	} else {
+		client.Timeout = defaultClientTimeout
 	}
 	return client, nil
 }
@@ -101,7 +109,10 @@ func ListenAndServeTLS13(addr string, handler http.Handler, cfg *tls.Config) err
 	if err != nil {
 		return err
 	}
-	defer ln.Close()
+	// No defer ln.Close() here: http.Server.Serve closes the listener it is
+	// handed (tls.NewListener wraps ln and propagates Close), so an extra
+	// defer would double-close ln — the same invariant documented on
+	// ListenAndServe/serveTLS in server.go.
 
 	srv := &http.Server{
 		Handler:      handler,

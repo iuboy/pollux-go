@@ -320,12 +320,15 @@ func (c *tlcpConn) serverHandshakeReal() error {
 // lookupResumedSession checks the session cache for the client's offered
 // sessionId. Returns the cached session if it matches the negotiated version
 // and cipher suite, else nil.
-func (c *tlcpConn) lookupResumedSession(clientHello *tlcpClientHelloMsg, suite *tlcpCipherSuite) *tlcpSessionState {
+func (c *tlcpConn) lookupResumedSession(clientHello *tlcpClientHelloMsg, suite *tlcpCipherSuite) *SessionState {
 	if c.config == nil || c.config.sessionCache == nil || len(clientHello.sessionID) == 0 {
 		return nil
 	}
 	sess, ok := c.config.sessionCache.Get(tlcpSessionKeyHex(clientHello.sessionID))
 	if !ok || sess == nil {
+		return nil
+	}
+	if !sessionFresh(sess) {
 		return nil
 	}
 	if sess.version != c.vers || sess.cipherSuite != suite.id {
@@ -339,7 +342,7 @@ func (c *tlcpConn) lookupResumedSession(clientHello *tlcpClientHelloMsg, suite *
 // establishKeys → send server CCS+Finished → read client CCS+Finished. The
 // transcript covers only ClientHello + ServerHello. masterSecret comes from
 // the cached session.
-func (c *tlcpConn) serverResumeHandshake(suite *tlcpCipherSuite, clientHello *tlcpClientHelloMsg, chData []byte, sess *tlcpSessionState) error {
+func (c *tlcpConn) serverResumeHandshake(suite *tlcpCipherSuite, clientHello *tlcpClientHelloMsg, chData []byte, sess *SessionState) error {
 	serverRandom := make([]byte, 32)
 	binary.BigEndian.PutUint32(serverRandom, uint32(time.Now().Unix()))
 	if _, err := io.ReadFull(c.config.rand, serverRandom[4:]); err != nil {
@@ -408,7 +411,7 @@ func (c *tlcpConn) createNewServerSession(serverHello *tlcpServerHelloMsg, maste
 	copy(msCopy, masterSecret)
 	peerCertsCopy := make([][]byte, len(c.peerCertificates))
 	copy(peerCertsCopy, c.peerCertificates)
-	sess := &tlcpSessionState{
+	sess := &SessionState{
 		sessionID:        serverHello.sessionID,
 		version:          c.vers,
 		cipherSuite:      c.cipherSuite,
@@ -444,7 +447,3 @@ func (c *tlcpConn) readClientCCSAndFinished(transcript *tlcpFinishedHash, master
 
 // serverHandshake replaces the conn.go stub.
 func (c *tlcpConn) serverHandshake() error { return c.serverHandshakeReal() }
-
-// ensure imports referenced by the conditional paths don't go unused.
-var _ = ecdsa.PublicKey{}
-var _ = polluxsmx509.ParseCertificate

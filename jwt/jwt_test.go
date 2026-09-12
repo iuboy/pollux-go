@@ -375,12 +375,12 @@ func runConcurrentVerifyVsZeroize(t *testing.T, sv SignerVerifier, token string)
 	// Zeroize runs (SM2/HMAC state changes), so we only assert no panic.
 	go func() {
 		defer close(done)
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			_ = sv.Verify(token, &jwt.RegisteredClaims{})
 		}
 	}()
 	// Concurrently zeroize a few times to force the race window.
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		// Zeroize is destructive; only the concurrent-read safety is under test,
 		// so we don't assert Verify keeps succeeding after this point.
 		if zeroer, ok := sv.(interface{ Zeroize() }); ok {

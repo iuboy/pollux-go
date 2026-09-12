@@ -1,6 +1,7 @@
 package tlcp
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/tls"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 
 	"github.com/iuboy/pollux-go/internal/panicsafe"
 	polluxsmx509 "github.com/iuboy/pollux-go/smx509"
@@ -36,13 +38,10 @@ var (
 // Version TLCP version
 type Version string
 
-const (
-	// Version11 TLCP 1.1 (based on TLS 1.2)
-	Version11 Version = "1.1"
-
-	// Version12 TLCP 1.2 (based on TLS 1.3)
-	Version12 Version = "1.2"
-)
+// Version11 is TLCP 1.1 (GB/T 38636-2020, record layer based on TLS 1.2).
+// It is the only implemented version; the experimental 1.2 variant was
+// removed rather than shipped as an advertised-but-rejected constant.
+const Version11 Version = "1.1"
 
 // String returns the string representation of the version
 func (v Version) String() string {
@@ -114,6 +113,14 @@ type Config struct {
 
 	// MaxVersion maximum TLS version
 	MaxVersion uint16
+
+	// SessionCache is the session-resumption store (see [SessionCache] and
+	// [NewLRUSessionCache]). When set, the client caches sessions keyed by
+	// server identity (SNI when configured) and offers resumption on later
+	// connections; the server caches sessions by sessionId and resumes
+	// matching ClientHellos. Entries expire after 24h. nil disables
+	// resumption (the default).
+	SessionCache SessionCache
 }
 
 // NewConfig creates default TLCP configuration
@@ -141,7 +148,9 @@ func configToNative(c *Config, isClient bool) (*tlcpEngineConfig, error) {
 	if version == "" {
 		version = Version11
 	}
-	_ = version // version is validated by the engine; no mutation of c
+	if version != Version11 {
+		return nil, fmt.Errorf("%w: %s (only Version11 supported)", ErrInvalidVersion, version)
+	}
 	// Note: we intentionally do NOT call c.Validate() here — it requires leaf
 	// certificates, but some callers (e.g. root-CA-only configs for testing)
 	// legitimately build a Config without them. The engine surfaces a clear
@@ -157,6 +166,7 @@ func configToNative(c *Config, isClient bool) (*tlcpEngineConfig, error) {
 		cipherSuites:       cipherSuites,
 		serverName:         c.ServerName,
 		insecureSkipVerify: c.InsecureSkipVerify,
+		sessionCache:       c.SessionCache,
 	}
 	if c.SignCertificate != nil && c.EncCertificate != nil {
 		certs, err := buildServerCerts(c.SignCertificate, c.EncCertificate)
@@ -480,6 +490,13 @@ func (c *Config) Clone() *Config {
 		copy(clone.ClientCACertificates, c.ClientCACertificates)
 	}
 
+	// SessionCache is shared by pointer, matching how crypto/tls.Config.Clone
+	// shares ClientSessionCache: the cache is a long-lived, concurrency-safe
+	// store whose whole point is to survive across connections.
+	if c.SessionCache != nil {
+		clone.SessionCache = c.SessionCache
+	}
+
 	return clone
 }
 
@@ -489,26 +506,16 @@ func (c *Config) String() string {
 		c.Version, c.ServerName, len(c.CipherSuites))
 }
 
-// VersionFromString parses TLCP version from string
+// VersionFromString parses a TLCP version from string. Only TLCP 1.1 exists;
+// "1.2"/"12" are rejected — the old code returned a Version12 constant that
+// every consumer (Validate, the engine) then rejected anyway.
 func VersionFromString(version string) (Version, error) {
 	switch version {
 	case "1.1", "11":
 		return Version11, nil
-	case "1.2", "12":
-		return Version12, nil
 	default:
 		return "", fmt.Errorf("%w: %s", ErrInvalidVersion, version)
 	}
-}
-
-// IsAvailable checks if TLCP is available
-func IsAvailable() bool {
-	return true
-}
-
-// GetCipherSuites returns the default TLCP Cipher Suites (GCM-only)
-func GetCipherSuites() []uint16 {
-	return DefaultCipherSuites()
 }
 
 // AllCipherSuites returns the full TLCP Cipher Suites list (including CBC)
@@ -521,21 +528,28 @@ func IsCipherSuite(suite uint16) bool {
 	return polluxtls.IsNationalCipherSuite(suite)
 }
 
-// GetCipherSuiteName returns the TLCP Cipher Suite name
-func GetCipherSuiteName(suite uint16) string {
+// CipherSuiteName returns the TLCP Cipher Suite name
+func CipherSuiteName(suite uint16) string {
 	return polluxtls.CipherSuiteName(suite)
 }
 
-// ConnectionState records TLCP connection security parameters
+// ConnectionState records TLCP connection security parameters.
+//
+// VerifiedChains is intentionally absent: the engine verifies peer chains
+// during the handshake but does not retain them; advertising a field that is
+// always empty was an API-contract lie (removed rather than half-filled).
 type ConnectionState struct {
 	Version           uint16
 	HandshakeComplete bool
 	CipherSuite       uint16
 	ServerName        string
 	PeerCertificates  []*x509.Certificate
-	VerifiedChains    [][]*x509.Certificate
 	PeerSignCert      *x509.Certificate
 	PeerEncCert       *x509.Certificate
+	// DidResume reports whether the handshake resumed a cached session.
+	DidResume bool
+	// NegotiatedProtocol is the negotiated ALPN protocol, if any.
+	NegotiatedProtocol string
 }
 
 // Listener TLCP listener
@@ -561,12 +575,14 @@ func (l *Listener) accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	tlcpConn := Server(conn, l.config)
-	if err := tlcpConn.Handshake(); err != nil {
-		conn.Close()
-		return nil, err
-	}
-	return tlcpConn, nil
+	// Mirror crypto/tls.Listener: wrap WITHOUT handshaking here. The handshake
+	// runs lazily on the returned conn's first Read/Write. Handshaking inside
+	// Accept would let a client that connects and sends nothing block the
+	// accept loop forever (no read deadline), stalling every later connection;
+	// with lazy handshake a handshake failure surfaces as the conn's own
+	// error, not as an Accept error, so one bad client cannot wedge the
+	// listener.
+	return Server(conn, l.config), nil
 }
 
 // Listen creates TLCP listener (similar to tls.Listen)
@@ -583,7 +599,9 @@ func Dial(network, addr string, config *Config) (*Conn, error) {
 	return DialWithDialer(nil, network, addr, config)
 }
 
-// DialWithDialer establishes TLCP connection with custom dialer (similar to tls.DialWithDialer)
+// DialWithDialer establishes TLCP connection with custom dialer (similar to tls.DialWithDialer).
+// The dialer's Timeout (when positive) bounds the handshake as well as the
+// dial, matching tls.DialWithDialer.
 func DialWithDialer(dialer *net.Dialer, network, addr string, config *Config) (*Conn, error) {
 	return panicsafe.Do1(func() (*Conn, error) {
 		return dialWithDialer(dialer, network, addr, config)
@@ -602,9 +620,56 @@ func dialWithDialer(dialer *net.Dialer, network, addr string, config *Config) (*
 		return nil, err
 	}
 
+	// Without a bound on the handshake, a malicious or stalled server could
+	// hold DialWithDialer open indefinitely — dialer.Timeout would only have
+	// covered the TCP dial. Mirror tls.DialWithDialer: apply the remaining
+	// timeout to the handshake and clear it afterwards.
+	if dialer != nil && dialer.Timeout > 0 {
+		if err := conn.SetDeadline(time.Now().Add(dialer.Timeout)); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("tlcp: set handshake deadline: %w", err)
+		}
+		defer func() {
+			_ = conn.SetDeadline(time.Time{})
+		}()
+	}
+
 	tlcpConn := Client(conn, config)
 	if err := tlcpConn.Handshake(); err != nil {
-		conn.Close()
+		_ = conn.Close()
+		return nil, err
+	}
+	return tlcpConn, nil
+}
+
+// DialContext establishes a TLCP client connection, honoring context
+// cancellation during the dial (the handshake itself is bounded by the
+// context's deadline, if any).
+func DialContext(ctx context.Context, network, addr string, config *Config) (*Conn, error) {
+	return panicsafe.Do1(func() (*Conn, error) {
+		return dialContext(ctx, network, addr, config)
+	})
+}
+
+func dialContext(ctx context.Context, network, addr string, config *Config) (*Conn, error) {
+	dialer := &net.Dialer{}
+	conn, err := dialer.DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	// Propagate the context deadline (if any) to the handshake phase.
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("tlcp: set handshake deadline: %w", err)
+		}
+		defer func() {
+			_ = conn.SetDeadline(time.Time{})
+		}()
+	}
+	tlcpConn := Client(conn, config)
+	if err := tlcpConn.Handshake(); err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	return tlcpConn, nil
@@ -707,27 +772,4 @@ func cloneUint16Slice(s []uint16) []uint16 {
 	out := make([]uint16, len(s))
 	copy(out, s)
 	return out
-}
-
-// GetStandardSummary returns a human-readable summary of the TLCP standard.
-func GetStandardSummary() string {
-	return `
-TLCP (Transport Layer Cryptography Protocol) Standard Summary
-
-Primary Standards:
-- GB/T 38636-2020: Information security technology — Transport Layer Cryptography Protocol (TLCP)
-- RFC 8998: TLS 1.3 with SM2/SM3/SM4
-
-TLCP 1.1 (based on TLS 1.2):
-- Dual certificate mechanism: signing certificate + encryption certificate
-- Key exchange: ECDHE_SM2 / ECC_SM2
-- Symmetric encryption: SM4_GCM / SM4_CBC
-- Message digest: SM3
-
-Primary Cipher Suites:
-- ECDHE_SM2_WITH_SM4_GCM_SM3 (0xE051)
-- ECDHE_SM2_WITH_SM4_CBC_SM3 (0xE011)
-- ECC_SM2_WITH_SM4_GCM_SM3 (0xE053)
-- ECC_SM2_WITH_SM4_CBC_SM3 (0xE013)
-`
 }

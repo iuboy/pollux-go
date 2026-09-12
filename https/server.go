@@ -24,7 +24,7 @@ func ListenAndServe(opts *ServerOptions) error {
 
 	ln, err := wrapListener(rawLn, opts, mode)
 	if err != nil {
-		rawLn.Close() // wrap failed; clean up the raw TCP listener
+		_ = rawLn.Close() // wrap failed; clean up the raw TCP listener
 		return err
 	}
 

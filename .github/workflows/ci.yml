@@ -14,8 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -33,8 +33,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -68,3 +68,29 @@ jobs:
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@latest
           go list ./... | grep -v '/quic-go' | xargs staticcheck -checks 'SA*,-SA1019'
+      - name: golangci-lint
+        # Broader best-practice surface (errcheck, revive, gocritic, errorlint,
+        # nilerr, ...) configured in .golangci.yml at the repo root. This job is
+        # also the ONLY gate for SA1019 (deprecated APIs): the standalone
+        # staticcheck step above disables it repo-wide, while here it is enabled
+        # with path-scoped exclusions (sm2/ raw-SM2 point math forces
+        # crypto/elliptic + ecdsa.X/Y/D; test files construct keys via the
+        # deprecated fields on purpose). Other exclusions carry their rationale
+        # in the config (cipher-suite naming mirrors the GB/T 38636 standard
+        # designations; the vendored quic-go/ fork is upstream code). This job
+        # exists because the security review found real defects (swallowed
+        # errors, dead branches) that none of the above steps could catch.
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+          golangci-lint run --timeout 5m ./...
+      - name: govulncheck
+        # Known-vulnerability scan against the Go vulnerability database
+        # (https://vuln.go.dev). Only flags vulnerabilities reachable from this
+        # module's own code — dependency bumps that pull a fixed transitive
+        # version are validated here. The vendored quic-go/ fork is a separate
+        # module (its own go.mod) and is NOT matched by ./..., matching the
+        # gosec/staticcheck exclusion policy; its graph equals the root's
+        # except for dev-only tooling.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...

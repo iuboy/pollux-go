@@ -198,7 +198,10 @@ func marshalPSKKeyExchangeModesExtension(modes []uint8) []byte {
 // ends at the identities vector — i.e. up to but not including the binders
 // field, per RFC 8446 §4.2.11 and the OpenSSL/Go crypto/tls wire convention.
 func computeResumptionBinder(psk, truncatedClientHello []byte) ([]byte, error) {
-	earlySecret := DeriveEarlySecret(psk)
+	earlySecret, err := DeriveEarlySecret(psk)
+	if err != nil {
+		return nil, fmt.Errorf("tls13gm: derive early secret for binder: %w", err)
+	}
 	emptyHash := sm3.Sum(nil)
 	binderKey, err := DeriveSecret(earlySecret, LabelResumptionBinder, emptyHash[:])
 	if err != nil {

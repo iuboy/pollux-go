@@ -7,12 +7,23 @@ import (
 	"github.com/iuboy/pollux-go/sm3"
 )
 
+// mustExtract wraps sm3.HKDFExtract's (value, error) pair for call sites that
+// only exercise the happy path.
+func mustExtract(t *testing.T, salt, ikm []byte) []byte {
+	t.Helper()
+	prk, err := sm3.HKDFExtract(salt, ikm)
+	if err != nil {
+		t.Fatalf("HKDFExtract(%x, %x): %v", salt, ikm, err)
+	}
+	return prk
+}
+
 // ---------------------------------------------------------------------------
 // HKDFExtract
 // ---------------------------------------------------------------------------
 
 func TestHKDFExtractOutputLength(t *testing.T) {
-	prk := sm3.HKDFExtract([]byte("salt"), []byte("ikm"))
+	prk := mustExtract(t, []byte("salt"), []byte("ikm"))
 	if len(prk) != sm3.Size {
 		t.Fatalf("HKDFExtract returned %d bytes, want %d", len(prk), sm3.Size)
 	}
@@ -21,8 +32,8 @@ func TestHKDFExtractOutputLength(t *testing.T) {
 func TestHKDFExtractDeterministic(t *testing.T) {
 	salt := []byte("fixed-salt")
 	ikm := []byte("fixed-input-keying-material")
-	prk1 := sm3.HKDFExtract(salt, ikm)
-	prk2 := sm3.HKDFExtract(salt, ikm)
+	prk1 := mustExtract(t, salt, ikm)
+	prk2 := mustExtract(t, salt, ikm)
 	if !bytes.Equal(prk1, prk2) {
 		t.Fatal("HKDFExtract is not deterministic: two calls with same inputs produced different results")
 	}
@@ -30,8 +41,8 @@ func TestHKDFExtractDeterministic(t *testing.T) {
 
 func TestHKDFExtractEmptySaltUsesDefault(t *testing.T) {
 	ikm := []byte("some-input-material")
-	prkNil := sm3.HKDFExtract(nil, ikm)
-	prkEmpty := sm3.HKDFExtract([]byte{}, ikm)
+	prkNil := mustExtract(t, nil, ikm)
+	prkEmpty := mustExtract(t, []byte{}, ikm)
 	if !bytes.Equal(prkNil, prkEmpty) {
 		t.Fatal("HKDFExtract(nil) and HKDFExtract([]byte{}) should produce the same result")
 	}
@@ -42,8 +53,8 @@ func TestHKDFExtractEmptySaltUsesDefault(t *testing.T) {
 
 func TestHKDFExtractDifferentSalts(t *testing.T) {
 	ikm := []byte("same-ikm")
-	prk1 := sm3.HKDFExtract([]byte("salt-alpha-for-test"), ikm)
-	prk2 := sm3.HKDFExtract([]byte("salt-beta-for-test"), ikm)
+	prk1 := mustExtract(t, []byte("salt-alpha-for-test"), ikm)
+	prk2 := mustExtract(t, []byte("salt-beta-for-test"), ikm)
 	if bytes.Equal(prk1, prk2) {
 		t.Fatal("different salts should produce different PRKs")
 	}
@@ -51,8 +62,8 @@ func TestHKDFExtractDifferentSalts(t *testing.T) {
 
 func TestHKDFExtractDifferentIKM(t *testing.T) {
 	salt := []byte("same-salt")
-	prk1 := sm3.HKDFExtract(salt, []byte("ikm-alpha"))
-	prk2 := sm3.HKDFExtract(salt, []byte("ikm-beta"))
+	prk1 := mustExtract(t, salt, []byte("ikm-alpha"))
+	prk2 := mustExtract(t, salt, []byte("ikm-beta"))
 	if bytes.Equal(prk1, prk2) {
 		t.Fatal("different IKMs should produce different PRKs")
 	}
@@ -69,7 +80,7 @@ func TestHKDFExtractKnownAnswer(t *testing.T) {
 		0x3c, 0x3f, 0x78, 0xf9, 0x18, 0x25, 0x06, 0x0d,
 	}
 
-	got := sm3.HKDFExtract(salt, ikm)
+	got := mustExtract(t, salt, ikm)
 	if !bytes.Equal(got, expected) {
 		t.Fatalf("extract known-answer mismatch:\ngot  %x\nwant %x", got, expected)
 	}
@@ -199,7 +210,7 @@ func TestHKDFRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prk := sm3.HKDFExtract(salt, ikm)
+	prk := mustExtract(t, salt, ikm)
 	manual, err := sm3.HKDFExpand(prk, info, 48)
 	if err != nil {
 		t.Fatal(err)
@@ -248,8 +259,8 @@ func TestHKDFDifferentSalts(t *testing.T) {
 	salt1 := []byte("salt-alpha-for-test")
 	salt2 := []byte("salt-beta-for-test")
 
-	prk1 := sm3.HKDFExtract(salt1, ikm)
-	prk2 := sm3.HKDFExtract(salt2, ikm)
+	prk1 := mustExtract(t, salt1, ikm)
+	prk2 := mustExtract(t, salt2, ikm)
 	if bytes.Equal(prk1, prk2) {
 		t.Fatal("HKDFExtract should produce different PRKs for different salts")
 	}
@@ -284,8 +295,8 @@ func TestHKDFEmptySalt(t *testing.T) {
 		t.Fatal("HKDF with nil salt and empty salt should produce the same result")
 	}
 
-	prkNil := sm3.HKDFExtract(nil, ikm)
-	prkExplicit := sm3.HKDFExtract([]byte("salt"), ikm)
+	prkNil := mustExtract(t, nil, ikm)
+	prkExplicit := mustExtract(t, []byte("salt"), ikm)
 	if bytes.Equal(prkNil, prkExplicit) {
 		t.Fatal("empty salt and non-empty salt should produce different PRKs in Extract")
 	}
@@ -354,7 +365,7 @@ func TestHKDFConsistency(t *testing.T) {
 	info := []byte("consistency-info")
 
 	var prev []byte
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		out, err := sm3.HKDF(salt, ikm, info, 64)
 		if err != nil {
 			t.Fatal(err)

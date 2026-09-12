@@ -36,6 +36,9 @@ func (p *ecdhPrivateKey) publicKey() *ecdhPublicKey { return &ecdhPublicKey{k: p
 
 // newEcdhPublicKey parses an uncompressed SM2 point (65 bytes: 0x04||X||Y).
 func newEcdhPublicKey(point []byte) (*ecdhPublicKey, error) {
+	// CAUTION: this ecdh.P256 is gmsm's, which despite the name returns the
+	// SM2 curve (sm2P256), NOT NIST P-256. Do not "fix" it to crypto/ecdh —
+	// crypto/ecdh has no SM2 support.
 	pub, err := ecdh.P256().NewPublicKey(point)
 	if err != nil {
 		return nil, err

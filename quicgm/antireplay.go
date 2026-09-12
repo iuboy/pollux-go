@@ -24,17 +24,21 @@ type rejectingAntiReplayCache struct{}
 
 func (rejectingAntiReplayCache) Check([]byte, time.Duration) bool { return false }
 
-// memoryAntiReplayCache is a process-local AntiReplayCache backed by a map. It
-// remembers each digest for `window`; attempts older than `maxAge` (typically
-// the ticket lifetime) are rejected as expired.
+// memoryAntiReplayCache is a process-local AntiReplayCache. It remembers each
+// digest for `window`; attempts older than `maxAge` (typically the ticket
+// lifetime) are rejected as expired.
+//
+// Eviction is bucketed by expiry time (byExpiry): only the buckets whose
+// deadline has actually passed are dropped, so eviction costs O(expired
+// entries) — amortized O(1) per Check — instead of a full O(n) map scan that
+// would stall concurrent handshakes behind the mutex once per window.
 type memoryAntiReplayCache struct {
-	mu         sync.Mutex
-	entries    map[string]time.Time // digest -> expiry
-	window     time.Duration
-	maxAge     time.Duration
-	now        func() time.Time
-	lastSweep  time.Time
-	sweepEvery time.Duration
+	mu       sync.Mutex
+	seen     map[string]int64   // digest -> expiry (unix nanos)
+	byExpiry map[int64][]string // expiry bucket -> digests expiring then
+	window   time.Duration
+	maxAge   time.Duration
+	now      func() time.Time
 }
 
 // NewAntiReplayCache returns a process-local anti-replay cache. window is how
@@ -50,11 +54,11 @@ func NewAntiReplayCache(window, maxAge time.Duration) AntiReplayCache {
 		return rejectingAntiReplayCache{}
 	}
 	return &memoryAntiReplayCache{
-		entries:    make(map[string]time.Time),
-		window:     window,
-		maxAge:     maxAge,
-		now:        time.Now,
-		sweepEvery: window, // sweep at the same cadence as the replay window
+		seen:     make(map[string]int64),
+		byExpiry: make(map[int64][]string),
+		window:   window,
+		maxAge:   maxAge,
+		now:      time.Now,
 	}
 }
 
@@ -79,21 +83,24 @@ func (c *memoryAntiReplayCache) Check(digest []byte, age time.Duration) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
-	// Lazy eviction of expired entries to bound memory. Throttled by
-	// sweepEvery so it isn't O(n) on every call.
-	if c.lastSweep.IsZero() {
-		c.lastSweep = now
-	} else if c.lastSweep.Add(c.sweepEvery).Before(now) {
-		for k, exp := range c.entries {
-			if !exp.After(now) {
-				delete(c.entries, k)
+	nowN := now.UnixNano()
+	// Lazy eviction: drop only the expiry buckets whose deadline has passed.
+	// Each Check touches at most the expired buckets, never the live set.
+	for expBucket, keys := range c.byExpiry {
+		if expBucket <= nowN {
+			for _, k := range keys {
+				if c.seen[k] <= nowN {
+					delete(c.seen, k)
+				}
 			}
+			delete(c.byExpiry, expBucket)
 		}
-		c.lastSweep = now
 	}
-	if exp, ok := c.entries[key]; ok && exp.After(now) {
+	if exp, ok := c.seen[key]; ok && exp > nowN {
 		return false // replayed within the window
 	}
-	c.entries[key] = now.Add(c.window)
+	exp := now.Add(c.window).UnixNano()
+	c.seen[key] = exp
+	c.byExpiry[exp] = append(c.byExpiry[exp], key)
 	return true
 }

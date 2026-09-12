@@ -27,19 +27,6 @@ var sm2HashOIDs = map[crypto.Hash]asn1.ObjectIdentifier{
 // sm3HashOID is the SM3 hash algorithm OID (GM/T 0009-2012).
 var sm3HashOID = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 401}
 
-// sm2HashOIDLookup maps OIDs to crypto.Hash for CertID decoding.
-// SM3 maps to crypto.SHA256 for OCSP response digest identification since
-// crypto.Hash has no SM3 constant; the actual SM3 hashing is done by sm3.New().
-var sm2HashOIDLookup = buildHashOIDMap()
-
-func buildHashOIDMap() map[string]crypto.Hash {
-	m := make(map[string]crypto.Hash, len(sm2HashOIDs)+1)
-	for h, oid := range sm2HashOIDs {
-		m[oid.String()] = h
-	}
-	return m
-}
-
 // defaultSM2UID is the default SM2 user identifier per GM/T 0009-2012.
 // Used explicitly (rather than nil) to avoid implicit dependency on gmsm's
 // default-UID fallback which may change across gmsm releases.
@@ -49,6 +36,12 @@ var defaultSM2UID = []byte("1234567812345678")
 // response's ThisUpdate is not in the future. A few minutes absorbs normal NTP
 // drift between responder and relying party without rejecting a fresh response.
 const ocspFreshnessLeeway = 5 * time.Minute
+
+// maxOCSPNoNextUpdateAge caps how old ThisUpdate may be when the response
+// carries no NextUpdate (RFC 6960 makes it optional). Without the cap the
+// replay window of such responses is unbounded; 7 days matches the most
+// permissive common OCSP policy while still bounding replay.
+const maxOCSPNoNextUpdateAge = 7 * 24 * time.Hour
 
 // parseSM2OCSPResponse is an SM2-aware variant of ocsp.ParseResponseForCert:
 // it replaces stdlib x509.CheckSignature (which rejects sm2.P256()) with
@@ -64,6 +57,38 @@ const ocspFreshnessLeeway = 5 * time.Minute
 // in the future) is rejected: a signature-valid but stale "Good" response can
 // otherwise be replayed to mask a revocation. Pass time.Time{} to skip the
 // time check (used only by the parse-only path).
+// Decoding-side ASN.1 structures, deliberately separate from the encoding
+// family in ocsp_sm2.go: the encoder's singleResponse carries revokedInfo as
+// a pre-assembled RawValue (so reason=0 can omit cRLReason), while decoding
+// needs the concrete struct. ResponseExtensions is declared explicitly so
+// nonce-carrying responses (CreateOCSPResponseExt) parse by contract rather
+// than by relying on encoding/asn1's lenient trailing-element handling.
+type parseBasicResponse struct {
+	TBSResponseData    parseResponseData
+	SignatureAlgorithm pkix.AlgorithmIdentifier
+	Signature          asn1.BitString
+	Certificates       []asn1.RawValue `asn1:"explicit,tag:0,optional"`
+}
+
+type parseResponseData struct {
+	Raw                asn1.RawContent `asn1:"optional"`
+	Version            int             `asn1:"optional,default:0,explicit,tag:0"`
+	RawResponderID     asn1.RawValue
+	ProducedAt         time.Time `asn1:"generalized"`
+	Responses          []parseSingleResponse
+	ResponseExtensions []pkix.Extension `asn1:"explicit,tag:1,optional"`
+}
+
+type parseSingleResponse struct {
+	CertID           sm2CertID
+	Good             asn1.Flag        `asn1:"tag:0,optional"`
+	Revoked          sm2RevokedInfo   `asn1:"tag:1,optional"`
+	Unknown          asn1.Flag        `asn1:"tag:2,optional"`
+	ThisUpdate       time.Time        `asn1:"generalized"`
+	NextUpdate       time.Time        `asn1:"generalized,explicit,tag:0,optional"`
+	SingleExtensions []pkix.Extension `asn1:"explicit,tag:1,optional"`
+}
+
 func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate, now time.Time) (*ocsp.Response, error) {
 	var resp sm2ResponseASN1
 	rest, err := asn1.Unmarshal(data, &resp)
@@ -80,7 +105,7 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate, now time.Time) 
 		return nil, errors.New("smx509: bad OCSP response type")
 	}
 
-	var basicResp sm2BasicResponse
+	var basicResp parseBasicResponse
 	rest, err = asn1.Unmarshal(resp.Response.Response, &basicResp)
 	if err != nil {
 		return nil, err
@@ -116,12 +141,20 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate, now time.Time) 
 		NextUpdate:         singleResp.NextUpdate,
 	}
 
-	// ResponderID CHOICE: tag 1 = Name, tag 2 = KeyHash.
-	switch basicResp.TBSResponseData.RawResponderID.Tag {
+	// ResponderID CHOICE (RFC 6960 §4.2.2): [1] byName or [2] byKey — both
+	// context-specific. Validate the class explicitly: switching on the tag
+	// number alone would accept a universal- or application-class element that
+	// happens to carry the same tag number (e.g. [UNIVERSAL 2] INTEGER) and
+	// misinterpret its content bytes as a responder name / key hash.
+	rid := basicResp.TBSResponseData.RawResponderID
+	if rid.Class != asn1.ClassContextSpecific {
+		return nil, errors.New("smx509: invalid responder id class (want context-specific)")
+	}
+	switch rid.Tag {
 	case 1:
-		ret.RawResponderName = basicResp.TBSResponseData.RawResponderID.Bytes
+		ret.RawResponderName = rid.Bytes
 	case 2:
-		if rest, err := asn1.Unmarshal(basicResp.TBSResponseData.RawResponderID.Bytes, &ret.ResponderKeyHash); err != nil || len(rest) != 0 {
+		if rest, err := asn1.Unmarshal(rid.Bytes, &ret.ResponderKeyHash); err != nil || len(rest) != 0 {
 			return nil, errors.New("smx509: invalid responder key hash")
 		}
 	default:
@@ -160,7 +193,9 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate, now time.Time) 
 	// Tag 2 (KeyHash): Hash(BIT STRING subjectPublicKey) per RFC 6960 §4.4.1,
 	// using the CertID hash algorithm.
 	matchesResponderID := func(signerCert *x509.Certificate) bool {
-		switch basicResp.TBSResponseData.RawResponderID.Tag {
+		// rid's class was validated above (context-specific), so only the
+		// tag number needs switching on here.
+		switch rid.Tag {
 		case 1: // Name
 			return bytes.Equal(signerCert.RawSubject, ret.RawResponderName)
 		case 2: // KeyHash
@@ -227,6 +262,18 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate, now time.Time) 
 				return nil, errors.New("smx509: embedded responder cert not signed by issuer")
 			}
 		}
+		// The responder certificate itself must be within its validity period:
+		// an expired delegated responder's signature is not a valid attestation,
+		// yet the response-level time window below does not cover it. Skipped
+		// when now is zero (parse-only callers).
+		if !now.IsZero() {
+			if now.Add(ocspFreshnessLeeway).Before(embedded.NotBefore) {
+				return nil, errors.New("smx509: embedded responder certificate is not yet valid")
+			}
+			if now.After(embedded.NotAfter) {
+				return nil, errors.New("smx509: embedded responder certificate is expired")
+			}
+		}
 	} else if issuer != nil {
 		if err := verifyAgainst(issuer); err != nil {
 			return nil, errors.New("smx509: bad SM2 OCSP signature: " + err.Error())
@@ -247,7 +294,13 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate, now time.Time) 
 	// the standard crypto.Hash OIDs.
 	certIDHashOID := singleResp.CertID.HashAlgorithm.Algorithm
 	if certIDHashOID.Equal(sm3HashOID) {
-		ret.IssuerHash = crypto.SHA256 // map SM3 to SHA256 (no crypto.Hash constant for SM3)
+		// Deliberate misreport forced by x/crypto's struct: ocsp.Response.IssuerHash
+		// is a crypto.Hash and crypto has no SM3 constant, so SM3 is reported as
+		// SHA-256. Downstream MUST NOT recompute CertID hashes via
+		// resp.IssuerHash.New() for such a response (that hashes with SHA-256
+		// while the CertID carries SM3 digests — every comparison would fail).
+		// Distinguish with IsSM3CertID and hash with sm3.New() instead.
+		ret.IssuerHash = crypto.SHA256
 	} else {
 		for h, oid := range sm2HashOIDs {
 			if certIDHashOID.Equal(oid) {
@@ -278,17 +331,62 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate, now time.Time) 
 	//   - If NextUpdate is present and now is after it, the response is stale.
 	//   - If ThisUpdate is more than ocspFreshnessLeeway ahead of now, the
 	//     response is not-yet-valid (clock skew / forgery).
+	//   - If NextUpdate is ABSENT, RFC 6960 permits it but leaves the replay
+	//     window unbounded; a local maximum age on ThisUpdate caps it
+	//     (maxOCSPNoNextUpdateAge, aligned with common CA/B practice of
+	//     short OCSP windows).
 	// A zero now disables the check (parse-only callers).
 	if !now.IsZero() {
 		if !ret.ThisUpdate.IsZero() && now.Add(ocspFreshnessLeeway).Before(ret.ThisUpdate) {
 			return nil, errors.New("smx509: OCSP response ThisUpdate is in the future")
 		}
-		if !ret.NextUpdate.IsZero() && now.After(ret.NextUpdate) {
-			return nil, errors.New("smx509: OCSP response is stale (past NextUpdate)")
+		if !ret.NextUpdate.IsZero() {
+			if now.After(ret.NextUpdate) {
+				return nil, errors.New("smx509: OCSP response is stale (past NextUpdate)")
+			}
+		} else if !ret.ThisUpdate.IsZero() && now.Sub(ret.ThisUpdate) > maxOCSPNoNextUpdateAge {
+			return nil, errors.New("smx509: OCSP response has no NextUpdate and ThisUpdate exceeds the local maximum age")
 		}
 	}
 
 	return ret, nil
+}
+
+// IsSM3CertID reports whether the CertID of resp's first singleResponse uses
+// the SM3 hash algorithm (GM/T 0009-2012, OID 1.2.156.10197.1.401).
+//
+// Background: golang.org/x/crypto's ocsp.Response — the type returned by this
+// package's OCSP parsers — cannot express SM3: its IssuerHash field is a
+// crypto.Hash and crypto defines no SM3 constant. For an SM3-CertID response
+// the SM2-aware parser therefore reports IssuerHash = crypto.SHA256. That is
+// a forced misreporting, not the hash actually used in the CertID: recomputing
+// issuer name/key hashes with resp.IssuerHash.New() would produce SHA-256
+// digests that never match the SM3 digests carried in the response. Use this
+// predicate to branch, and hash with github.com/iuboy/pollux-go/sm3 instead.
+//
+// The answer is derived from the raw DER in resp.Raw (the CertID hash OID is
+// inspected directly, not the misreported IssuerHash), so it also works for
+// responses parsed by x/crypto's own parser. A nil resp, an empty Raw, or a
+// Raw that does not decode as a BasicOCSPResponse reports false.
+func IsSM3CertID(resp *ocsp.Response) bool {
+	if resp == nil || len(resp.Raw) == 0 {
+		return false
+	}
+	var outer sm2ResponseASN1
+	if _, err := asn1.Unmarshal(resp.Raw, &outer); err != nil {
+		return false
+	}
+	if !outer.Response.ResponseType.Equal(idPKIXOCSPBasic) {
+		return false
+	}
+	var basic parseBasicResponse
+	if _, err := asn1.Unmarshal(outer.Response.Response, &basic); err != nil {
+		return false
+	}
+	if len(basic.TBSResponseData.Responses) == 0 {
+		return false
+	}
+	return basic.TBSResponseData.Responses[0].CertID.HashAlgorithm.Algorithm.Equal(sm3HashOID)
 }
 
 // oidExtKeyUsageOCSPSigning is id-kp-OCSPSigning (RFC 6960 §4.2.2.2).
@@ -352,7 +450,7 @@ func isSM2OCSPResponse(data []byte) bool {
 	if !resp.Response.ResponseType.Equal(idPKIXOCSPBasic) {
 		return false
 	}
-	var basicResp sm2BasicResponse
+	var basicResp parseBasicResponse
 	if _, err := asn1.Unmarshal(resp.Response.Response, &basicResp); err != nil {
 		return false
 	}

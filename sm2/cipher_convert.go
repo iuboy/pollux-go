@@ -14,9 +14,12 @@ import (
 //	ctC1C3C2, err := sm2.AdjustCipherOrder(ct, sm2.OrderC1C2C3, sm2.OrderC1C3C2)
 //	plaintext, err := sm2.Decrypt(priv, ctC1C3C2)
 //
-// 注意：ASN.1 编码的密文其内部 C3/C2 字段顺序固定为 C1C3C2（标准），对其调用
-// 本函数仅在 from==to 时为恒等操作；from!=to 时对 ASN.1 密文会返回解析错误。
+// 注意：ASN.1 编码的密文（0x30 前缀）其内部 C3/C2 字段顺序固定为 C1C3C2（标准），
+// 不存在顺序转换的语义——from!=to 时对 ASN.1 输入直接返回错误（历史实现委托
+// gmsm 后会静默输出 Plain 编码，改变密文编码格式，下游期望 ASN.1 结构即错位）。
 // 要在 Plain 与 ASN.1 编码间互转，请用 ASN1ToPlain / PlainToASN1。
+//
+// from==to 时返回原切片引用（同一底层数组）——调用方修改输出即修改输入。
 func AdjustCipherOrder(ciphertext []byte, from, to CipherOrder) ([]byte, error) {
 	if err := validateOrder(from); err != nil {
 		return nil, err
@@ -26,6 +29,9 @@ func AdjustCipherOrder(ciphertext []byte, from, to CipherOrder) ([]byte, error) 
 	}
 	if from == to {
 		return ciphertext, nil
+	}
+	if len(ciphertext) > 0 && ciphertext[0] == 0x30 {
+		return nil, errors.New("sm2: ASN.1-encoded ciphertext has fixed C1C3C2 field order; use ASN1ToPlain/PlainToASN1 to change encoding instead")
 	}
 
 	// gmsm 的 ciphertextSplicingOrder 类型非导出；常量 C1C3C2/C1C2C3 已导出，
@@ -53,9 +59,16 @@ func ASN1ToPlain(ciphertext []byte, opts *EncrypterOpts) ([]byte, error) {
 //
 // from 指明输入 Plain 密文的拼接顺序（C1C3C2 或 C1C2C3），用于正确切分 C2/C3。
 // 输出恒为 ASN.1 + C1C3C2（标准固定顺序），可直接用 Decrypt 解密。
+//
+// 仅支持未压缩点（0x04 前缀）输入：压缩点（0x02/0x03）的 C1 仅含 33 字节 x
+// 坐标，底层转换会把它按 65 字节未压缩点硬切，静默产出无法解密的损坏 ASN.1
+// （两个 16 字节的畸形 INTEGER）。压缩 Plain 密文请先解密再以目标格式重加密。
 func PlainToASN1(ciphertext []byte, from CipherOrder) ([]byte, error) {
 	if err := validateOrder(from); err != nil {
 		return nil, err
+	}
+	if len(ciphertext) > 0 && (ciphertext[0] == 0x02 || ciphertext[0] == 0x03) {
+		return nil, errors.New("sm2: compressed-point Plain ciphertext is not supported by PlainToASN1 (silently corrupted output otherwise); decrypt and re-encrypt instead")
 	}
 	switch from {
 	case OrderC1C3C2:

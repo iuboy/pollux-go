@@ -14,10 +14,21 @@ import (
 
 // --- Key Schedule Tests (keyschedule.go) ---
 
+// mustEarlySecret wraps DeriveEarlySecret's (value, error) pair for call
+// sites that only exercise the happy path.
+func mustEarlySecret(t *testing.T, ikm []byte) []byte {
+	t.Helper()
+	early, err := DeriveEarlySecret(ikm)
+	if err != nil {
+		t.Fatalf("DeriveEarlySecret(%x): %v", ikm, err)
+	}
+	return early
+}
+
 // TestDeriveEarlySecret tests DeriveEarlySecret with both zero and non-zero IKM.
 func TestDeriveEarlySecret(t *testing.T) {
 	// No PSK → IKM is all zeros
-	early := DeriveEarlySecret(nil)
+	early := mustEarlySecret(t, nil)
 	if len(early) != sm3.Size {
 		t.Fatalf("early secret length: got %d, want %d", len(early), sm3.Size)
 	}
@@ -27,7 +38,7 @@ func TestDeriveEarlySecret(t *testing.T) {
 
 	// With explicit IKM
 	ikm := bytes.Repeat([]byte{0xAB}, 32)
-	early2 := DeriveEarlySecret(ikm)
+	early2 := mustEarlySecret(t, ikm)
 	if len(early2) != sm3.Size {
 		t.Fatalf("early secret length: got %d, want %d", len(early2), sm3.Size)
 	}
@@ -36,7 +47,7 @@ func TestDeriveEarlySecret(t *testing.T) {
 	}
 
 	// Determinism
-	early3 := DeriveEarlySecret(nil)
+	early3 := mustEarlySecret(t, nil)
 	if !bytes.Equal(early, early3) {
 		t.Fatal("DeriveEarlySecret not deterministic with nil IKM")
 	}
@@ -44,7 +55,7 @@ func TestDeriveEarlySecret(t *testing.T) {
 
 // TestDeriveHandshakeSecret tests the handshake secret derivation.
 func TestDeriveHandshakeSecret(t *testing.T) {
-	earlySecret := DeriveEarlySecret(nil)
+	earlySecret := mustEarlySecret(t, nil)
 	sharedSecret := bytes.Repeat([]byte{0x42}, 32)
 
 	hs, err := DeriveHandshakeSecret(earlySecret, sharedSecret)
@@ -80,7 +91,7 @@ func TestDeriveHandshakeSecret(t *testing.T) {
 
 // TestDeriveMasterSecret tests the master secret derivation.
 func TestDeriveMasterSecret(t *testing.T) {
-	earlySecret := DeriveEarlySecret(nil)
+	earlySecret := mustEarlySecret(t, nil)
 	sharedSecret := bytes.Repeat([]byte{0x42}, 32)
 
 	hs, err := DeriveHandshakeSecret(earlySecret, sharedSecret)
@@ -236,7 +247,7 @@ func TestDeriveResumptionPSK(t *testing.T) {
 // TestDeriveResumptionMasterSecret tests resumption master secret derivation.
 func TestDeriveResumptionMasterSecret(t *testing.T) {
 	// Full chain: early → handshake → master → resumption master
-	earlySecret := DeriveEarlySecret(nil)
+	earlySecret := mustEarlySecret(t, nil)
 	hs, err := DeriveHandshakeSecret(earlySecret, bytes.Repeat([]byte{0x42}, 32))
 	if err != nil {
 		t.Fatal(err)
@@ -258,7 +269,7 @@ func TestDeriveResumptionMasterSecret(t *testing.T) {
 
 // TestDeriveExporterMasterSecret tests exporter master secret derivation.
 func TestDeriveExporterMasterSecret(t *testing.T) {
-	earlySecret := DeriveEarlySecret(nil)
+	earlySecret := mustEarlySecret(t, nil)
 	hs, err := DeriveHandshakeSecret(earlySecret, bytes.Repeat([]byte{0x42}, 32))
 	if err != nil {
 		t.Fatal(err)
@@ -282,7 +293,7 @@ func TestDeriveExporterMasterSecret(t *testing.T) {
 
 // TestGenerateCurveSM2KeyPair tests SM2 key pair generation.
 func TestGenerateCurveSM2KeyPair(t *testing.T) {
-	key, err := GenerateCurveSM2KeyPair(nil)
+	key, err := GenerateCurveSM2KeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +308,7 @@ func TestGenerateCurveSM2KeyPair(t *testing.T) {
 	}
 
 	// Generate with explicit reader
-	key2, err := GenerateCurveSM2KeyPair(rand.Reader)
+	key2, err := GenerateCurveSM2KeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,11 +322,11 @@ func TestGenerateCurveSM2KeyPair(t *testing.T) {
 // TestCurveSM2ECDHE tests ECDH shared secret computation.
 func TestCurveSM2ECDHE(t *testing.T) {
 	// Generate two key pairs
-	aliceKey, err := GenerateCurveSM2KeyPair(rand.Reader)
+	aliceKey, err := GenerateCurveSM2KeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	bobKey, err := GenerateCurveSM2KeyPair(rand.Reader)
+	bobKey, err := GenerateCurveSM2KeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,7 +588,7 @@ func TestFullKeyScheduleWithFinished(t *testing.T) {
 	// Simulate a TLS 1.3 handshake with SM3
 
 	// 1. Early Secret (no PSK)
-	earlySecret := DeriveEarlySecret(nil)
+	earlySecret := mustEarlySecret(t, nil)
 
 	// 2. Handshake Secret (with simulated ECDHE shared secret)
 	sharedSecret := bytes.Repeat([]byte{0x42}, 32)
@@ -643,11 +654,11 @@ func TestFullKeyScheduleWithFinished(t *testing.T) {
 // TestECDHEKeyExchangeIntegration tests ECDHE + key schedule integration.
 func TestECDHEKeyExchangeIntegration(t *testing.T) {
 	// Generate SM2 key pairs for client and server
-	clientKey, err := GenerateCurveSM2KeyPair(rand.Reader)
+	clientKey, err := GenerateCurveSM2KeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverKey, err := GenerateCurveSM2KeyPair(rand.Reader)
+	serverKey, err := GenerateCurveSM2KeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -663,7 +674,7 @@ func TestECDHEKeyExchangeIntegration(t *testing.T) {
 	}
 
 	// Both sides derive the same handshake secret
-	earlySecret := DeriveEarlySecret(nil)
+	earlySecret := mustEarlySecret(t, nil)
 
 	clientHS, err := DeriveHandshakeSecret(earlySecret, clientShared)
 	if err != nil {
@@ -703,7 +714,7 @@ func TestECDHEKeyExchangeIntegration(t *testing.T) {
 // TestPublicKeyTypeCompatibility verifies that sm2.PrivateKey.PublicKey
 // can be used as *ecdsa.PublicKey for CurveSM2ECDHE input.
 func TestPublicKeyTypeCompatibility(t *testing.T) {
-	key, err := GenerateCurveSM2KeyPair(rand.Reader)
+	key, err := GenerateCurveSM2KeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +804,7 @@ func TestHKDFExpandLabelBoundaryLengths(t *testing.T) {
 // TestCurveSM2ECDHEOffCurvePoint verifies that ECDHE rejects a public key
 // that is not on the SM2 curve.
 func TestCurveSM2ECDHEOffCurvePoint(t *testing.T) {
-	key, err := GenerateCurveSM2KeyPair(rand.Reader)
+	key, err := GenerateCurveSM2KeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}

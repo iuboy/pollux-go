@@ -30,7 +30,18 @@ var (
 // tls.Config.CurvePreferences). The GM paths (tlcp, tls13gm) do their own
 // curve negotiation and are NOT governed by this list — they use SM2 per
 // RFC 8998 regardless of CurvePreferences.
+//
+// An explicit CurvePreferences list REPLACES the standard library's default
+// set, so this list must track the stdlib hardening baseline: since Go 1.24
+// the default includes the X25519MLKEM768 post-quantum hybrid, and Go 1.26
+// added SecP256r1MLKEM768 — pinning only the classic groups would silently
+// opt this path out of quantum-resistant key exchange. The two hybrid groups
+// pair with the classic groups offered below them as negotiation fallbacks.
+// SecP384r1MLKEM1024 stays out because this list deliberately does not offer
+// P-384. GODEBUG=tlssecpmlkem=0 disables SecP256r1MLKEM768 process-wide.
 var defaultTLSCurvePreferences = []tls.CurveID{
+	tls.X25519MLKEM768,
+	tls.SecP256r1MLKEM768,
 	tls.X25519,
 	tls.CurveP256,
 }
@@ -65,9 +76,8 @@ type ServerOptions struct {
 	// paths read it; callers running both protocols on one ServerOptions
 	// should leave this empty so each path falls back to its own safe default
 	// (tlcp.DefaultCipherSuites for TLCP, tls.Config defaults for TLS).
-	CipherSuites       []uint16
-	ClientAuth         tlcp.ClientAuthType
-	InsecureSkipVerify bool
+	CipherSuites []uint16
+	ClientAuth   tlcp.ClientAuthType
 
 	// TLS 客户端认证（标准 TLS 服务端）
 	TLSClientAuth tls.ClientAuthType
@@ -143,11 +153,10 @@ func (o *ServerOptions) buildTLCPConfig() (*tlcp.Config, error) {
 		return nil, errMissingTLCPCertificate
 	}
 	cfg := &tlcp.Config{
-		SignCertificate:    o.SignCert,
-		EncCertificate:     o.EncCert,
-		CipherSuites:       o.CipherSuites,
-		ClientAuth:         o.ClientAuth,
-		InsecureSkipVerify: o.InsecureSkipVerify,
+		SignCertificate: o.SignCert,
+		EncCertificate:  o.EncCert,
+		CipherSuites:    o.CipherSuites,
+		ClientAuth:      o.ClientAuth,
 	}
 	if o.SignRootCAs != nil {
 		cfg.SignRootCAs = o.SignRootCAs.ToStandardPool()
@@ -166,12 +175,11 @@ func (o *ServerOptions) buildTLCPConfig() (*tlcp.Config, error) {
 // buildTLSConfig converts options into a tls.Config.
 func (o *ServerOptions) buildTLSConfig() (*tls.Config, error) {
 	cfg := &tls.Config{
-		Certificates:       o.Certificates,
-		ClientAuth:         o.TLSClientAuth,
-		CipherSuites:       o.CipherSuites,
-		InsecureSkipVerify: o.InsecureSkipVerify,
-		MinVersion:         tls.VersionTLS12,
-		CurvePreferences:   defaultTLSCurvePreferences,
+		Certificates:     o.Certificates,
+		ClientAuth:       o.TLSClientAuth,
+		CipherSuites:     o.CipherSuites,
+		MinVersion:       tls.VersionTLS12,
+		CurvePreferences: defaultTLSCurvePreferences,
 	}
 	if o.RootCAs != nil {
 		cfg.RootCAs = o.RootCAs.ToStandardPool()
@@ -224,7 +232,9 @@ func loadSM2KeyPair(certPEM, keyPEM []byte) (*tls.Certificate, error) {
 		return nil, errors.New("pollux/https: SM2 certificate public key type mismatch")
 	}
 	keyPub := &key.PublicKey
-	if certPub.X.Cmp(keyPub.X) != 0 || certPub.Y.Cmp(keyPub.Y) != 0 {
+	// sm2.Equal compares curve identity (with parameter fallback) before the
+	// coordinates, so a non-SM2 key can never pass by coordinate collision.
+	if !polluxSm2.Equal(certPub, keyPub) {
 		return nil, errors.New("pollux/https: private key does not match certificate's public key")
 	}
 	return &tls.Certificate{

@@ -1,13 +1,10 @@
 package kdf
 
 import (
-	"crypto/hmac"
-	"encoding/binary"
+	stdpbkdf2 "crypto/pbkdf2"
 	"errors"
 	"fmt"
 	"hash"
-
-	"github.com/iuboy/pollux-go/internal/memsecure"
 )
 
 // ErrInvalidIteration is returned when the iteration count is not positive.
@@ -35,6 +32,12 @@ const maxKeyLen = 1 << 20 // 1 MiB
 // PBKDF2 derives a key of keyLen bytes from password and salt using PBKDF2
 // (RFC 2898 / PKCS#5 v2.0 Section 5.2) with the given hash as the PRF.
 //
+// The derivation is delegated to the standard library crypto/pbkdf2 (added in
+// Go 1.24; golang.org/x/crypto/pbkdf2 is its frozen ancestor); this wrapper
+// preserves the package's input-validation boundary and (result, error)
+// signature so callers — notably the pwhash package's pbkdf2-sm3 hasher — are
+// unaffected by the underlying switch.
+//
 // The hash factory h lets the caller pick the underlying PRF without binding
 // this package to a specific hash:
 //
@@ -54,8 +57,12 @@ const maxKeyLen = 1 << 20 // 1 MiB
 //
 // iter and keyLen are bounded above to reject attacker-controlled pathological
 // values (e.g. those parsed from untrusted PHC strings) that would otherwise
-// cause CPU exhaustion or integer overflow. Both bounds are well above any
-// legitimate use.
+// cause CPU exhaustion. Both bounds are well above any legitimate use.
+//
+// FIPS note: under GODEBUG=fips140=only the stdlib rejects non-approved
+// hashes (SM3 among them); the error is propagated rather than silently
+// deriving GM keys inside a process that explicitly opted into FIPS-only
+// crypto.
 func PBKDF2(password, salt []byte, iter, keyLen int, h func() hash.Hash) ([]byte, error) {
 	if iter <= 0 {
 		return nil, ErrInvalidIteration
@@ -73,43 +80,13 @@ func PBKDF2(password, salt []byte, iter, keyLen int, h func() hash.Hash) ([]byte
 		return nil, errors.New("kdf: hash factory must not be nil")
 	}
 
-	prf := hmac.New(h, password)
-	hLen := prf.Size()
-
-	numBlocks := (keyLen + hLen - 1) / hLen
-	dk := make([]byte, 0, numBlocks*hLen)
-
-	var block [4]byte
-	u := make([]byte, hLen)
-	t := make([]byte, hLen)
-	// u and t carry PRF intermediate outputs (key-derivation material). Zero
-	// them before returning so the material does not linger on the heap waiting
-	// for GC. Callers remain responsible for zeroing the returned dk.
-	defer memsecure.ZeroBytes(u)
-	defer memsecure.ZeroBytes(t)
-
-	for i := 1; i <= numBlocks; i++ {
-		binary.BigEndian.PutUint32(block[:], uint32(i))
-
-		// U_1 = PRF(password, salt || INT_32_BE(i))
-		prf.Reset()
-		prf.Write(salt)
-		prf.Write(block[:])
-		u = prf.Sum(u[:0])
-		copy(t, u)
-
-		// U_j = PRF(password, U_{j-1}); T = U_1 ^ U_2 ^ ... ^ U_c
-		for j := 2; j <= iter; j++ {
-			prf.Reset()
-			prf.Write(u)
-			u = prf.Sum(u[:0])
-			for k := 0; k < hLen; k++ {
-				t[k] ^= u[k]
-			}
-		}
-
-		dk = append(dk, t...)
+	// stdlib crypto/pbkdf2.Key signature: Key(h, password string, salt, iter,
+	// keyLength) ([]byte, error). The password crosses the boundary as string
+	// (the stdlib convention to discourage retaining attacker data); the
+	// conversion never outlives this call.
+	dk, err := stdpbkdf2.Key(h, string(password), salt, iter, keyLen)
+	if err != nil {
+		return nil, fmt.Errorf("kdf: pbkdf2: %w", err)
 	}
-
-	return dk[:keyLen], nil
+	return dk, nil
 }

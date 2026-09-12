@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -545,5 +546,130 @@ func TestParseOCSPResponseWithIssuerAt_FutureThisUpdate(t *testing.T) {
 	}
 	if _, err := ParseOCSPResponseWithIssuerAt(respBytes, caCert, now); err == nil {
 		t.Fatal("expected rejection of OCSP response with future ThisUpdate")
+	}
+}
+
+// buildRawSM2Response assembles a BasicOCSPResponse with hand-chosen
+// ResponderID / CertID hash OID. The signature is a dummy byte — callers use
+// this only to exercise parse-time checks that run BEFORE signature
+// verification (ResponderID CHOICE validation, CertID hash detection).
+func buildRawSM2Response(t *testing.T, responderID asn1.RawValue, hashOID asn1.ObjectIdentifier) []byte {
+	t.Helper()
+	single := sm2SingleResponse{
+		CertID: sm2CertID{
+			HashAlgorithm: pkix.AlgorithmIdentifier{
+				Algorithm:  hashOID,
+				Parameters: asn1.RawValue{Tag: 5},
+			},
+			NameHash:      make([]byte, 32),
+			IssuerKeyHash: make([]byte, 32),
+			SerialNumber:  big.NewInt(42),
+		},
+		Good:       true,
+		ThisUpdate: time.Now().UTC(),
+	}
+	basic := sm2BasicResponse{
+		TBSResponseData: sm2ResponseData{
+			RawResponderID: responderID,
+			ProducedAt:     time.Now().UTC(),
+			Responses:      []sm2SingleResponse{single},
+		},
+		SignatureAlgorithm: pkix.AlgorithmIdentifier{
+			Algorithm:  oidSignatureSM2WithSM3, // routes to the SM2-aware parser
+			Parameters: asn1.RawValue{Tag: 5},
+		},
+		Signature: asn1.BitString{Bytes: []byte{0x00}, BitLength: 8},
+	}
+	basicDER, err := asn1.Marshal(basic)
+	if err != nil {
+		t.Fatalf("marshal basic response: %v", err)
+	}
+	respDER, err := asn1.Marshal(sm2ResponseASN1{
+		Status:   asn1.Enumerated(ocsp.Success),
+		Response: sm2ResponseBytes{ResponseType: idPKIXOCSPBasic, Response: basicDER},
+	})
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	return respDER
+}
+
+// TestParseOCSPResponseWithIssuer_ResponderIDWrongClass locks the ResponderID
+// CHOICE class check (RFC 6960 §4.2.2): [1]/[2] must be context-specific. A
+// universal-class element with tag number 2 (INTEGER) must be rejected instead
+// of being misread as a byKey KeyHash. The check fires before signature
+// verification, so a dummy signature suffices.
+func TestParseOCSPResponseWithIssuer_ResponderIDWrongClass(t *testing.T) {
+	caCert, _ := makeOCSPTestCA(t)
+	sha256OID := oidFromHashAlgorithm(crypto.SHA256)
+
+	// Universal class (0), tag 2 — same tag number as byKey but wrong class.
+	bad := buildRawSM2Response(t,
+		asn1.RawValue{Class: 0, Tag: 2, IsCompound: false, Bytes: []byte{0x42}},
+		sha256OID)
+	_, err := ParseOCSPResponseWithIssuer(bad, caCert)
+	if err == nil {
+		t.Fatal("expected rejection of non-context-specific ResponderID")
+	}
+	if !strings.Contains(err.Error(), "responder id class") {
+		t.Fatalf("error should mention responder id class, got: %v", err)
+	}
+
+	// Application class (1) with tag 1 — also rejected.
+	badApp := buildRawSM2Response(t,
+		asn1.RawValue{Class: 1, Tag: 1, IsCompound: true, Bytes: []byte{0x30, 0x00}},
+		sha256OID)
+	if _, err := ParseOCSPResponseWithIssuer(badApp, caCert); err == nil {
+		t.Fatal("expected rejection of application-class ResponderID")
+	}
+}
+
+// TestIsSM3CertID locks the SM3-CertID predicate: a response whose CertID hash
+// OID is SM3 must be distinguishable from the SHA-256 misreport in
+// resp.IssuerHash (x/crypto's ocsp.Response cannot express SM3).
+func TestIsSM3CertID(t *testing.T) {
+	// Real SM2-signed response (SHA-256 CertID by default): parsed response
+	// reports IssuerHash=SHA256 and IsSM3CertID must be false.
+	caCert, caKey := makeOCSPTestCA(t)
+	tmpl := &ocsp.Response{
+		Status:       ocsp.Good,
+		SerialNumber: big.NewInt(42),
+		ThisUpdate:   time.Now().UTC(),
+		NextUpdate:   time.Now().Add(time.Hour).UTC(),
+		Certificate:  caCert,
+	}
+	respBytes, err := CreateOCSPResponse(caCert, caCert, tmpl, caKey)
+	if err != nil {
+		t.Fatalf("CreateOCSPResponse: %v", err)
+	}
+	parsed, err := ParseOCSPResponseWithIssuer(respBytes, caCert)
+	if err != nil {
+		t.Fatalf("ParseOCSPResponseWithIssuer: %v", err)
+	}
+	if parsed.IssuerHash != crypto.SHA256 {
+		t.Fatalf("IssuerHash = %v, want SHA256", parsed.IssuerHash)
+	}
+	if IsSM3CertID(parsed) {
+		t.Error("IsSM3CertID(SHA-256 CertID) = true, want false")
+	}
+
+	// Hand-assembled SM3-CertID response (signature is a dummy; IsSM3CertID
+	// only inspects structure, never verifies).
+	sm3Resp := buildRawSM2Response(t,
+		asn1.RawValue{Class: 2, Tag: 1, IsCompound: true, Bytes: caCert.RawSubject},
+		sm3HashOID)
+	if !IsSM3CertID(&ocsp.Response{Raw: sm3Resp}) {
+		t.Error("IsSM3CertID(SM3 CertID) = false, want true")
+	}
+
+	// Degenerate inputs report false.
+	if IsSM3CertID(nil) {
+		t.Error("IsSM3CertID(nil) = true, want false")
+	}
+	if IsSM3CertID(&ocsp.Response{}) {
+		t.Error("IsSM3CertID(empty Raw) = true, want false")
+	}
+	if IsSM3CertID(&ocsp.Response{Raw: []byte("not-der")}) {
+		t.Error("IsSM3CertID(garbage Raw) = true, want false")
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iuboy/pollux-go/internal/memsecure"
 	"github.com/quic-go/quic-go"
 )
 
@@ -42,18 +43,42 @@ func Listen(ctx context.Context, cfg ServerConfig) (*Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	// tls.Config is unused in GM mode (GMCryptoSetup ignores it), but a non-nil
-	// placeholder avoids any nil-check in quic.ListenAddr before the GM branch.
-	qln, err := quic.ListenAddr(cfg.Addr, &tls.Config{}, &quic.Config{
+	// quic.ListenAddr cannot accept a context — calling it directly silently
+	// dropped the caller's cancellation, so a slow DNS resolution could stall
+	// Listen forever despite ctx.WithTimeout. Race the listen against
+	// cancellation; on cancel, reap the eventual listener and close it so
+	// nothing leaks.
+	type listenResult struct {
+		ln  *quic.Listener
+		err error
+	}
+	qcfg := &quic.Config{
 		GMSM4GCM:           true,
 		GMHandshakeConfig:  &quic.GMHandshakeConfig{Server: cfg.tls13ServerConfig(rotator.keys)},
 		MaxIdleTimeout:     cfg.idleTimeout(),
 		MaxIncomingStreams: cfg.MaxIncomingStreams,
-	})
-	if err != nil {
-		return nil, err
 	}
-	return &Listener{inner: qln, ticketKeys: rotator}, nil
+	// tls.Config is unused in GM mode (GMCryptoSetup ignores it), but a non-nil
+	// placeholder avoids any nil-check in quic.ListenAddr before the GM branch.
+	resCh := make(chan listenResult, 1)
+	go func() {
+		ln, err := quic.ListenAddr(cfg.Addr, &tls.Config{}, qcfg)
+		resCh <- listenResult{ln, err}
+	}()
+	select {
+	case r := <-resCh:
+		if r.err != nil {
+			return nil, r.err
+		}
+		return &Listener{inner: r.ln, ticketKeys: rotator}, nil
+	case <-ctx.Done():
+		go func() {
+			if r := <-resCh; r.ln != nil {
+				_ = r.ln.Close()
+			}
+		}()
+		return nil, ctx.Err()
+	}
 }
 
 // Accept waits for and returns the next GM QUIC connection.
@@ -165,7 +190,7 @@ func dial(ctx context.Context, cfg ClientConfig, early bool) (*Conn, error) {
 		qc, err = quic.Dial(ctx, udpConn, udpAddr, &tls.Config{}, qcfg)
 	}
 	if err != nil {
-		udpConn.Close()
+		_ = udpConn.Close()
 		return nil, err
 	}
 	conn.inner = qc
@@ -200,6 +225,14 @@ func (c *Conn) Close() error {
 				err = uerr
 			}
 		}
+		// The captured resumption material is live key material (a stolen PSK
+		// impersonates the client on a resumed connection); wipe it at close.
+		c.ticketMu.Lock()
+		memsecure.ZeroBytes(c.sessionIdentity)
+		memsecure.ZeroBytes(c.sessionPSK)
+		c.sessionIdentity = nil
+		c.sessionPSK = nil
+		c.ticketMu.Unlock()
 	})
 	return err
 }

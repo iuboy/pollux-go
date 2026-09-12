@@ -11,7 +11,7 @@ import (
 	"time"
 
 	polluxCert "github.com/iuboy/pollux-go/cert"
-	polluxHttp "github.com/iuboy/pollux-go/https"
+	"github.com/iuboy/pollux-go/https"
 	polluxSM2 "github.com/iuboy/pollux-go/sm2"
 	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )
@@ -114,7 +114,7 @@ func TestBlackBox_HTTP_ServerOptions_WithCertPool(t *testing.T) {
 	rootPool := polluxCert.NewPool()
 	rootPool.AddCert(caCert)
 
-	opts := &polluxHttp.ServerOptions{
+	opts := &https.ServerOptions{
 		Addr:         ":443",
 		Certificates: []tls.Certificate{serverCert},
 		RootCAs:      rootPool,
@@ -150,7 +150,7 @@ func TestBlackBox_HTTP_ServerOptions_TLCPWithCertPools(t *testing.T) {
 	encRoots := polluxCert.NewPool()
 	encRoots.AddCert(encCA)
 
-	opts := &polluxHttp.ServerOptions{
+	opts := &https.ServerOptions{
 		Addr:        ":443",
 		SignCert:    &signCert,
 		EncCert:     &encCert,
@@ -177,7 +177,7 @@ func TestBlackBox_HTTP_ServerOptions_ClientAuthWithCertPool(t *testing.T) {
 	clientCA := polluxCert.NewPool()
 	clientCA.AddCert(caCert)
 
-	opts := &polluxHttp.ServerOptions{
+	opts := &https.ServerOptions{
 		Addr:          ":443",
 		Certificates:  []tls.Certificate{serverCert},
 		ClientCAs:     clientCA,
@@ -200,7 +200,7 @@ func TestBlackBox_HTTP_ClientOptions_WithCertPool(t *testing.T) {
 	rootPool := polluxCert.NewPool()
 	rootPool.AddCert(caCert)
 
-	opts := &polluxHttp.ClientOptions{
+	opts := &https.ClientOptions{
 		RootCAs: rootPool,
 	}
 
@@ -222,7 +222,7 @@ func TestBlackBox_HTTP_ClientOptions_TLCPWithCertPools(t *testing.T) {
 	encRoots := polluxCert.NewPool()
 	encRoots.AddCert(encCA)
 
-	opts := &polluxHttp.ClientOptions{
+	opts := &https.ClientOptions{
 		SignRootCAs: signRoots,
 		EncRootCAs:  encRoots,
 	}

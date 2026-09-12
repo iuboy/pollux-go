@@ -61,7 +61,7 @@ type sm2ResponseData struct {
 type sm2SingleResponse struct {
 	CertID           sm2CertID
 	Good             asn1.Flag        `asn1:"tag:0,optional"`
-	Revoked          sm2RevokedInfo   `asn1:"tag:1,optional"`
+	Revoked          asn1.RawValue    `asn1:"tag:1,optional"`
 	Unknown          asn1.Flag        `asn1:"tag:2,optional"`
 	ThisUpdate       time.Time        `asn1:"generalized"`
 	NextUpdate       time.Time        `asn1:"generalized,explicit,tag:0,optional"`
@@ -89,7 +89,7 @@ func createSM2OCSPResponse(issuer, responderCert *x509.Certificate, template ocs
 		PublicKey asn1.BitString
 	}
 	if _, err := asn1.Unmarshal(issuer.RawSubjectPublicKeyInfo, &publicKeyInfo); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("smx509: parse issuer SubjectPublicKeyInfo: %w", err)
 	}
 
 	if template.IssuerHash == 0 {
@@ -132,10 +132,14 @@ func createSM2OCSPResponse(issuer, responderCert *x509.Certificate, template ocs
 	case ocsp.Unknown:
 		innerResponse.Unknown = true
 	case ocsp.Revoked:
-		innerResponse.Revoked = sm2RevokedInfo{
-			RevocationTime: template.RevokedAt.UTC(),
-			Reason:         asn1.Enumerated(template.RevocationReason),
+		// Encode revokedInfo via marshalRevokedInfoRaw so reason=unspecified(0)
+		// omits cRLReason entirely (RFC 5280 §5.3.1 SHOULD be absent);
+		// encoding/asn1 cannot omit a non-pointer optional field.
+		rv, rvErr := marshalRevokedInfoRaw(template.RevokedAt.UTC(), template.RevocationReason)
+		if rvErr != nil {
+			return nil, rvErr
 		}
+		innerResponse.Revoked = rv
 	default:
 		// An unrecognized status would otherwise silently produce a response with
 		// all status fields zeroed — an invalid OCSP response that downstream
@@ -159,7 +163,7 @@ func createSM2OCSPResponse(issuer, responderCert *x509.Certificate, template ocs
 
 	tbsResponseDataDER, err := asn1.Marshal(tbsResponseData)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("smx509: marshal tbsResponseData: %w", err)
 	}
 
 	// SM2 signing: pass the raw TBS ResponseData DER (no pre-hash) to
@@ -189,16 +193,20 @@ func createSM2OCSPResponse(issuer, responderCert *x509.Certificate, template ocs
 	}
 	responseDER, err := asn1.Marshal(response)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("smx509: marshal basic OCSP response: %w", err)
 	}
 
-	return asn1.Marshal(sm2ResponseASN1{
+	finalDER, err := asn1.Marshal(sm2ResponseASN1{
 		Status: asn1.Enumerated(ocsp.Success),
 		Response: sm2ResponseBytes{
 			ResponseType: idPKIXOCSPBasic,
 			Response:     responseDER,
 		},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("smx509: marshal OCSP response: %w", err)
+	}
+	return finalDER, nil
 }
 
 // oidFromHashAlgorithm mirrors the private helper in x/crypto/ocsp

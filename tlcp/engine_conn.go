@@ -18,11 +18,6 @@ import (
 	polluxsmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
-// cryptoRandReader is the default RNG (crypto/rand) for record IVs.
-type cryptoRandReader struct{}
-
-func (cryptoRandReader) Read(p []byte) (int, error) { return rand.Read(p) }
-
 // establishKeys derives the traffic keys from the master secret and stages them
 // on the in/out halfConns. Key-role assignment depends on the role:
 //   - client: in decrypts server→client (server keys), out encrypts client→server (client keys)
@@ -91,6 +86,46 @@ const (
 	tlcpRecordApplicationData  tlcpRecordType = 23
 )
 
+// Alert level/description values (GB/T 38636-2020 §6.3.6, same numbering as
+// TLS alert values).
+const (
+	tlcpAlertLevelWarning byte = 1
+	tlcpAlertLevelError   byte = 2
+	// tlcpAlertCloseNotify is the normal-close alert: Read maps it to io.EOF,
+	// matching crypto/tls semantics.
+	tlcpAlertCloseNotify byte = 0
+	// tlcpAlertHandshakeFailure is the generic fatal alert sent on handshake
+	// error paths (TLS alert value 40).
+	tlcpAlertHandshakeFailure byte = 40
+)
+
+// alertError is a received alert, parsed from the DECRYPTED alert-record
+// payload. readRecord returns it for any alert record; Read translates
+// close_notify into io.EOF and everything else into this error.
+type alertError struct {
+	level byte
+	desc  byte
+}
+
+func (e alertError) Error() string {
+	return fmt.Sprintf("tlcp: received alert: level=%d description=%d", e.level, e.desc)
+}
+
+// errDecrypt is the single, undifferentiated record-decryption failure. All
+// CBC padding/MAC failure modes surface as this error so an attacker cannot
+// distinguish them (Lucky13/POODLE-style oracles need distinguishable
+// failures). See decrypt's CBC branch.
+var errDecrypt = errors.New("tlcp: bad record MAC")
+
+// Handshake-message size caps, mirroring crypto/tls: a 3-byte length field
+// would otherwise let a malicious peer buffer up to ~16MB per connection.
+// Certificate messages legitimately carry multi-cert chains and get the
+// larger cap; everything else is capped at 16KB.
+const (
+	maxHandshake               = 16 * 1024
+	maxHandshakeCertificateMsg = 128 * 1024
+)
+
 // --- halfConn: one-directional encryption state ---
 
 // tlcpHalfConn holds the encryption/MAC state for one direction of a TLCP
@@ -98,8 +133,7 @@ const (
 // cipher/MAC, changeCipherSpec (triggered by a CCS record) activates it and
 // resets the sequence number to zero.
 type tlcpHalfConn struct {
-	mu  sync.Mutex
-	err error // first permanent error on this direction
+	mu sync.Mutex
 
 	version uint16
 
@@ -126,20 +160,16 @@ type tlcpMAC interface {
 	Size() int
 }
 
-// isAEAD reports whether this halfConn uses an AEAD cipher.
-func (hc *tlcpHalfConn) isAEAD() bool { return hc.aead != nil }
-
-// explicitNonceLen returns the per-record explicit-nonce byte count: 8 for AEAD
-// (the prefix-nonce explicit part), the block size (16) for CBC (carries the
-// IV), 0 otherwise.
-func (hc *tlcpHalfConn) explicitNonceLen() int {
-	switch {
-	case hc.aead != nil:
-		return hc.aead.ExplicitNonceSize()
-	case hc.cbcKey != nil:
-		return 16 // SM4 block size
-	}
-	return 0
+// destroy zeroes all key material held by this halfConn (connection teardown).
+// The AEAD's expanded GCM subkeys live inside cipher.AEAD and cannot be
+// zeroed — matching crypto/tls, which also only clears what it owns.
+func (hc *tlcpHalfConn) destroy() {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	zeroBytes(hc.cbcKey)
+	zeroBytes(hc.macKeyBytes)
+	zeroBytes(hc.nextCBCKey)
+	zeroBytes(hc.nextMACKeyBytes)
 }
 
 // prepareCipherSpec stages a new cipher/MAC for activation on the next CCS.
@@ -212,7 +242,7 @@ func (hc *tlcpHalfConn) encrypt(record []byte, payload []byte) ([]byte, error) {
 	case hc.cbcKey != nil:
 		// CBC + MAC: MAC = HMAC(seq || header || payload); then pad.
 		macH := tlcpHMACSM3(hc.macKeyBytes)
-		mac := tlcpRecordMAC(macH, nil, hc.seq[:], record[:tlcpRecordHeaderLen], payload)
+		mac := tlcpRecordMAC(macH, hc.seq[:], record[:tlcpRecordHeaderLen], payload, nil)
 		plaintextLen := len(payload) + len(mac)
 		const blockSize = 16
 		paddingLen := blockSize - plaintextLen%blockSize
@@ -225,7 +255,7 @@ func (hc *tlcpHalfConn) encrypt(record []byte, payload []byte) ([]byte, error) {
 		}
 		// TLCP CBC carries a fresh random IV per record (first 16 bytes).
 		iv := make([]byte, blockSize)
-		if _, err := io.ReadFull(randReader, iv); err != nil {
+		if _, err := io.ReadFull(rand.Reader, iv); err != nil {
 			return nil, err
 		}
 		mode, err := newTLCPCBCEncrypter(hc.cbcKey, iv)
@@ -282,46 +312,53 @@ func (hc *tlcpHalfConn) decrypt(record []byte) ([]byte, tlcpRecordType, error) {
 
 	case hc.cbcKey != nil:
 		const blockSize = 16
-		if len(payload) < blockSize {
-			return nil, 0, errors.New("tlcp: CBC record too short")
-		}
-		iv := payload[:blockSize]
-		ct := payload[blockSize:]
-		if len(ct)%blockSize != 0 {
-			return nil, 0, errors.New("tlcp: CBC ciphertext not block-aligned")
-		}
-		mode, err := newTLCPCBCDecrypter(hc.cbcKey, iv)
-		if err != nil {
-			return nil, 0, err
-		}
-		plain := make([]byte, len(ct))
-		mode.CryptBlocks(plain, ct)
-
-		paddingLen, paddingGood := tlcpExtractPadding(plain, blockSize)
 		macSize := 0
 		if hc.mac != nil {
 			macSize = hc.mac.Size()
 		}
-		if len(plain) < macSize+paddingLen {
-			return nil, 0, errors.New("tlcp: CBC record shorter than MAC+padding")
+		// A well-formed CBC record is at least one IV block plus the MAC and
+		// one padding byte rounded up to a block. Shorter records fail with
+		// the SAME undifferentiated error as every other decryption failure —
+		// a distinguishable early exit is itself a padding-oracle signal.
+		minPayload := blockSize + roundUpToBlock(macSize+1, blockSize)
+		if len(payload)%blockSize != 0 || len(payload) < minPayload {
+			return nil, 0, errDecrypt
 		}
-		dataLen := len(plain) - macSize - paddingLen
-		if dataLen < 0 {
-			dataLen = 0
+		iv := payload[:blockSize]
+		ct := payload[blockSize:]
+		mode, err := newTLCPCBCDecrypter(hc.cbcKey, iv)
+		if err != nil {
+			// Key-length programming error; key length is validated at
+			// establishKeys, so this is not attacker-influenced. Still report
+			// it as a decryption failure to keep one failure surface.
+			return nil, 0, errDecrypt
 		}
+		plain := make([]byte, len(ct))
+		mode.CryptBlocks(plain, ct)
+
+		// Constant-time padding extraction (port of crypto/tls extractPadding):
+		// a fixed 256-iteration scan, no early exit, and the padding length is
+		// zeroed on error so unchecked bytes are included in the MAC below.
+		paddingLen, paddingGood := tlcpExtractPadding(plain)
+		n := len(plain) - macSize - paddingLen
+		n = subtle.ConstantTimeSelect(int(uint32(n)>>31), 0, n) // if n < 0 { n = 0 }
 		macHeader := make([]byte, tlcpRecordHeaderLen)
 		copy(macHeader, record[:tlcpRecordHeaderLen])
-		binary.BigEndian.PutUint16(macHeader[3:5], uint16(dataLen))
-		remoteMAC := plain[dataLen : dataLen+macSize]
-		localMAC := tlcpRecordMAC(tlcpHMACSM3(hc.macKeyBytes), nil, hc.seq[:], macHeader, plain[:dataLen])
-		macGood := constantTimeEq(localMAC, remoteMAC)
-		if macGood == 0 || paddingGood == 0 {
-			return nil, 0, errors.New("tlcp: bad record MAC")
+		binary.BigEndian.PutUint16(macHeader[3:5], uint16(n))
+		remoteMAC := plain[n : n+macSize]
+		// The bytes past the MAC (the padding, whose length is secret) are fed
+		// to the HMAC as extra data so the MAC time depends only on the public
+		// record length (Lucky13 mitigation, as in crypto/tls).
+		localMAC := tlcpRecordMAC(tlcpHMACSM3(hc.macKeyBytes), hc.seq[:], macHeader, plain[:n], plain[n+macSize:])
+		// MAC and padding validity combine in constant time so the two failure
+		// modes cannot be distinguished.
+		if subtle.ConstantTimeCompare(localMAC, remoteMAC)&int(paddingGood) != 1 {
+			return nil, 0, errDecrypt
 		}
 		if err := hc.incSeq(); err != nil {
 			return nil, 0, err
 		}
-		return plain[:dataLen], typ, nil
+		return plain[:n], typ, nil
 	}
 	return nil, 0, errors.New("tlcp: no cipher configured")
 }
@@ -344,6 +381,12 @@ type tlcpConn struct {
 
 	in, out tlcpHalfConn
 
+	// readMu serializes Read: the input buffer and the record stream are not
+	// safe for concurrent use, and net.Conn's contract permits multiple
+	// goroutines to call Read simultaneously (crypto/tls serializes with an
+	// in.Lock around the same surface).
+	readMu sync.Mutex
+
 	// Decrypted handshake bytes awaiting parse, and decrypted app data awaiting Read.
 	hand      bytes.Buffer
 	input     bytes.Buffer
@@ -361,7 +404,7 @@ type tlcpConn struct {
 	// cache before the handshake) and, on a successful full handshake, the
 	// negotiated session to store. didResume records whether this handshake
 	// resumed an existing session.
-	session   *tlcpSessionState
+	session   *SessionState
 	didResume bool
 }
 
@@ -375,7 +418,7 @@ type tlcpEngineConfig struct {
 	insecureSkipVerify bool
 	rootCAs            [][]byte               // DER certs for verification (Phase 4)
 	serverCerts        *tlcpServerCerts       // server dual certificates (server mode only)
-	sessionCache       tlcpSessionCache       // optional session-resumption store (Phase 5)
+	sessionCache       SessionCache           // optional session-resumption store (Phase 5)
 	clientCerts        *tlcpServerCerts       // client dual certificates (mutual auth / ECDHE)
 	requestClientCert  bool                   // server: send CertificateRequest
 	clientRoots        *polluxsmx509.CertPool // 客户端证书验证根池（服务端 mTLS，nil=不验）
@@ -390,10 +433,6 @@ func newTLCPConn(c net.Conn, config *tlcpEngineConfig, isClient bool) *tlcpConn 
 		isClient: isClient,
 		config:   config,
 	}
-	// Note: randReader defaults to crypto/rand (cryptoRandReader). We do NOT
-	// override the package-level global from config.rand here — that would be a
-	// data race when multiple connections are created concurrently. Tests that
-	// need a custom rand pass rand.Reader, which matches the default.
 	return tc
 }
 
@@ -421,7 +460,15 @@ func (c *tlcpConn) Handshake() error {
 		_ = c.flush()
 		c.buffering.Store(false)
 		atomic.StoreUint32(&c.handshakeStatus, 1)
+		return nil
 	}
+	// Best-effort fatal alert so the peer sees a protocol-level failure
+	// instead of a bare TCP close (crypto/tls alerts on every handshake error
+	// path). The write is bounded by a deadline; errors are ignored — the
+	// handshake has already failed and Close will tear the transport down.
+	_ = c.conn.SetWriteDeadline(time.Now().Add(tlcpCloseNotifyTimeout))
+	_ = c.writeRecord(tlcpRecordAlert, []byte{tlcpAlertLevelError, tlcpAlertHandshakeFailure})
+	_ = c.flush()
 	return c.handshakeErr
 }
 
@@ -451,10 +498,12 @@ func (c *tlcpConn) ConnectionState() tlcpEngineConnectionState {
 	c.handshakeMutex.Lock()
 	defer c.handshakeMutex.Unlock()
 	st := tlcpEngineConnectionState{
-		Version:           c.vers,
-		HandshakeComplete: atomic.LoadUint32(&c.handshakeStatus) == 1,
-		CipherSuite:       c.cipherSuite,
-		ServerName:        c.serverName,
+		Version:            c.vers,
+		HandshakeComplete:  atomic.LoadUint32(&c.handshakeStatus) == 1,
+		CipherSuite:        c.cipherSuite,
+		ServerName:         c.serverName,
+		DidResume:          c.didResume,
+		NegotiatedProtocol: c.clientProtocol,
 	}
 	for _, der := range c.peerCertificates {
 		if cert, err := polluxsmx509.ParseCertificate(der); err == nil {
@@ -468,40 +517,44 @@ func (c *tlcpConn) ConnectionState() tlcpEngineConnectionState {
 // stdlib *x509.Certificate peer certs. The public ConnectionState type (in
 // tlcp.go) mirrors these fields.
 type tlcpEngineConnectionState struct {
-	Version           uint16
-	HandshakeComplete bool
-	CipherSuite       uint16
-	ServerName        string
-	PeerCertificates  []*x509.Certificate
+	Version            uint16
+	HandshakeComplete  bool
+	CipherSuite        uint16
+	ServerName         string
+	PeerCertificates   []*x509.Certificate
+	DidResume          bool
+	NegotiatedProtocol string
 }
 
-// Read reads decrypted application data.
+// Read reads decrypted application data. A peer close_notify maps to io.EOF
+// (crypto/tls semantics); any other alert surfaces as an error.
 func (c *tlcpConn) Read(b []byte) (int, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 	if atomic.LoadUint32(&c.handshakeStatus) == 0 {
 		if err := c.Handshake(); err != nil {
 			return 0, err
 		}
 	}
-	if c.input.Len() > 0 {
-		return c.input.Read(b)
-	}
-	// Read and decrypt the next application-data record.
 	for {
+		if c.input.Len() > 0 {
+			return c.input.Read(b)
+		}
 		payload, typ, err := c.readRecord()
 		if err != nil {
+			var alert alertError
+			if errors.As(err, &alert) && alert.desc == tlcpAlertCloseNotify {
+				return 0, io.EOF
+			}
 			return 0, err
 		}
 		switch typ {
 		case tlcpRecordApplicationData:
+			// bytes.Buffer.Write never returns a non-nil error.
 			c.input.Write(payload)
 			return c.input.Read(b)
-		case tlcpRecordAlert:
-			if len(payload) >= 2 {
-				return 0, fmt.Errorf("tlcp: received alert: level=%d description=%d", payload[0], payload[1])
-			}
-			return 0, io.EOF
 		default:
-			// Unexpected post-handshake record type; ignore and continue.
+			return 0, fmt.Errorf("tlcp: unexpected record type %d after handshake", typ)
 		}
 	}
 }
@@ -529,19 +582,37 @@ func (c *tlcpConn) Write(b []byte) (int, error) {
 	return total, nil
 }
 
+// tlcpCloseNotifyTimeout bounds the best-effort close_notify write. Close
+// relies on conn.Close() interrupting a blocked write on TCP/net.Pipe, but
+// wrapped or buffered net.Conn implementations may not interrupt it — the
+// write deadline guarantees Close (and the alert goroutine) still terminate.
+const tlcpCloseNotifyTimeout = 5 * time.Second
+
 // Close sends a best-effort close_notify alert and closes the underlying
-// connection. The alert write is non-blocking: if the peer isn't reading (e.g.
-// a net.Pipe with no consumer), Close still terminates promptly.
+// connection, then zeroes the traffic keys held by both half-conns. Both the
+// alert write and Close itself are bounded by tlcpCloseNotifyTimeout even on
+// transports whose Close does not unblock a pending Write.
 func (c *tlcpConn) Close() error {
-	// Send close_notify in a goroutine so a blocked write can't prevent Close.
+	_ = c.conn.SetWriteDeadline(time.Now().Add(tlcpCloseNotifyTimeout))
 	done := make(chan struct{})
 	go func() {
-		_ = c.writeRecord(tlcpRecordAlert, []byte{1, 0}) // warning, close_notify
-		close(done)
+		defer close(done)
+		// Errors are ignored: the connection is being torn down and the peer
+		// may already have closed its side.
+		_ = c.writeRecord(tlcpRecordAlert, []byte{tlcpAlertLevelWarning, tlcpAlertCloseNotify})
+		// If the alert landed in the handshake send buffer (close during
+		// handshake), flush it so the peer actually sees the close_notify.
+		_ = c.flush()
 	}()
-	// Close the underlying transport; the goroutine's write will error out.
 	err := c.conn.Close()
-	<-done // wait for the write attempt to finish so we don't leak the goroutine
+	select {
+	case <-done:
+	case <-time.After(tlcpCloseNotifyTimeout):
+		// Pathological transport: the write deadline above still forces the
+		// goroutine to exit; do not wait for it here.
+	}
+	c.in.destroy()
+	c.out.destroy()
 	return err
 }
 
@@ -581,17 +652,22 @@ func (c *tlcpConn) readRecord() ([]byte, tlcpRecordType, error) {
 			}
 			continue // CCS produces no application data
 		}
-		if typ == tlcpRecordAlert && len(body) >= 2 {
-			return nil, 0, fmt.Errorf("tlcp: received alert during handshake: level=%d description=%d", body[0], body[1])
-		}
-		// Decrypt via the input halfConn, passing the REAL record header (its
-		// type+version bytes feed the AEAD/CBC additional data).
+		// Decrypt FIRST, before any per-type parsing: alerts after the CCS are
+		// encrypted on the wire, and reading level/description out of the raw
+		// ciphertext would both misreport the alert and leak two ciphertext
+		// bytes (see readRecord's alert branch below for the parsed form).
 		fullRecord := append(header, body...)
 		c.in.mu.Lock()
 		plaintext, _, err := c.in.decrypt(fullRecord)
 		c.in.mu.Unlock()
 		if err != nil {
 			return nil, 0, err
+		}
+		if typ == tlcpRecordAlert {
+			if len(plaintext) != 2 {
+				return nil, 0, errors.New("tlcp: malformed alert record")
+			}
+			return nil, 0, alertError{level: plaintext[0], desc: plaintext[1]}
 		}
 		return plaintext, typ, nil
 	}
@@ -605,6 +681,22 @@ func (c *tlcpConn) readRawRecord() (tlcpRecordType, []byte, []byte, error) {
 		return 0, nil, nil, err
 	}
 	typ := tlcpRecordType(header[0])
+	switch typ {
+	case tlcpRecordChangeCipherSpec, tlcpRecordAlert, tlcpRecordHandshake, tlcpRecordApplicationData:
+	default:
+		// Unknown content types (heartbeat, renegotiation probes, garbage)
+		// are a protocol violation — drop the connection instead of
+		// silently skipping the record (crypto/tls sends unexpected_message).
+		return 0, nil, nil, fmt.Errorf("tlcp: unexpected record type %d", typ)
+	}
+	// Version sanity on every record: TLCP uses 0x0101; some stacks send
+	// TLS-style 0x03xx legacy versions. Anything else (0x0000, SSLv2 0x0002,
+	// 0x02xx, …) is not a TLCP-family peer — treat as a protocol violation
+	// (crypto/tls rejects bad versions with a RecordHeaderError).
+	version := binary.BigEndian.Uint16(header[1:3])
+	if version != tlcpVersionTLCP && (version < 0x0301 || version > 0x0303) {
+		return 0, nil, nil, fmt.Errorf("tlcp: unexpected record version 0x%04x", version)
+	}
 	length := int(binary.BigEndian.Uint16(header[3:5]))
 	if length > tlcpMaxPlaintext+2048 {
 		return 0, nil, nil, errors.New("tlcp: record too large")
@@ -696,11 +788,21 @@ func (c *tlcpConn) readHandshake(transcript *tlcpFinishedHash) ([]byte, error) {
 		if typ != tlcpRecordHandshake {
 			return nil, fmt.Errorf("tlcp: expected handshake record, got type %d", typ)
 		}
+		// bytes.Buffer.Write never returns a non-nil error.
 		c.hand.Write(payload)
 	}
 	// Peek the length to know how many bytes the full message occupies.
 	head := c.hand.Bytes()
 	msgLen := int(head[1])<<16 | int(head[2])<<8 | int(head[3])
+	// Cap the message size (mirrors crypto/tls): without a cap a malicious
+	// peer can claim a ~16MB message and pin that much memory per connection.
+	limit := maxHandshake
+	if head[0] == tlcpTypeCertificate {
+		limit = maxHandshakeCertificateMsg
+	}
+	if msgLen > limit {
+		return nil, fmt.Errorf("tlcp: handshake message of length %d bytes exceeds maximum of %d bytes", msgLen, limit)
+	}
 	total := 4 + msgLen
 	for c.hand.Len() < total {
 		payload, typ, err := c.readRecord()
@@ -713,7 +815,9 @@ func (c *tlcpConn) readHandshake(transcript *tlcpFinishedHash) ([]byte, error) {
 		c.hand.Write(payload)
 	}
 	data := make([]byte, total)
-	c.hand.Read(data)
+	// bytes.Buffer.Read is guaranteed to fill data: the loop above ensured
+	// c.hand holds at least total bytes, and Read drains at most that many.
+	_, _ = c.hand.Read(data)
 	if transcript != nil {
 		transcript.Write(data)
 	}
@@ -753,32 +857,57 @@ func tlcpAEADAdditionalData(seq, header []byte, plaintextLen int) []byte {
 	return aad
 }
 
-// tlcpExtractPadding extracts the CBC padding length in constant time. Returns
-// (paddingLen, paddingGood) where paddingGood is 1 if valid, 0 otherwise.
-func tlcpExtractPadding(plaintext []byte, blockSize int) (paddingLen, paddingGood int) {
-	if len(plaintext) == 0 {
+// roundUpToBlock rounds a up to the next multiple of b (a must be > 0).
+// Mirrors crypto/tls roundUp.
+func roundUpToBlock(a, b int) int {
+	return a + (b-a%b)%b
+}
+
+// tlcpExtractPadding returns, in constant time, the number of padding bytes
+// to remove (including the final padding-length byte) and a good flag that is
+// 1 if the padding is valid. Port of crypto/tls extractPadding (Lucky13 /
+// POODLE hardening):
+//   - the scan is a fixed 256 iterations (bounded only by the public record
+//     length), so the loop count does not leak the padding value;
+//   - no early exit distinguishes "padding too long" from "padding byte
+//     mismatch" — both collapse good to 0;
+//   - the padding length is masked with good so that on invalid padding the
+//     unchecked bytes are still fed into the MAC (see decrypt).
+func tlcpExtractPadding(plaintext []byte) (toRemove int, paddingGood byte) {
+	if len(plaintext) < 1 {
 		return 0, 0
 	}
-	last := int(plaintext[len(plaintext)-1])
-	// paddingLen candidate = last+1 (TLS padding: each byte equals the count-1).
-	toCheck := last + 1
-	if toCheck > len(plaintext) || toCheck > 256 {
-		return 0, 0
+	paddingLen := plaintext[len(plaintext)-1]
+	t := uint(len(plaintext)-1) - uint(paddingLen)
+	// if len(plaintext) >= (paddingLen+1) then the MSB of t is zero
+	good := byte(int32(^t) >> 31)
+
+	toCheck := 256
+	if toCheck > len(plaintext) {
+		toCheck = len(plaintext)
 	}
-	good := 1
-	for i := 0; i < toCheck; i++ {
-		if int(plaintext[len(plaintext)-1-i]) != last {
-			good = 0
-		}
+	for i := range toCheck {
+		t := uint(paddingLen) - uint(i)
+		// if i <= paddingLen then the MSB of t is zero
+		mask := byte(int32(^t) >> 31)
+		b := plaintext[len(plaintext)-1-i]
+		good &^= mask&paddingLen ^ mask&b
 	}
-	return toCheck, good
+
+	// AND the bits of good together and replicate the result across all bits.
+	good &= good << 4
+	good &= good << 2
+	good &= good << 1
+	good = uint8(int8(good) >> 7)
+
+	// Zero the padding length on error so unchecked bytes are included in
+	// the MAC (POODLE-style guard, as in crypto/tls).
+	paddingLen &= good
+
+	return int(paddingLen) + 1, good
 }
 
 // constantTimeEq returns 1 if a and b are equal, 0 otherwise (constant-time).
 func constantTimeEq(a, b []byte) int {
 	return subtle.ConstantTimeCompare(a, b)
 }
-
-// randReader is the package-level RNG source used by encrypt for CBC IVs. It
-// defaults to crypto/rand and can be overridden by tests via the engine config.
-var randReader io.Reader = cryptoRandReader{}

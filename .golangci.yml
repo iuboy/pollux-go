@@ -1,0 +1,89 @@
+# golangci-lint v2 configuration.
+#
+# Rationale for the non-default enablements and exclusions:
+#   - revive / gocritic / unconvert / unparam / goconst / misspell / errorlint /
+#     nilerr / wastedassign / copyloopvar / usestdlibvars / intrange: the
+#     best-practice surface that the security review found gaps in (error
+#     swallowing, dead code, broken %w chains). They were previously not run
+#     in CI at all, which let real defects (e.g. the dualcert.go nilerr)
+#     reach the default branch.
+#   - Cipher-suite identifiers (TLS_SM4_GCM_SM3, SuiteECDHE_SM2_SM4_CBC_SM3, …)
+#     intentionally mirror their GB/T 38636 / RFC 8998 standard designations,
+#     matching crypto/tls's own naming convention. The var-naming warnings for
+#     them are excluded rather than renaming working, documented API.
+#   - hash.Hash.Write never returns a non-nil error (and bytes.Buffer writes
+#     cannot fail); explicit discards would be pure noise, so errcheck is told
+#     to accept them.
+#   - Test files: errcheck/gocritic/prealloc/nakedret focus on production
+#     code; deferring Close in a test table is idiomatic.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - revive
+    - gocritic
+    - unconvert
+    - unparam
+    - goconst
+    - misspell
+    - errorlint
+    - nilerr
+    - prealloc
+    - nakedret
+    - wastedassign
+    - copyloopvar
+    - usestdlibvars
+    - intrange
+  settings:
+    errcheck:
+      exclude-functions:
+        - (hash.Hash).Write
+        - (io.StringWriter).WriteString
+    staticcheck:
+      # Mirrors the Makefile/CI staticcheck policy. SA1019 (deprecated-API
+      # usage) IS enabled in CI — it catches newly deprecated stdlib surface
+      # (e.g. the Go 1.26 crypto/ecdsa big.Int field deprecations) at commit
+      # time. The only remaining legitimate SA1019 population is scoped below
+      # via exclusions.rules instead of being silenced repo-wide:
+      #   - sm2/ — SM2 raw point math forces crypto/elliptic +
+      #     ecdsa.X/Y/D (crypto/ecdh has no SM2 support, and compressed point
+      #     forms have no stdlib equivalent at all);
+      #   - _test.go — tests legitimately construct and inspect keys via the
+      #     deprecated fields, and legacy-format tests (EncryptPEMBlock etc.)
+      #     are the point of the test.
+      # QF* are style quickfixes, ST* style checks are tracked outside CI.
+      checks: ["all", "-QF*", "-ST*"]
+    gocritic:
+      disabled-checks:
+        # `packet := append(hdr, ciphertext...)` assigns to a new variable on
+        # purpose (the record header stays intact for AAD reuse) — the check
+        # only wants the result back in the same variable.
+        - appendAssign
+    revive:
+      rules:
+        - name: package-comments
+          disabled: true # tracked via the doc-alignment effort; enabling now would bury new signal
+        - name: exported
+          disabled: true # ditto — doc-comment style is enforced in review, not CI
+  exclusions:
+    rules:
+      - linters: [revive]
+        text: "don't use underscores in Go names|don't use ALL_CAPS in Go names"
+        path: (tls/|tlcp/)
+      - linters: [errcheck, gocritic, prealloc, nakedret, goconst, unconvert, unparam]
+        path: _test\.go
+      # SA1019 scope — see the staticcheck settings comment above for the full
+      # rationale. Path-scoped so deprecated-API usage anywhere else fails CI.
+      - linters: [staticcheck]
+        text: "SA1019"
+        path: (^|/)sm2/
+      - linters: [staticcheck]
+        text: "SA1019"
+        path: _test\.go
+
+issues:
+  exclude-dirs:
+    - quic-go # vendored upstream fork (see quic-go/PATCHES.md); patched upstream files stay as close to original as possible
+  max-issues-per-linter: 0
+  max-same-issues: 0

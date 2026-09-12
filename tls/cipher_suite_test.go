@@ -6,9 +6,9 @@ import (
 )
 
 func TestGetCipherSuitesNational(t *testing.T) {
-	suites, err := GetCipherSuites(CryptoModeNational)
+	suites, err := CipherSuites(CryptoModeNational)
 	if err != nil {
-		t.Fatalf("GetCipherSuites(national): %v", err)
+		t.Fatalf("CipherSuites(national): %v", err)
 	}
 	// The default national selection is GCM/CCM with forward secrecy only:
 	// the TLS 1.2 ECDHE_SM2_WITH_SM4_GCM_SM3 suite plus the RFC 8998 TLS 1.3
@@ -42,9 +42,9 @@ func TestLegacyNationalCipherSuites(t *testing.T) {
 }
 
 func TestGetCipherSuitesInternational(t *testing.T) {
-	suites, err := GetCipherSuites(CryptoModeInternational)
+	suites, err := CipherSuites(CryptoModeInternational)
 	if err != nil {
-		t.Fatalf("GetCipherSuites(international): %v", err)
+		t.Fatalf("CipherSuites(international): %v", err)
 	}
 	if len(suites) != 4 {
 		t.Fatalf("expected 4 international suites, got %d", len(suites))
@@ -52,9 +52,9 @@ func TestGetCipherSuitesInternational(t *testing.T) {
 }
 
 func TestGetCipherSuitesHybrid(t *testing.T) {
-	suites, err := GetCipherSuites(CryptoModeHybrid)
+	suites, err := CipherSuites(CryptoModeHybrid)
 	if err != nil {
-		t.Fatalf("GetCipherSuites(hybrid): %v", err)
+		t.Fatalf("CipherSuites(hybrid): %v", err)
 	}
 	// 4 international + 3 secure national (ECDHE GCM + RFC 8998 TLS 1.3 GM) = 7.
 	if len(suites) != 7 {
@@ -63,7 +63,7 @@ func TestGetCipherSuitesHybrid(t *testing.T) {
 }
 
 func TestGetCipherSuitesInvalid(t *testing.T) {
-	_, err := GetCipherSuites(CryptoMode("bogus"))
+	_, err := CipherSuites(CryptoMode("bogus"))
 	if err == nil {
 		t.Fatal("expected error for invalid mode")
 	}

@@ -129,14 +129,25 @@ func tlcpHMACSM3(key []byte) hash.Hash {
 }
 
 // tlcpRecordMAC computes the TLS 1.0-style MAC over the record header
-// (sequence number + type + version + length) and payload. Used by CBC suites.
+// (sequence number + type + version + length) and payload (RFC 2246 §6.2.3).
+// extra (the trailing CBC padding, whose length is secret) is fed into the
+// hash AFTER the digest is taken: it never influences the MAC value, only the
+// total hash computation time, equalizing timing across padding lengths
+// (Lucky13 mitigation, identical to crypto/tls tls10MAC). Used by CBC suites.
 // header is the 5-byte TLCP record header; seq is the 8-byte sequence number.
-func tlcpRecordMAC(h hash.Hash, out, seq, header, payload []byte) []byte {
+func tlcpRecordMAC(h hash.Hash, seq, header, payload, extra []byte) []byte {
 	h.Reset()
+	// hash.Hash.Write never returns a non-nil error.
 	h.Write(seq)
 	h.Write(header)
 	h.Write(payload)
-	return h.Sum(out)
+	res := h.Sum(nil)
+	if extra != nil {
+		// Extra data is hashed only for its side effect of consuming time;
+		// the digest above was already snapshotted.
+		h.Write(extra)
+	}
+	return res
 }
 
 // --- SM4-GCM prefix-nonce AEAD ---

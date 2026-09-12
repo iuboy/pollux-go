@@ -41,11 +41,19 @@ linters:
         - (hash.Hash).Write
         - (io.StringWriter).WriteString
     staticcheck:
-      # Mirrors the Makefile/CI staticcheck policy: SA1019 (deprecated
-      # crypto/elliptic + ecdsa.X/Y) is unavoidable for SM2 raw point math —
-      # crypto/ecdh has no SM2 support; QF* are style quickfixes, ST* style
-      # checks are tracked outside CI.
-      checks: ["all", "-SA1019", "-QF*", "-ST*"]
+      # Mirrors the Makefile/CI staticcheck policy. SA1019 (deprecated-API
+      # usage) IS enabled in CI — it catches newly deprecated stdlib surface
+      # (e.g. the Go 1.26 crypto/ecdsa big.Int field deprecations) at commit
+      # time. The only remaining legitimate SA1019 population is scoped below
+      # via exclusions.rules instead of being silenced repo-wide:
+      #   - sm2/ — SM2 raw point math forces crypto/elliptic +
+      #     ecdsa.X/Y/D (crypto/ecdh has no SM2 support, and compressed point
+      #     forms have no stdlib equivalent at all);
+      #   - _test.go — tests legitimately construct and inspect keys via the
+      #     deprecated fields, and legacy-format tests (EncryptPEMBlock etc.)
+      #     are the point of the test.
+      # QF* are style quickfixes, ST* style checks are tracked outside CI.
+      checks: ["all", "-QF*", "-ST*"]
     gocritic:
       disabled-checks:
         # `packet := append(hdr, ciphertext...)` assigns to a new variable on
@@ -64,6 +72,14 @@ linters:
         text: "don't use underscores in Go names|don't use ALL_CAPS in Go names"
         path: (tls/|tlcp/)
       - linters: [errcheck, gocritic, prealloc, nakedret, goconst, unconvert, unparam]
+        path: _test\.go
+      # SA1019 scope — see the staticcheck settings comment above for the full
+      # rationale. Path-scoped so deprecated-API usage anywhere else fails CI.
+      - linters: [staticcheck]
+        text: "SA1019"
+        path: (^|/)sm2/
+      - linters: [staticcheck]
+        text: "SA1019"
         path: _test\.go
 
 issues:

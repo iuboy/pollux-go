@@ -30,7 +30,18 @@ var (
 // tls.Config.CurvePreferences). The GM paths (tlcp, tls13gm) do their own
 // curve negotiation and are NOT governed by this list — they use SM2 per
 // RFC 8998 regardless of CurvePreferences.
+//
+// An explicit CurvePreferences list REPLACES the standard library's default
+// set, so this list must track the stdlib hardening baseline: since Go 1.24
+// the default includes the X25519MLKEM768 post-quantum hybrid, and Go 1.26
+// added SecP256r1MLKEM768 — pinning only the classic groups would silently
+// opt this path out of quantum-resistant key exchange. The two hybrid groups
+// pair with the classic groups offered below them as negotiation fallbacks.
+// SecP384r1MLKEM1024 stays out because this list deliberately does not offer
+// P-384. GODEBUG=tlssecpmlkem=0 disables SecP256r1MLKEM768 process-wide.
 var defaultTLSCurvePreferences = []tls.CurveID{
+	tls.X25519MLKEM768,
+	tls.SecP256r1MLKEM768,
 	tls.X25519,
 	tls.CurveP256,
 }
@@ -221,7 +232,9 @@ func loadSM2KeyPair(certPEM, keyPEM []byte) (*tls.Certificate, error) {
 		return nil, errors.New("pollux/https: SM2 certificate public key type mismatch")
 	}
 	keyPub := &key.PublicKey
-	if certPub.X.Cmp(keyPub.X) != 0 || certPub.Y.Cmp(keyPub.Y) != 0 {
+	// sm2.Equal compares curve identity (with parameter fallback) before the
+	// coordinates, so a non-SM2 key can never pass by coordinate collision.
+	if !polluxSm2.Equal(certPub, keyPub) {
 		return nil, errors.New("pollux/https: private key does not match certificate's public key")
 	}
 	return &tls.Certificate{

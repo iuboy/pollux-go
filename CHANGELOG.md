@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `smx509`：PBES2 解密同迁标准库 `crypto/pbkdf2`；新增攻击者可控 PBKDF2 迭代次数上界（10,000,000，对齐 `kdf` 包 `maxIteration` 的 CPU 耗尽防护，此前仅有下界）
 - 已核验（Go 1.27.1 实测）：smx509 枚举守卫共享前缀仍然准确（SignatureAlgorithm≤16 / PublicKeyAlgorithm≤4 / ExtKeyUsage≤13），stdlib ML-DSA 值冲突防护不变
 
+### Changed — Go 1.26 适配收尾（SA1019 门禁实装 + PQ 密钥交换）
+
+- `https`：标准 TLS 路径的 `CurvePreferences` 白名单加入 `X25519MLKEM768`/`SecP256r1MLKEM768`——显式列表会整体替换 stdlib 默认组，旧列表 `[X25519, P256]` 等于悄悄退出 Go 1.24/1.26 起默认开启的抗量子混合密钥交换；经典组保留为协商回落
+- `https`：SM2 私钥/证书匹配校验改用 `sm2.Equal`（曲线身份优先 + 参数回落，防跨曲线坐标碰撞），去除废弃的 `ecdsa.PublicKey.X/Y` 直接访问
+- 门禁：`.golangci.yml` 中 staticcheck 的 `SA1019`（废弃 API）从全局禁用改为**启用** + 路径级豁免（仅 `sm2/` 原始点运算与测试文件）——Go 1.26 新废弃面（如 ecdsa big.Int 字段）今后在提交时即被拦截，非豁免包引入废弃用法将 fail CI（已用金丝雀验证门禁生效）；CI golangci-lint v2.13.1→v2.13.2
+
 ## [v0.5.0] - 2026-08-22
 
 > 本版本为**破坏性安全加固版本**：对全库进行对抗性 Go 最佳实践审查后，根治全部 High/Medium 缺陷及配套 Low/Info 项。多处公共 API 有破坏性变更（见文末清单）。

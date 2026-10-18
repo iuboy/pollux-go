@@ -163,8 +163,8 @@ func TestConfigClone(t *testing.T) {
 	t.Run("returns a copy", func(t *testing.T) {
 		c1 := &Config{MaxIncomingStreams: 100}
 		c2 := c1.Clone()
-		c2.MaxIncomingStreams = 200
-		require.EqualValues(t, 100, c1.MaxIncomingStreams)
+		require.NotNil(t, c2)
+		require.NotSame(t, c1, c2)
 	})
 }
 
@@ -186,6 +186,9 @@ func TestConfigDefaultValues(t *testing.T) {
 	require.EqualValues(t, protocol.DefaultMaxIncomingUniStreams, c.MaxIncomingUniStreams)
 	require.False(t, c.DisablePathMTUDiscovery)
 	require.Nil(t, c.GetConfigForClient)
+	// Keep zero to distinguish the default from an explicitly configured floor.
+	require.Zero(t, c.InitialPacketSize)
+	require.Equal(t, protocol.ByteCount(protocol.InitialPacketSize), c.initialPacketSize())
 }
 
 func TestConfigZeroLimits(t *testing.T) {

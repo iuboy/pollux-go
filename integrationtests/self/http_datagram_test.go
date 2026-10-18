@@ -196,9 +196,7 @@ loop:
 
 	select {
 	case err := <-errChan:
-		var serr *quic.StreamError
-		require.ErrorAs(t, err, &serr)
-		require.Equal(t, quic.StreamErrorCode(42), serr.ErrorCode)
+		require.ErrorIs(t, err, &http3.Error{ErrorCode: 42, Remote: true})
 	case <-time.After(time.Second):
 		t.Fatal("didn't receive error")
 	}
@@ -255,10 +253,13 @@ func TestHTTPDatagramClose(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("didn't receive error")
 	}
-	require.Equal(t, io.EOF, resetErr)
+	require.ErrorIs(t, resetErr, io.EOF)
 
 	// make sure we can't send anymore
-	require.Error(t, str.SendDatagram([]byte("foo")))
+	require.ErrorIs(t, context.Cause(str.Context()), quic.ErrStreamClosed)
+	_, err := str.Write([]byte("foo"))
+	require.ErrorIs(t, err, quic.ErrStreamClosed)
+	require.ErrorIs(t, str.SendDatagram([]byte("foo")), quic.ErrStreamClosed)
 }
 
 func TestHTTPDatagramStreamReset(t *testing.T) {
@@ -311,7 +312,7 @@ func TestHTTPDatagramStreamReset(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("didn't receive error")
 	}
-	require.Equal(t, &quic.StreamError{ErrorCode: 42, Remote: false}, resetErr)
+	require.ErrorIs(t, resetErr, &http3.Error{ErrorCode: 42, Remote: false})
 
 	var err error
 	require.Eventually(t, func() bool {
@@ -319,5 +320,5 @@ func TestHTTPDatagramStreamReset(t *testing.T) {
 		return err != nil
 	}, time.Second, 10*time.Millisecond)
 	// make sure we can't send anymore
-	require.Equal(t, &quic.StreamError{ErrorCode: 42, Remote: true}, err)
+	require.ErrorIs(t, err, &http3.Error{ErrorCode: 42, Remote: true})
 }

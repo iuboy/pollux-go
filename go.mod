@@ -1,6 +1,6 @@
 module github.com/iuboy/pollux-go
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/emmansun/gmsm v0.45.0

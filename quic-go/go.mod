@@ -1,6 +1,6 @@
 module github.com/quic-go/quic-go
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/iuboy/pollux-go v0.5.0

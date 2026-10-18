@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — 依赖第二轮刷新 + quic-go v0.64.0
+
+- vendored quic-go fork：subtree 升级到上游 **v0.64.0**（跨 v0.63/v0.64 两个 minor，174 文件）。合并基线自上次修复后表现正确——仅 `config.go` 一处真实冲突（上游删除 `initialPacketSize` 归一化块、回退逻辑移至连接层；保留 fork 的 `cfg := / copyGMConfigFields` 包装）。GM 适配一处：`gmUpdatableAEAD.shouldInitiateKeyUpdate` 改读 `keyUpdateInterval.Load()`（上游删除了 `protocol.KeyUpdateInterval` 常量），同时修复既有偏差——`SetKeyUpdateInterval` 此前对 GM 连接不生效。随版新增：`ErrStreamClosed`、`InitialPacketSize=0` 运行时 1280→1200 回退语义
+- 依赖：`emmansun/gmsm` v0.44.1→**v0.45.0**（RISC-V/LoongArch 向量加速、smx509 对齐 1.26 stdlib 基线、pkcs7 越界读修复；SM2/ecdh 无 API 变化，GM 核心包 race 全绿复核，枚举守卫继续成立）、`x/crypto` v0.58.0、`x/net` v0.61.0、`x/sys`/`x/sync` 等随升；fork 依赖同步（gmsm v0.45、go 指令对齐 1.26.6）
+
 ### Changed — 依赖升级与 Go 1.26 加解密适配（破坏性 API，无向后兼容）
 
 - vendored quic-go fork：subtree 升级到上游 **v0.62.0**（根模块 require 同步 v0.62.0）。适配上游事件枚举拆分：`GMCryptoSetup` 按 0-RTT/Handshake/1-RTT 三级分别发出读密钥事件；服务端 `EventReceived1RTTReadKeys` 推迟到客户端 Finished 验证后（对齐 crypto/tls 语义，避免提前 `Finish` Handshake CRYPTO 流）。上游同版本带来的改进随之生效：`errors.AsType`、流优先级调度（RFC 9218）、`dropEncryptionLevel` 简化、pre-Go1.26 构建标签清理。注意：v0.60→v0.61 曾手工同步导致本次 subtree 合并基线偏旧，17 个 fork 零增量文件的冲突已逐一验证取上游侧，此后合并基线恢复正常（见 quic-go/PATCHES.md）

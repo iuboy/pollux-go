@@ -150,7 +150,10 @@ func (u *gmUpdatableAEAD) shouldInitiateKeyUpdate() bool {
 			return true
 		}
 	}
-	return u.numRcvd >= protocol.KeyUpdateInterval || u.numSent >= protocol.KeyUpdateInterval
+	// Read the configurable interval (SetKeyUpdateInterval), matching the
+	// upstream updatableAEAD — GM connections honor the same knob instead of
+	// the removed protocol.KeyUpdateInterval constant.
+	return u.numRcvd >= keyUpdateInterval.Load() || u.numSent >= keyUpdateInterval.Load()
 }
 
 // --- ShortHeaderSealer ---

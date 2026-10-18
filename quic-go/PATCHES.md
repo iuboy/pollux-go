@@ -1,6 +1,6 @@
 # quic-go fork — patch set relative to upstream
 
-**Upstream**: `github.com/quic-go/quic-go` v0.62.0
+**Upstream**: `github.com/quic-go/quic-go` v0.64.0
 **Fork location**: `quic-go/` at the repo root (module name preserved as
 `github.com/quic-go/quic-go`, referenced via `replace` in the repo-root
 `go.mod`, so internal imports need no rewriting).
@@ -34,6 +34,8 @@ required to route into the GM hooks.
 | `internal/handshake/gm_crypto_setup_test.go` (new) | end-to-end (no-UDP) handshake + 1-RTT cross-decrypt + transport-parameter exchange. | P0d | ✅ done |
 | `internal/handshake/gm_crypto_setup.go` (v0.62.0 adaptation) | Upstream split `EventReceivedReadKeys` into `EventReceived0RTTReadKeys` / `EventReceivedHandshakeReadKeys` / `EventReceived1RTTReadKeys`; `connection.go` now keys `cryptoStreamManager.Finish` on the per-level events. `installHandshakeKeys` emits the 0-RTT event first when the server has `ClientEarlyKeys` (retry of buffered 0-RTT packets), then the Handshake event. The 1-RTT event is role-timed: the client emits it after consuming the server flight; the server defers it to after the client Finished is verified — emitting it at ClientHello time (when tls13gm's key schedule first derives the secrets) would finish the Handshake CRYPTO stream early and reject the client's Finished as a protocol violation. | v0.62.0 | ✅ done |
 | `internal/handshake/gm_crypto_setup_test.go` (v0.62.0 adaptation) | Comment sync only (the new event kinds; no assertion depended on the old single event). | v0.62.0 | ✅ done |
+| `internal/handshake/gm_updatable.go` (v0.64.0 adaptation) | Upstream removed `protocol.KeyUpdateInterval` (moved to a package-local `defaultKeyUpdateInterval` behind the `keyUpdateInterval` atomic). `shouldInitiateKeyUpdate` now reads `keyUpdateInterval.Load()` — which also fixes a pre-existing divergence: `SetKeyUpdateInterval` previously did not govern GM connections. | v0.64.0 | ✅ done |
+| `config.go` (v0.64.0 merge note) | Upstream dropped the `initialPacketSize` normalization block from `populateConfig` (InitialPacketSize fallback moved to the connection layer) and kept a direct `return &Config{...}`; the merge kept the fork's `cfg := / copyGMConfigFields / return cfg` wrapper over upstream's new literal body. | v0.64.0 | ✅ done |
 
 Note: `internal/handshake/crypto_setup.go` is **not** modified — the GM branch
 lives in `connection.go` (the call sites), not inside the `cryptoSetup` struct.

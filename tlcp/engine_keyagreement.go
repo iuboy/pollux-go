@@ -93,6 +93,11 @@ func tlcpECCGenerateServerKeyExchange(sigType tlcpSigType, signer crypto.Signer,
 // an error if the length/format is wrong.
 //
 // The decryption uses SM2 ASN1 mode (matching the client's EncryptASN1).
+// errClientKeyExchangeFailed is the uniform error for all ClientKeyExchange
+// pre-master-secret decryption failures (SM2 decrypt error and malformed-PMS
+// length collapse into one): distinguishable messages form a format oracle.
+var errClientKeyExchangeFailed = errors.New("tlcp: failed to decrypt ClientKeyExchange")
+
 func tlcpECCProcessClientKeyExchange(decrypter crypto.Decrypter, ckePayload []byte) ([]byte, error) {
 	if len(ckePayload) < 2 {
 		return nil, errors.New("tlcp: ClientKeyExchange too short")
@@ -123,10 +128,13 @@ func tlcpECCProcessClientKeyExchange(decrypter crypto.Decrypter, ckePayload []by
 	}
 	plain, err := decrypter.Decrypt(rand.Reader, ciphertext, sm2.ASN1DecrypterOpts)
 	if err != nil {
-		return nil, err
+		// 解密失败与长度异常统一为同一错误(对齐 crypto/tls 的 CKE 处理):
+		// 可区分的错误文案构成格式预言机,攻击者可借错误差异探测 PMS
+		// 结构信息。SM2-KEM 场景下泄漏有限,但统一无代价。
+		return nil, errClientKeyExchangeFailed
 	}
 	if len(plain) != tlcpPreMasterSecretLength {
-		return nil, errors.New("tlcp: decrypted pre-master secret has wrong length")
+		return nil, errClientKeyExchangeFailed
 	}
 	return plain, nil
 }
@@ -299,6 +307,11 @@ func tlcpECDHEServerGenerateSKE(sigType tlcpSigType, signer crypto.Signer, encPr
 	if err != nil {
 		return nil, nil, err
 	}
+	// NOTE(内存卫生,上游封装限制): sponsorEph 的 MQV 临时标量无法在使用后
+	// 擦除——gmsm ecdh.PrivateKey 的私钥字节未导出(无 Zero/擦除 API),
+	// 引用在 tlcpECDHEServerProcessCKE 派生 PMS 后即弃,标量字节存活至 GC
+	// 回收。tls13gm 侧的 ECDHE 擦除(zeroEphemeral)因直接持有
+	// sm2.PrivateKey.D 而可行;此处需 gmsm 上游提供擦除接口后跟进。
 	params, err := tlcpMarshalECDHEParams(sponsorEph.publicKey())
 	if err != nil {
 		return nil, nil, err
@@ -406,6 +419,9 @@ func tlcpECDHEClientGenerateCKE(state *tlcpECDHEClientState, clientEncPriv crypt
 	if err != nil {
 		return nil, nil, err
 	}
+	// NOTE(内存卫生): 同 sponsorEph——responder 侧 MQV 临时标量受 gmsm
+	// ecdh.PrivateKey 封装限制无法擦除,函数返回后引用即弃,待上游暴露
+	// 擦除接口后跟进。
 	serverLongPub, err := ecdhPubFromECDSA(serverEncPub)
 	if err != nil {
 		return nil, nil, err

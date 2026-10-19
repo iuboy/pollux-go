@@ -94,6 +94,12 @@ make cover-html   # 生成覆盖率报告
 - **密钥更新职责**：pollux 仅提供 key update 原语（`tls13gm.QUICKeyUpdate`），
   **不强制**更新阈值——由传输层（quic-go）或直接集成方负责在阈值临近时发起更新，
   避免长连接 SM4-GCM nonce 复用风险。
+- **Route C 发布形态**：`quicgm` 依赖仓库内 vendored 的 quic-go fork（根
+  `go.mod` 的 `replace` 指向 `./quic-go`）。Go 的 `replace` 指令**只在主模块
+  内生效**——以依赖形式引入 pollux-go 时会解析到上游无 GM 补丁的 quic-go 并
+  编译失败（fail-closed，不会静默降级）。因此 Route C 当前**仅源码形态可用**
+  （vendor/replace 本仓库使用）；fork 以独立模块路径发布前，下游无法通过
+  `go get` 使用 QUIC GM 能力（见 `quic-go/PATCHES.md`）。
 
 ## 文档
 

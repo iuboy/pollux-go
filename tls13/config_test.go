@@ -160,3 +160,31 @@ func TestClientConfig_CertificatesAndRoots(t *testing.T) {
 		t.Error("RootCAs should not be nil")
 	}
 }
+
+// TestCipherSuitesOption 锁定遗留项 A6:CipherSuites 选项仅接受 TLS 1.3
+// 套件(非 1.3 套件 ID 会静默清空偏好集);空列表走 stdlib 默认。
+func TestCipherSuitesOption(t *testing.T) {
+	cert := tls.Certificate{Certificate: [][]byte{{1}}}
+	for _, bad := range []uint16{tls.TLS_RSA_WITH_AES_128_GCM_SHA256, 0x00FF} {
+		if _, err := ServerConfig(ServerOptions{Certificates: []tls.Certificate{cert}, CipherSuites: []uint16{bad}}); err == nil {
+			t.Errorf("服务端非 TLS1.3 套件 %#04x 应被拒绝", bad)
+		}
+		if _, err := ClientConfig(ClientOptions{CipherSuites: []uint16{bad}}); err == nil {
+			t.Errorf("客户端非 TLS1.3 套件 %#04x 应被拒绝", bad)
+		}
+	}
+	cfg, err := ServerConfig(ServerOptions{Certificates: []tls.Certificate{cert}, CipherSuites: []uint16{tls.TLS_AES_256_GCM_SHA384}})
+	if err != nil {
+		t.Fatalf("合法 TLS1.3 套件应通过: %v", err)
+	}
+	if len(cfg.CipherSuites) != 1 || cfg.CipherSuites[0] != tls.TLS_AES_256_GCM_SHA384 {
+		t.Fatalf("套件应写入 tls.Config, got %v", cfg.CipherSuites)
+	}
+	def, err := ServerConfig(ServerOptions{Certificates: []tls.Certificate{cert}})
+	if err != nil {
+		t.Fatalf("空列表(默认)应通过: %v", err)
+	}
+	if def.CipherSuites != nil {
+		t.Fatal("空列表应保持 nil(stb 默认序)")
+	}
+}

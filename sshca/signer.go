@@ -5,6 +5,7 @@ package sshca
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -20,19 +21,54 @@ import (
 // 校验共用。
 const criticalOptionForceCommand = "force-command"
 
+// AllowedKeyTypes 是被签公钥与 CA 密钥的类型白名单，同时约束
+// NewCertificateSigner 的 CA 密钥与 CertificateRequest.Key。
+// 默认拒绝 ssh-dss（DSA：1024-bit 上限、已被 x/crypto 弃用）与
+// 证书类型公钥（*-cert-v01——签证书的密钥本身是证书无意义）。
+// 可按部署策略整体替换（替换后 ssh-rsa 条目受 MinRSAKeyBits 约束）。
+var AllowedKeyTypes = map[string]bool{
+	"ssh-ed25519":         true,
+	"ecdsa-sha2-nistp256": true,
+	"ecdsa-sha2-nistp384": true,
+	"ecdsa-sha2-nistp521": true,
+	"ssh-rsa":             true,
+}
+
+// MinRSAKeyBits 是 ssh-rsa 类型公钥的最小位数。
+const MinRSAKeyBits = 2048
+
+// validateKeyType 校验公钥类型在白名单内且满足强度下限。
+func validateKeyType(key ssh.PublicKey) error {
+	if !AllowedKeyTypes[key.Type()] {
+		return fmt.Errorf("公钥类型 %q 不在允许列表内,拒绝签发", key.Type())
+	}
+	if key.Type() == "ssh-rsa" {
+		if cp, ok := key.(ssh.CryptoPublicKey); ok {
+			if rk, ok := cp.CryptoPublicKey().(*rsa.PublicKey); ok && rk.N.BitLen() < MinRSAKeyBits {
+				return fmt.Errorf("RSA 公钥 %d 位低于最小要求 %d 位,拒绝签发", rk.N.BitLen(), MinRSAKeyBits)
+			}
+		}
+	}
+	return nil
+}
+
+// certClockSkew 是 ValidateCertificate 有效期判定的时钟偏差容忍窗口：
+// 验证主机与签发方时钟略有漂移时，刚生效/刚过期的证书不应被误判
+// （ValidAfter=now 签出的证书在时钟慢 1s 的主机上原本直接验证失败）。
+const certClockSkew = 60 * time.Second
+
 // generateCertSerial 生成加密随机的 SSH 证书序列号。
 // 此前用 time.Now().Unix() 导致同秒内签发的证书 serial 碰撞——
-// CA serial 必须唯一（RFC 4251 §3）。改用 crypto/rand 读 64-bit。
-func generateCertSerial() uint64 {
+// CA serial 必须唯一（RFC 4251 §3）。改用 crypto/rand 读 64-bit；
+// rand.Read 失败时 fail-closed（此前回退 UnixNano，恰恰在熵源枯竭的
+// 故障态下降级为可预测序列号）。
+func generateCertSerial() (uint64, error) {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		// rand.Read 失败极罕见；回退到时间戳+纳秒扰动（跨进程同纳秒理论上
-		// 可碰撞，概率可忽略）。同样清最高位，与随机路径的取值域一致。
-		return uint64(time.Now().UnixNano()) &^ (1 << 63)
+		return 0, fmt.Errorf("生成证书序列号失败: %w", err)
 	}
-	serial := binary.BigEndian.Uint64(buf[:])
 	// 清零最高位避免某些客户端的有符号 int64 溢出问题。
-	return serial &^ (1 << 63)
+	return binary.BigEndian.Uint64(buf[:]) &^ (1 << 63), nil
 }
 
 // CertificateSigner SSH 证书签名器实现
@@ -53,6 +89,18 @@ func NewCertificateSigner(keyPair *KeyPair, certType CertType, maxDuration time.
 	}
 	if certType != UserCert && certType != HostCert {
 		return nil, fmt.Errorf("certType 必须是 UserCert 或 HostCert, got %d", int(certType))
+	}
+	// maxDuration 是 SignCertificate 里有效期上限守卫的唯一数据来源：零值或
+	// 负值会让该守卫整体短路（条件为 maxDuration > 0 && …），调用方即可用
+	// ValidBefore=MaxInt64 签出约 2262 年才过期的证书——等于静默回到加固前
+	// 状态。拒绝非正值，要求显式选择一个上限。
+	if maxDuration <= 0 {
+		return nil, fmt.Errorf("maxDuration 必须为正时长(零值会使有效期上限守卫失效, got %v)", maxDuration)
+	}
+	// CA 密钥本身也走类型白名单:DSA CA 签出的证书全部携带 DSA/SHA-1
+	// 签名,弱 CA 密钥使整棵信任树失效。
+	if err := validateKeyType(keyPair.PrivateKey.PublicKey()); err != nil {
+		return nil, fmt.Errorf("CA 密钥不满足要求: %w", err)
 	}
 
 	return &CertificateSigner{
@@ -95,9 +143,13 @@ func (s *CertificateSigner) SignCertificate(req *CertificateRequest) (*Certifica
 	}
 
 	// 创建证书
+	serial, err := generateCertSerial()
+	if err != nil {
+		return nil, err
+	}
 	cert := &ssh.Certificate{
 		Key:             req.Key,
-		Serial:          generateCertSerial(),
+		Serial:          serial,
 		CertType:        uint32(s.certType),
 		KeyId:           req.KeyID,
 		ValidPrincipals: req.ValidPrincipals,
@@ -113,8 +165,12 @@ func (s *CertificateSigner) SignCertificate(req *CertificateRequest) (*Certifica
 	}
 	cert.CriticalOptions = opts
 
-	// 设置扩展
-	cert.Extensions = s.buildExtensions(req)
+	// 设置扩展(签发边界白名单校验,失败拒绝签发)
+	exts, err := s.buildExtensions(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求验证失败: %w", err)
+	}
+	cert.Extensions = exts
 
 	// 签名证书
 	if err := cert.SignCert(rand.Reader, s.signer); err != nil {
@@ -176,6 +232,11 @@ func (s *CertificateSigner) validateRequest(req *CertificateRequest) error {
 
 	if req.Key == nil {
 		return fmt.Errorf("公钥不能为空")
+	}
+	// 被签公钥类型白名单(此前任意 ssh.PublicKey 原样入证——CA 会为
+	// ssh-dss 等弱类型背书)。
+	if err := validateKeyType(req.Key); err != nil {
+		return err
 	}
 
 	if req.KeyID == "" {
@@ -242,42 +303,58 @@ func (s *CertificateSigner) buildCriticalOptions(req *CertificateRequest) (map[s
 	return options, nil
 }
 
-// buildExtensions 构建扩展
-func (s *CertificateSigner) buildExtensions(req *CertificateRequest) map[string]string {
+// allowedUserExtensions 是 user 证书允许的扩展名白名单(PROTOCOL.certkeys
+// 定义的全部 5 个 permit-* 扩展)。
+var allowedUserExtensions = map[string]bool{
+	"permit-X11-forwarding":   true,
+	"permit-agent-forwarding": true,
+	"permit-port-forwarding":  true,
+	"permit-pty":              true,
+	"permit-user-rc":          true,
+}
+
+// buildExtensions 构建扩展。host 证书不接受任何请求扩展
+// (PROTOCOL.certkeys:"No extensions are defined for host certificates",
+// 此前原样拷贝违反该约束);user 证书的扩展名必须落在 permit-* 白名单内
+// (与 critical option 同样的签发/验证对称白名单——此前任意名称入证,
+// sshd 默认忽略未识别扩展,但 CA 不应为未知语义背书)。
+func (s *CertificateSigner) buildExtensions(req *CertificateRequest) (map[string]string, error) {
 	extensions := make(map[string]string)
 
-	// 添加请求中的扩展
+	if s.certType == HostCert {
+		if len(req.Extensions) > 0 {
+			return nil, fmt.Errorf("host 证书不允许携带扩展(收到 %d 项),拒绝签发", len(req.Extensions))
+		}
+		return extensions, nil
+	}
+
 	for _, ext := range req.Extensions {
+		if !allowedUserExtensions[ext.Name] {
+			return nil, fmt.Errorf("未识别的扩展 %q,拒绝签发", ext.Name)
+		}
 		extensions[ext.Name] = ext.Value
 	}
 
-	// 根据证书类型添加默认扩展
+	// 根据证书类型添加默认扩展(host 已在上方提前返回,此处仅 user)
 	if req.Permissions != nil {
-		if s.certType == UserCert {
-			// 用户证书权限
-			if req.Permissions.PermitX11Forwarding {
-				extensions["permit-X11-forwarding"] = ""
-			}
-			if req.Permissions.PermitAgentForwarding {
-				extensions["permit-agent-forwarding"] = ""
-			}
-			if req.Permissions.PermitPortForwarding {
-				extensions["permit-port-forwarding"] = ""
-			}
-			if req.Permissions.PermitPTY {
-				extensions["permit-pty"] = ""
-			}
-			if req.Permissions.PermitUserRC {
-				extensions["permit-user-rc"] = ""
-			}
+		if req.Permissions.PermitX11Forwarding {
+			extensions["permit-X11-forwarding"] = ""
 		}
-		// host 证书不写任何 permit-* 扩展:PROTOCOL.certkeys 明确
-		// "No extensions are defined for host certificates"(此前写入
-		// permit-port-forwarding 违反协议且与 GetDefaultHostPermissions
-		// 的注释矛盾)。
+		if req.Permissions.PermitAgentForwarding {
+			extensions["permit-agent-forwarding"] = ""
+		}
+		if req.Permissions.PermitPortForwarding {
+			extensions["permit-port-forwarding"] = ""
+		}
+		if req.Permissions.PermitPTY {
+			extensions["permit-pty"] = ""
+		}
+		if req.Permissions.PermitUserRC {
+			extensions["permit-user-rc"] = ""
+		}
 	}
 
-	return extensions
+	return extensions, nil
 }
 
 // joinAddresses 连接地址列表
@@ -445,6 +522,20 @@ func (a *sshAuthority) ValidateCertificate(cert *ssh.Certificate) error {
 	if a.isRevoked != nil {
 		checker.IsRevoked = a.isRevoked
 	}
+	// 有效期由 CertChecker 校验,注入带 certClockSkew 偏差容忍的时钟:
+	// 正常有效期内用真实时钟(严格语义);证书落在激活偏差带(本机时钟
+	// 慢于签发方)或过期偏差带(本机时钟快于签发方)时改用容限时钟,
+	// 使 ValidAfter=now 签出的证书在时钟漂移 <= skew 的主机上不再被
+	// 误判。偏差带外(超过 skew)仍按原样拒绝。CheckCert 只接受单一
+	// 时钟,故按证书所处偏差带选择。
+	now := time.Now()
+	shim := now
+	if uint64(now.Unix()) < cert.ValidAfter {
+		shim = now.Add(certClockSkew)
+	} else if cert.ValidBefore != math.MaxUint64 && uint64(now.Unix()) >= cert.ValidBefore {
+		shim = now.Add(-certClockSkew)
+	}
+	checker.Clock = func() time.Time { return shim }
 	if err := checker.CheckCert(principalArg, cert); err != nil {
 		return fmt.Errorf("证书校验失败: %w", err)
 	}
@@ -473,16 +564,6 @@ func (a *sshAuthority) ValidateCertificate(cert *ssh.Certificate) error {
 				return fmt.Errorf("未识别的 critical option %q，拒绝证书", name)
 			}
 		}
-	}
-
-	// 检查有效期
-	now := uint64(time.Now().Unix())
-	if now < cert.ValidAfter {
-		return fmt.Errorf("证书尚未生效")
-	}
-
-	if now > cert.ValidBefore {
-		return fmt.Errorf("证书已过期")
 	}
 
 	return nil

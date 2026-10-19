@@ -5,7 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v0.5.1] - 2026-10-18
+
+### Added — 第三轮安全审查遗留项收尾(5 项功能/加固)
+
+- **tls13 `CipherSuites` 选项**:`ServerOptions/ClientOptions.CipherSuites` 可选限定 TLS 1.3 套件偏好(三个套件均 AEAD;空=stdlib 默认序)。非 TLS 1.3 套件 ID 报错——Min=Max=TLS1.3 下它们只会静默清空偏好集
+- **https 会话票据控制**:`ServerOptions.SessionTicketKeys`(32 字节键,配置期校验——stdlib SetSessionTicketKeys 对错误长度直接 panic;多实例部署共享票据键,替代每进程 24h 独立轮换)与 `DisableSessionTickets`(合规禁恢复)
+- **smx509 传统 PEM DES 策略门**:传统 Proc-Type/DEK-Info 信封的 DES-CBC(56 位)/DES-EDE3-CBC 默认拒绝,`DecryptPEMPrivateKey(DER)WithOptions + DecryptOptions.AllowLegacyDESPEM` 显式 opt-in(合规姿态可整体禁用;AES-CBC 传统信封不在此列——MD5 KDF 是整个遗留格式固有的,非可选密码)。原两函数保持签名、策略变严
+- **tls13gm CCM 构造器标注**:文档明确 EXPERIMENTAL/NOT WIRED TO NEGOTIATION——无套件常量、无握手路径、无 Tongsuo 互通测试;接线前任何使用它的套件应视为不可互通
+- **tlcp `configToNative` 套件校验**:垃圾/非 TLCP 套件 ID(如 stdlib 套件)此前静默入引擎、只在握手深处模糊失败,现入口即拒(套件校验不再依赖要求叶子证书的 `Validate()`);静态 ECC 套件常量与 `LegacyCipherSuites` 补无前向保密警告(遗留互通仍刻意保留)
+
+### Fixed — 第三轮安全审查 P2 低危批(12 项 LOW 修复 + 8 项 INFO 修复;清单由 3 路并行审查重建)
+
+**LOW 修复:**
+- **[fork] 0-RTT opener/sealer 每包重建缺陷**:此前每次 Get 都新建,opener 的 `highestRcvdPN` 逐包归零——截断包号按零基线解码,重建的头与 AEAD AAD 失配,对端包号跨 2 字节 epoch 后 0-RTT 包静默解密失败(上游同样缓存)。现缓存实例并在全部弃钥位点/Close 释放;跨 epoch 包号重建有回归锁定
+- **[fork] prevRcvKM 终身保留**:对齐上游 startKeyDropTimer——两个密钥更新提交点(对端发起/本端更新被证实)启动 3×PTO(近似)过期,到期在 Open 入口丢弃(RFC 9001 §6.1),收敛前向保密损失与迟到包回放面
+- **[quicgm] anti-replay 缓存无界增长**:进程内缓存增加容量上限(默认 2^20,`NewAntiReplayCacheWithCap` 可调),满时 fail-safe 拒新 0-RTT(恢复仍走 1-RTT)——此前长窗口配置下高恢复量或攻击者重放大量合法票据可耗尽内存
+- **[fork] 密钥材料擦除**:rollKeys 擦除被替换的滚动 traffic secret(tls13gm 新导出 `ZeroBytes` 包装,供独立模块的 fork 绕过 internal/ 可见性);Close 擦除已采集 resumption PSK/identity。注意 1-RTT AEAD 不在 Close 自动擦除——拆除路径要在其后用 1-RTT 密钥封 CONNECTION_CLOSE(实测回归后回退,`gmUpdatableAEAD.Zero` 保留给确知不再发包的所有者显式调用)
+- **[fork] Initial/Handshake/0-RTT opener 无完整性上限**:`gmLongOpener` 计入 AEAD 认证失败,达 SM4-GCM 上限返回 AEADLimitReached(RFC 9001 §6.6)——此前仅 1-RTT 有界,攻击者可用垃圾包无界消耗解密 CPU
+- **[sshca] 密钥类型白名单**:`AllowedKeyTypes`(默认 ed25519/ecdsa/rsa≥2048,可整体替换)同时约束 CA 密钥与被签公钥——此前任意 `ssh.PublicKey` 原样入证,CA 会为 ssh-dss 等弱类型背书
+- **[sshca] 扩展白名单**:host 证书拒绝一切请求扩展(PROTOCOL.certkeys 明确禁止;此前原样拷贝),user 证书扩展名必须落在 permit-* 白名单——与 critical option 同样的签发/验证对称白名单
+- **[tlcp] 客户端 ALPN 信任门**:客户端从不提议 ALPN,恶意服务器此前可让 `ConnectionState().NegotiatedProtocol` 报告任意未协商协议;现按提议列表校验(与 tls13gm 已修的 ALPN 信任族同类),恶意 ServerHello 注入有 pipe 级回归锁定
+- **[tlcp] 空套件回退对齐 DefaultCipherSuites**:engine 级空 cipherSuites 此前回退到 static-ECC(无 PFS)+CBC 套件,与包级默认安全姿态矛盾——直接构造 tlcpEngineConfig 的调用方会静默降级
+- **[https] 标准 TLS 密码套件白名单**:显式 CipherSuites 列表(服务端/客户端)必须是 AEAD+PFS;CBC/3DES/RSA 密钥交换报错。共享字段中的 GM 套件 ID(hybrid 模式)剔除而非报错;全 GM 列表回落 stdlib 默认组
+- **[kdf] PBKDF2 拒绝空盐**:空盐使派生跨用户确定、彩虹表抵抗整体失效(pwHash 的 8 字节下限既有不变;RFC 2898 向量的 4 字节盐仍合法)
+- **[tls13gm] 票据明文擦除**:解密循环内解析失败与非保留命中的整套明文(含另一把有效 PSK)即刻擦除——此前 decline/TEK 轮换场景裸 PSK 留在堆上
+
+**INFO 修复:** tls13gm 密钥调度局部变量擦除(ECDHE 共享密钥/early secret/finished key/verify data/binder 派生链,13 处 defer);`ticket_age_add` 改由 tls13gm 内部随机生成(`NewSessionTicket(With Data)` 签名变更,fork 调用方同步);key_share/ALPN/cookie 解析与编解码严格化(trailing 字节拒绝、>65535 cookie 报错、ALPN 名字 1-255 字节校验);sshca 序列号生成 fail-closed(取消熵故障时的时间戳回退);sshca 有效期校验 60s 时钟偏差容忍(CertChecker.Clock 垫片);https NewTLS13Client 补齐与 NewClient 一致的 fail-closed 信任门;tlcp CKE 解密失败错误统一(消除格式预言机);quicgm 负值传输参数拒绝 + `ObfuscatedTicketAge` 帮助函数(直传 harvested ageAdd 会令服务端年龄门失效);fork NextEvent 弹出槽清零
+
+**上游阻塞(注释归档,待 gmsm 暴露擦除接口):** tlcp MQV 临时标量、SM4 密钥编排均无法从外部擦除(gmsm ecdh/AEAD 封装)。**经上游对照撤销:** fork numRcvd 提交包计数(与上游 v0.64.0 行为一致,非缺陷)。**遗留未修(功能项):** https 会话票据键轮换钩子、smx509 传统 PEM 弱密码策略开关、tls13 CipherSuites 选项、tls13gm CCM 构造器标注、tlcp 静态 ECC 套件协商面
+
+### Fixed — 第三轮安全审查收尾:M7 Retry 互操作 + M6 gmsm 上游同步缺口实证
+
+- **[中] GM QUIC Retry 互操作**(fork `GMCryptoSetup.ChangeConnectionID`,M7):此前为 no-op——收到 Retry 的 GM 连接双方向仍用**原 DCID** 派生的 Initial 密钥封解密,post-Retry 包永远打不开(RFC 9001 §5.2 要求按新 DCID 重推 Initial secrets)。现按新 DCID 重推双向密钥(`reinitInitialKeys`);派生失败 panic(接口无错误返回,对齐上游 32 字节 DCID "不可能失败"不变量)。回归测试 `gm_retry_test.go` 三断言:新密钥可解、旧密钥不可解、独立推导的 ClientInitialKeys 交叉验证
+- **M6 gmsm 上游同步缺口草稿**(`docs/security/gmsm-upstream-stdlib-sync.md`,未对外提交):两处缺口均已在 gmsm v0.45.0(当前最新)上实证复现——(1) **excluded IP 名称约束可被静默绕过**:smx509 遗漏 stdlib CL 787220(golang/go#79833,Go 1.27 已修)的 host-bit 归一化,host-bits 非零约束 + 一条邻居槽位约束即令二分查找跳过真正匹配项,stdlib 拒绝的链 smx509 放行;(2) `parseRFC2821Mailbox` 缺 stdlib 后续硬化(域内 `@` 等被 gmsm 接受、stdlib 拒绝)。pollux-go 侧不做 fork 补丁,依赖上游修复;依赖 IP 名称约束做隔离的部署在修复前不应将 GM 校验路径作为唯一防线
+
+### Fixed/Added — M11/M12:票据携带传输参数,0-RTT 全链路补全(DialEarly 真正可用)
+
+- **tls13gm 会话票据 v0x03**:票据明文新增不透明应用数据区(`psk ‖ be32(ageAdd) ‖ appData ‖ be32(len)`),`EncryptSessionTicketWithData`/`DecryptSessionTicketWithData` 新导出变体(旧签名保留为包装);解密循环改为与注释一致的 keep-FIRST(修复 L5:teks 新者在前,首个命中即最新密钥);同轮修复旧"bad version"测试硬编码 0x03 的自指问题
+- **M11 客户端参数恢复**:fork `StartHandshake` 按上游契约——0-RTT 密钥与已存服务端参数**同时**具备才发 `EventRestoredTransportParameters`(连接层恢复流控限额并释放 DialEarly 早返回通道;该事件此前从不发出,DialEarly 实际等到握手完成);缺参数时按 crypto/tls 语义弃置 0-RTT 密钥(降级 1-RTT)
+- **M12 服务端 ValidFor0RTT 准入门**:票据内保存的传输参数不满足当前参数的 `ValidFor0RTT`(如服务端缩限后)或票据无参数 → 拒 0-RTT(丢弃早密钥,EE 不回显 early_data),PSK 恢复继续——修复服务端缩限后 0-RTT 触发 FLOW_CONTROL_ERROR 断连
+- **票据采集链路扩容**:fork `GMOnClientSessionTicket` 回调与服务端 `GetSessionTicket` 均携带服务端传输参数;quicgm `Conn.SessionTicket()` 返回 4 元组(新增 serverParams,破坏性签名变更),`ClientConfig.ResumptionAppData` 必填校验(EarlyData 缺它直接报错,对齐 crypto/tls"无已存参数不做 0-RTT")
+- 回归测试:票据数据往返/TEK 轮换窗口/恢复事件/缺参数降级/参数变更拒 0-RTT(含同票据同参数对照组)
+
+### Fixed/Added — 第三轮安全审查 P1(协议一致性 + GM QUIC 与上游契约对齐)
+
+- **GM ALPN(RFC 9001 §8.1)**:tls13gm 新增 `NextProtos`(ClientConfig/ServerConfig)+ ALPN 扩展编解码与协商——客户端按 crypto/tls 偏好策略(客户端顺序)选择、服务端 EE 回显；三重 fail-closed:双方配置但无交集→服务端中止(no_application_protocol 语义)、客户端提供但服务端未回显→客户端中止、服务端选择未提供协议→客户端中止。quicgm 的 `ServerConfig/ClientConfig.NextProtos` 变为**必填**(Listen/Dial 空列表报错,对齐 `quic/` Route A);fork ConnectionState 暴露 `NegotiatedProtocol`
+- **M3 HRR×PSK 三缺陷**(tls13gm):HRR 后清除 CH1 派生的 0-RTT 密钥并撤回 early_data 提议(RFC 8446 §4.2.10,CH2 不再携带 early_data);CH2 binder 现按 §4.2.11.2 覆盖 `message_hash(CH1)‖HRR‖Truncate(CH2)` 前缀(此前必与 Tongsuo/OpenSSL 失配)——回归测试按 RFC 独立重算锁定
+- **M10 0-RTT 拒绝照会**:客户端 0-RTT 被拒(EE 无 early_data)或收到 HRR 时,GMCryptoSetup 发出 `EventDiscard0RTTKeys` 并丢弃 0-RTT 密钥——连接层重置 0-RTT 流、应用收到 `Err0RTTRejected`(此前静默 1-RTT 补送,DialEarly 的拒绝语义从未生效;zero_rtt 测试已按真实契约更新)
+- **M9 Allow0RTT 接线**:`NewGMCryptoSetupServer` 接收 quic 级 `Allow0RTT` 并 AND 进 tls13gm 的 AllowEarlyData;quicgm Listen 按自身 0-RTT 策略(AntiReplay 必需)设置该开关——GM 连接不再绕过传输级 0-RTT 准入
+- **M13 服务端 1-RTT opener 时序**:`Get1RTTOpener` 在服务端消费并验证客户端 Finished 之前返回 ErrKeysNotYetAvailable(早到 1-RTT 包缓冲重放),恢复上游"handshakeComplete ⇒ 对端已认证"不变量
+- **L1 顺带修复**:客户端 EE 的 early_data 接受增加 `pskMode` 门(恶意服务器对非 PSK 握手谎报 0-RTT 接受的 visibility lie 面闭合)
+- 剩余待办:M11/M12(票据携带传输参数 + EventRestoredTransportParameters/ValidFor0RTT,DialEarly 早返回)、M7(Retry/ChangeConnectionID)、M6(向 gmsm 上游报 IP 名称约束同步)
+
+### Fixed — 第三轮全量安全审查(3 高危 + 2 中危 + fork 密钥更新缺陷)
+
+- **[高] tls13gm 0-RTT 全零 PSK 注入**：PSK 票据解密失败被拒（降级全握手）后，0-RTT 接受块此前仍以 nil PSK 调用 acceptor 并派生 early keys——`DeriveEarlySecret(nil)` 走全零 IKM 公开路径，任何攻击者可用伪造票据 + early_data 扩展自行推导 0-RTT 密钥，注入被服务端解密并投递的"0-RTT 数据"。现要求 binder 验证通过的 PSK（非 nil）才会触发 acceptor 与派生；quicgm 的 acceptor 增加纵深 nil-psk 拒绝（回归测试锁定双路径）
+- **[高] 主机名校验静默跳过缺陷族**：`tlcp` 引擎新增 crypto/tls 同款握手守卫——空 ServerName 且未显式 InsecureSkipVerify 时拒绝握手（此前空 DNSName 使 smx509 跳过主机名匹配，"配了根 CA 漏填 ServerName"退化为只验链不验域名，同根 CA 下任意域名证书均被接受）；`tls13gm` 客户端构造器要求 Roots 模式下 ServerName 非空；`https` 的 TLCP 传输从 URL host 回填 ServerName（对齐 net/http 标准路径行为）
+- **[高] quic-go fork GM 密钥更新结构性缺陷**：`gmUpdatableAEAD.Open()` 相位失配分支按上游 v0.64.0 结构重写——本端发起更新后对端旧相位迟到包改用 prevRcvKM 解密且不再推进相位（旧逻辑每个迟到包都再 roll 一次，相位永久失步直至断连）；疑似更新包先用 next 密钥试解，RFC 9001 §6.1 "too quickly" 检查移到 AEAD 认证之后（单个损坏包不再确定性拆连接，改为计入完整性上限）。连带修复 `rollKeys` 的 `keyPhase ^= 1` 枚举翻转缺陷：iota 布局 `KeyPhaseUndefined=0/Zero=1/One=2` 下首次更新后相位变 Undefined、wire 相位位恒为 0——**GM 密钥更新自 v0.62 事件枚举适配以来实际从未可用**；新增 `gm_updatable_test.go` 四场景锁定（该文件此前零测试覆盖）
+- **[中] https 标准 TLS 服务端 mTLS 门**：`TLSClientAuth` ≥ VerifyClientCertIfGiven 但未配 `ClientCAs` 时报错，不再静默回退系统根（否则任何公共 CA 签发的客户端证书都能通过 mTLS）；对齐 tlcp/tls13 路径已有的 fail-closed 门
+- **[中] sshca 有效期上限守卫**：`NewCertificateSigner`/`NewAuthority` 拒绝 `maxDuration <= 0`（零值使 SignCertificate 的上限守卫整体短路，配合 ValidBefore=MaxInt64 可签出约 2262 年证书）
+- CI：新增 quic-go fork 模块测试 job（fork 为独立模块，此前被根 `./...` 与全部 lint/安全门禁排除，GM 测试套件仅在本地运行）
+- README：安全状态一节明示 Route C（quicgm）当前仅源码形态可用——根 `go.mod` 的 `replace` 不随发布生效，下游 `go get` 会解析到无 GM 补丁的上游 quic-go（fail-closed 编译失败，非静默降级）；fork 独立模块发布待决策
+- `tls13.ClientConfig` 补充信任模型文档：RootCAs 为空且未跳过验证时走系统根，系刻意保留的 crypto/tls 语义（quic 包装依赖之）；不引入 https 式严格门
 
 ### Changed — 依赖第二轮刷新 + quic-go v0.64.0
 

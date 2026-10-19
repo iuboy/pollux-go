@@ -10,6 +10,14 @@ import (
 
 // NewCCMAEAD creates an SM4-CCM AEAD cipher for TLS 1.3 record protection.
 //
+// EXPERIMENTAL — NOT WIRED TO NEGOTIATION: no cipher-suite constant, no
+// handshake path, and no Tongsuo/OpenSSL interop test selects this AEAD. The
+// tls13gm handshake negotiates TLS_SM4_GCM_SM3 exclusively; this constructor
+// exists for the record-layer use case above and for standalone use. Wiring
+// it into negotiation requires transcript-bound interop tests first (the
+// third-round security review flagged the untested surface); until then any
+// suite using it must be considered non-interoperable.
+//
 // SM4-CCM is defined in RFC 8998 (cipher suite 0x00C7, TLS_SM4_CCM_SM3). CCM is
 // not provided by Go's crypto/cipher standard library, so the gmsm CCM mode
 // (github.com/emmansun/gmsm/cipher) is used. The nonce construction mirrors

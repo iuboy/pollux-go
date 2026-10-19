@@ -269,7 +269,7 @@ func TestHandleNewSessionTicket_RequiresClientFinished(t *testing.T) {
 	if err := server.HandleClientFinished(cfForTicket); err != nil {
 		t.Fatalf("HandleClientFinished: %v", err)
 	}
-	ticketMsg, err := server.NewSessionTicket(7200, 0x12345678)
+	ticketMsg, err := server.NewSessionTicket(7200)
 	if err != nil {
 		t.Fatalf("NewSessionTicket: %v", err)
 	}

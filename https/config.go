@@ -23,6 +23,16 @@ var (
 	errMissingTLCPCertificate = errors.New("pollux/https: TLCP sign and enc certificates are required")
 	errMissingTLSCertificate  = errors.New("pollux/https: TLS certificate is required")
 	errUnsupportedMode        = errors.New("pollux/https: unsupported or undetected crypto mode")
+	// Fail-closed gate for the standard-TLS server path. crypto/tls silently
+	// falls back to the SYSTEM root store when ClientCAs is nil while client
+	// verification is requested — any public-CA client certificate would pass
+	// mTLS. The tlcp and tls13 paths already gate this; TLS must too.
+	errTLSCientCAsRequired = errors.New("pollux/https: TLSClientCAs is required when TLSClientAuth requests certificate verification")
+	// Fail-closed gate for explicit standard-TLS cipher-suite lists. An
+	// explicit list replaces the stdlib default group wholesale; without this
+	// gate a caller can silently re-enable CBC / RSA-key-exchange suites
+	// (third-round review C3).
+	errInsecureTLSCipherSuite = errors.New("pollux/https: cipher suite is not AEAD+PFS; TLCP suite IDs belong to the TLCP path")
 )
 
 // defaultTLSCurvePreferences restricts the (key-exchange) curves negotiated by
@@ -77,7 +87,15 @@ type ServerOptions struct {
 	// should leave this empty so each path falls back to its own safe default
 	// (tlcp.DefaultCipherSuites for TLCP, tls.Config defaults for TLS).
 	CipherSuites []uint16
-	ClientAuth   tlcp.ClientAuthType
+	// SessionTicketKeys, when non-empty, is wired via tls.Config.SetSessionTicketKeys
+	// for multi-instance deployments behind a load balancer (shared keys instead of
+	// per-process 24h rotation). Each key MUST be exactly 32 bytes. Only the
+	// standard-TLS path; TLCP manages its own ticket keys via the engine.
+	SessionTicketKeys [][]byte
+	// DisableSessionTickets disables ticket-based resumption on the
+	// standard-TLS path (compliance postures that must not resume sessions).
+	DisableSessionTickets bool
+	ClientAuth            tlcp.ClientAuthType
 
 	// TLS 客户端认证（标准 TLS 服务端）
 	TLSClientAuth tls.ClientAuthType
@@ -172,14 +190,90 @@ func (o *ServerOptions) buildTLCPConfig() (*tlcp.Config, error) {
 	return cfg, nil
 }
 
+// secureTLSCipherSuites is the allowlist for explicit standard-TLS suite
+// lists: AEAD + PFS only (the TLS 1.3 trio is not configurable via
+// tls.Config.CipherSuites but is accepted in the list for documentation
+// parity; stdlib ignores it). CBC / 3DES / RC4 / RSA-key-exchange suites are
+// rejected rather than silently honored.
+var secureTLSCipherSuites = map[uint16]bool{
+	tls.TLS_AES_128_GCM_SHA256:                        true,
+	tls.TLS_AES_256_GCM_SHA384:                        true,
+	tls.TLS_CHACHA20_POLY1305_SHA256:                  true,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:       true,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:       true,
+	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:         true,
+	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:         true,
+	tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: true,
+	tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:   true,
+}
+
+// errInvalidSessionTicketKey rejects malformed session-ticket keys: stdlib
+// SetSessionTicketKeys PANICS on keys that are not exactly 32 bytes, so the
+// gate must fire at configuration time instead.
+var errInvalidSessionTicketKey = errors.New("pollux/https: session ticket keys must be exactly 32 bytes")
+
+// filterSecureTLSCipherSuites validates an explicit suite list for the
+// standard-TLS path. ServerOptions.CipherSuites is SHARED with the TLCP path
+// (hybrid mode): GM suite IDs are TLCP-only and are dropped here (the stdlib
+// would ignore them anyway), so a hybrid config can carry both families in
+// one field. Anything else outside the AEAD+PFS allowlist is rejected. An
+// empty result returns nil so the stdlib default group (itself AEAD+PFS
+// only) applies.
+func filterSecureTLSCipherSuites(ids []uint16) ([]uint16, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out := make([]uint16, 0, len(ids))
+	for _, id := range ids {
+		if tlcp.IsTLCPCipherSuite(id) {
+			continue
+		}
+		if !secureTLSCipherSuites[id] {
+			return nil, fmt.Errorf("%w: %#04x", errInsecureTLSCipherSuite, id)
+		}
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
 // buildTLSConfig converts options into a tls.Config.
 func (o *ServerOptions) buildTLSConfig() (*tls.Config, error) {
+	// Mirror the tlcp/tls13 server paths: requesting client-certificate
+	// verification without a client CA pool would silently fall back to the
+	// system roots, admitting any public-CA client certificate.
+	if (o.TLSClientAuth == tls.VerifyClientCertIfGiven || o.TLSClientAuth == tls.RequireAndVerifyClientCert) && o.ClientCAs == nil {
+		return nil, errTLSCientCAsRequired
+	}
+	suites, err := filterSecureTLSCipherSuites(o.CipherSuites)
+	if err != nil {
+		return nil, err
+	}
+	// Session-ticket controls: without SetSessionTicketKeys each process
+	// rotates its own ticket key every 24h, so multi-instance deployments
+	// behind a load balancer fail resumption across instances; deployments
+	// with a compliance no-resumption posture need an explicit opt-out.
+	for _, k := range o.SessionTicketKeys {
+		if len(k) != 32 {
+			return nil, fmt.Errorf("%w: got %d bytes", errInvalidSessionTicketKey, len(k))
+		}
+	}
 	cfg := &tls.Config{
-		Certificates:     o.Certificates,
-		ClientAuth:       o.TLSClientAuth,
-		CipherSuites:     o.CipherSuites,
-		MinVersion:       tls.VersionTLS12,
-		CurvePreferences: defaultTLSCurvePreferences,
+		Certificates:           o.Certificates,
+		ClientAuth:             o.TLSClientAuth,
+		CipherSuites:           suites,
+		MinVersion:             tls.VersionTLS12,
+		CurvePreferences:       defaultTLSCurvePreferences,
+		SessionTicketsDisabled: o.DisableSessionTickets,
+	}
+	if len(o.SessionTicketKeys) > 0 {
+		keys := make([][32]byte, len(o.SessionTicketKeys))
+		for i, k := range o.SessionTicketKeys {
+			copy(keys[i][:], k)
+		}
+		cfg.SetSessionTicketKeys(keys)
 	}
 	if o.RootCAs != nil {
 		cfg.RootCAs = o.RootCAs.ToStandardPool()
@@ -331,11 +425,15 @@ func (o *ClientOptions) buildTLSClientConfig() (*tls.Config, error) {
 	if len(o.Certificates) == 0 && o.RootCAs == nil && !o.TLSInsecureSkipVerify {
 		return nil, errors.New("pollux/https: at least one certificate, root pool, or TLSInsecureSkipVerify is required")
 	}
+	suites, err := filterSecureTLSCipherSuites(o.TLSCipherSuites)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &tls.Config{
 		Certificates:       o.Certificates,
 		ServerName:         o.TLSServerName,
-		CipherSuites:       o.TLSCipherSuites,
+		CipherSuites:       suites,
 		InsecureSkipVerify: o.TLSInsecureSkipVerify,
 		MinVersion:         tls.VersionTLS12,
 		CurvePreferences:   defaultTLSCurvePreferences,

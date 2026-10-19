@@ -28,6 +28,27 @@ jobs:
         # (real sockets, cross-package flows) still run. -race on every test.
         run: go test -race -tags=integration ./...
 
+  fork-test:
+    name: quic-go fork tests
+    # The vendored quic-go fork is its OWN module: `./...` from the repo root
+    # never enters it, so the test job above (and every lint gate) exercises
+    # the fork only through quicgm's integration tests. The fork's own suite —
+    # which pins the GM handshake event timing and the key-update logic in
+    # gm_updatable.go — previously ran only on dev machines.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: quic-go/go.mod
+          cache: true
+          cache-dependency-path: quic-go/go.sum
+      - name: Build & vet
+        run: cd quic-go && go build ./... && go vet ./...
+      - name: Test
+        run: cd quic-go && go test ./...
+
   lint:
     name: Lint & Security
     runs-on: ubuntu-latest

@@ -34,7 +34,10 @@ import (
 func tlcpMakeClientHello(config *tlcpEngineConfig) (*tlcpClientHelloMsg, error) {
 	suites := config.cipherSuites
 	if len(suites) == 0 {
-		suites = []uint16{SuiteECC_SM2_SM4_GCM_SM3, SuiteECC_SM2_SM4_CBC_SM3}
+		// 空列表回退与 DefaultCipherSuites 保持一致(ECDHE+GCM,前向保密)。
+		// 此前回退到 static-ECC(无 PFS)+CBC 套件,与包级默认安全姿态
+		// 矛盾——直接配置 tlcpEngineConfig 的调用方会静默降级。
+		suites = DefaultCipherSuites()
 	}
 	random := make([]byte, 32)
 	// Per TLCP (like TLS 1.2), the first 4 bytes carry gmt_unix_time.
@@ -64,6 +67,15 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	config := c.config
 	if config == nil {
 		return errors.New("tlcp: nil config")
+	}
+	// Fail closed (mirrors crypto/tls handshake_client.go): the certificate
+	// verifier runs hostname matching under DNSName = ServerName, and an empty
+	// DNSName makes it skip hostname matching entirely. "Verification enabled
+	// + empty ServerName" would therefore degrade to chain-only validation —
+	// any certificate issued under a trusted CA would be accepted. Callers
+	// must name the server or explicitly opt out with InsecureSkipVerify.
+	if config.serverName == "" && !config.insecureSkipVerify {
+		return errors.New("tlcp: either ServerName or InsecureSkipVerify must be specified in Config")
 	}
 
 	// 0. Load a cached session (keyed by server identity: SNI + remote address)
@@ -135,6 +147,23 @@ func (c *tlcpConn) clientHandshakeReal() error {
 		return errors.New("tlcp: server selected non-null compression")
 	}
 	c.serverName = config.serverName
+	// ALPN 信任门:服务端选择的协议必须落在客户端实际提议的列表内
+	// (tlcpMakeClientHello 目前从不提议 ALPN,任何选择都是未协商的——
+	// 恶意服务器此前可让 ConnectionState().NegotiatedProtocol 报告任意
+	// 协议,与 tls13gm 已修的 ALPN 信任族同类)。按提议列表而非"列表
+	// 必空"写,未来接线 ALPN 配置时此门语义不变。
+	if serverHello.alpnProtocol != "" {
+		offered := false
+		for _, p := range hello.alpnProtocols {
+			if p == serverHello.alpnProtocol {
+				offered = true
+				break
+			}
+		}
+		if !offered {
+			return errors.New("tlcp: server selected ALPN protocol that was not offered")
+		}
+	}
 	c.clientProtocol = serverHello.alpnProtocol
 
 	// 2b. Resume branch: server echoed our sessionId and we have a matching

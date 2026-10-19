@@ -205,10 +205,13 @@ type Config struct {
 	// once per NewSessionTicket received post-handshake (1-RTT). identity is the
 	// opaque ticket (to echo back as the pre_shared_key identity on a later
 	// resumption); psk is the resumption PSK the client derived (keys the binder
-	// and 0-RTT early secret); ticketAgeAdd is the ticket_age_add. Feed them
-	// back as ClientConfig.ResumptionIdentity / ResumptionPSK /
-	// ResumptionObfuscatedTicketAge on a subsequent DialEarly. Servers ignore it.
-	GMOnClientSessionTicket func(identity, psk []byte, ticketAgeAdd uint32)
+	// and 0-RTT early secret); ticketAgeAdd is the ticket_age_add; serverParams
+	// is the server's marshaled QUIC transport parameters as received in
+	// EncryptedExtensions. Feed them back as ClientConfig.ResumptionIdentity /
+	// ResumptionPSK / ResumptionObfuscatedTicketAge / ResumptionAppData on a
+	// subsequent DialEarly (the saved parameters are REQUIRED for 0-RTT: they
+	// restore the client's flow-control limits). Servers ignore it.
+	GMOnClientSessionTicket func(identity, psk []byte, ticketAgeAdd uint32, serverParams []byte)
 }
 
 // ClientInfo contains information about an incoming connection attempt.

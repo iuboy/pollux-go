@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"crypto/x509"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"time"
@@ -203,6 +204,11 @@ type ClientHandshaker struct {
 	// earlyDataAccepted is set in HandleEncryptedExtensions when the server
 	// echoed early_data, i.e. it accepted the client's 0-RTT.
 	earlyDataAccepted bool
+	// nextProtos is the ALPN offer copied from ClientConfig; negotiatedProto is
+	// the protocol the server selected in EncryptedExtensions (empty until
+	// then, and permanently empty when no ALPN was offered).
+	nextProtos      []string
+	negotiatedProto string
 	// clientFinishedSent records that ClientFinished has appended the client's
 	// Finished to the transcript. HandleNewSessionTicket refuses to run until
 	// this is true, because the resumption master secret MUST be derived over
@@ -252,6 +258,12 @@ type ClientConfig struct {
 	// verification. Use it for certificate pinning.
 	VerifyPeerCertificate func(rawCerts [][]byte) error
 
+	// NextProtos is the ALPN protocol list offered in the ClientHello
+	// (RFC 7301). RFC 9001 §8.1 requires QUIC endpoints to negotiate ALPN, so
+	// a QUIC caller must set it. When non-empty the handshake fails closed:
+	// the server must select exactly one of the offered protocols.
+	NextProtos []string
+
 	// TransportParameters is the raw marshaled QUIC transport parameters to
 	// advertise in the ClientHello (RFC 9001 §8). Optional for a non-QUIC
 	// consumer; a QUIC transport layer supplies it so the peer can configure the
@@ -273,6 +285,14 @@ type ClientConfig struct {
 	// identity: (ticket_age + ticket_age_add) mod 2^32, computed by the caller
 	// from the original NewSessionTicket's TicketAgeAdd and the elapsed time.
 	ResumptionObfuscatedTicketAge uint32
+	// ResumptionAppData is the opaque application-data blob that traveled in
+	// the resumption ticket alongside the PSK (see
+	// EncryptSessionTicketWithData). tls13gm never interprets it; a QUIC
+	// transport sets it to the server's transport parameters harvested with
+	// the ticket, so 0-RTT data can be sent under the restored limits. A QUIC
+	// caller attempting 0-RTT MUST supply it (the GM transport declines 0-RTT
+	// without it, mirroring crypto/tls).
+	ResumptionAppData []byte
 	// EarlyData, when true with ResumptionPSK, makes the client offer 0-RTT
 	// (the ClientHello carries early_data; early traffic keys are derived).
 	// When false, PSK resumption proceeds without 0-RTT (no early_data
@@ -288,6 +308,13 @@ func NewClientHandshakerWithConfig(cfg ClientConfig) (*ClientHandshaker, error) 
 	}
 	if !cfg.InsecureSkipVerify && cfg.VerifyPeerCertificate == nil && cfg.Roots == nil {
 		return nil, errors.New("tls13gm: ClientConfig.Roots is required (use InsecureSkipVerify only for testing)")
+	}
+	// With Roots configured, HandleCertificate verifies the chain under
+	// DNSName = ServerName; an empty DNSName makes smx509 skip hostname
+	// matching, silently degrading to chain-only validation (any certificate
+	// issued under a trusted CA would pass). Fail closed instead.
+	if !cfg.InsecureSkipVerify && cfg.Roots != nil && cfg.ServerName == "" {
+		return nil, errors.New("tls13gm: ClientConfig.ServerName is required when Roots is set (an empty ServerName silently skips hostname verification)")
 	}
 	priv, err := GenerateCurveSM2KeyPair()
 	if err != nil {
@@ -320,6 +347,7 @@ func NewClientHandshakerWithConfig(cfg ClientConfig) (*ClientHandshaker, error) 
 		resumptionIdentity:   cfg.ResumptionIdentity,
 		resumptionObfAge:     cfg.ResumptionObfuscatedTicketAge,
 		offerEarlyData:       cfg.EarlyData,
+		nextProtos:           cfg.NextProtos,
 	}, nil
 }
 
@@ -399,8 +427,23 @@ func (c *ClientHandshaker) buildClientHello(cookie []byte) ([]byte, error) {
 			{Type: ExtensionTypePSKKeyExchangeModes, Data: marshalPSKKeyExchangeModesExtension([]uint8{PSKKeyExchangeModeDHEKE})},
 		},
 	}
+	// ALPN (RFC 7301 / RFC 9001 §8.1 — mandatory for QUIC): offer the
+	// configured protocol list when non-empty. The server must select exactly
+	// one of them in EncryptedExtensions or the handshake fails closed at the
+	// client.
+	if len(c.nextProtos) > 0 {
+		alpnExt, err := marshalALPNExtension(c.nextProtos)
+		if err != nil {
+			return nil, err
+		}
+		ch.Extensions = append(ch.Extensions, Extension{Type: ExtensionTypeALPN, Data: alpnExt})
+	}
 	if cookie != nil {
-		ch.Extensions = append(ch.Extensions, Extension{Type: ExtensionTypeCookie, Data: marshalCookieExtension(cookie)})
+		cookieExt, err := marshalCookieExtension(cookie)
+		if err != nil {
+			return nil, err
+		}
+		ch.Extensions = append(ch.Extensions, Extension{Type: ExtensionTypeCookie, Data: cookieExt})
 	}
 	if c.localTransportParams != nil {
 		ch.Extensions = append(ch.Extensions, Extension{Type: ExtensionTypeQUICTransportParams, Data: c.localTransportParams})
@@ -431,11 +474,20 @@ func (c *ClientHandshaker) appendPreSharedKey(ch *ClientHelloMsg) ([]byte, error
 	// and the pre_shared_key ext_len keeps its full value. pskBinderTranscript
 	// adds a placeholder pre_shared_key extension, marshals the full message,
 	// and strips the trailing binders field, matching OpenSSL's binderoffset.
-	transcript, err := pskBinderTranscript(ch, identities)
+	truncated, err := pskBinderTranscript(ch, identities)
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: binder transcript: %w", err)
 	}
-	binder, err := computeResumptionBinder(c.resumptionPSK, transcript)
+	// RFC 8446 §4.2.11.2: for ClientHello2 the binder transcript is
+	// message_hash(ClientHello1) || HRR || Truncate(ClientHello2). The running
+	// transcript holds exactly the pre-ClientHello messages at this point —
+	// empty for CH1, message_hash(CH1) || HRR for CH2 (ResetForHelloRetry ran
+	// before buildClientHello) — so its raw bytes prefixed to the truncated
+	// ClientHello reproduce the RFC transcript in both cases. (The server-side
+	// binder verification needs no prefix: the pollux server never sends an
+	// HRR, so it only ever verifies CH1 binders.)
+	prefix := c.transcript.Bytes()
+	binder, err := computeResumptionBinder(c.resumptionPSK, append(prefix, truncated...))
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: compute binder: %w", err)
 	}
@@ -540,6 +592,7 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 	if err != nil {
 		return fmt.Errorf("tls13gm: ECDHE: %w", err)
 	}
+	defer memsecure.ZeroBytes(sharedSecret)
 	c.transcript.AddMessage(shType, shBody)
 
 	// RFC 8446 §7.1: when the offered PSK was NOT selected (no pre_shared_key
@@ -557,6 +610,7 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 		c.phase = clientFailed // key schedule inputs are unusable; fail terminally
 		return fmt.Errorf("tls13gm: derive early secret: %w", err)
 	}
+	defer memsecure.ZeroBytes(earlySecret)
 	c.handshakeSecret, err = DeriveHandshakeSecret(earlySecret, sharedSecret)
 	if err != nil {
 		c.phase = clientFailed // transcript already includes SH; retries would double-add
@@ -634,6 +688,13 @@ func (c *ClientHandshaker) HandleHelloRetryRequest(hrr []byte) ([]byte, error) {
 	}
 	// RFC 8446 §4.4.1: transcript becomes message_hash(CH1) || HRR.
 	c.transcript.ResetForHelloRetry(c.clientHello1Full, hrr)
+	// RFC 8446 §4.2.10: "a client MUST NOT offer early data" in ClientHello2.
+	// The CH1-derived early keys cover the CH1 transcript, which was just
+	// replaced by message_hash(CH1) || HRR — they can never match what the
+	// server would derive, so zero and drop them; the transport is told via
+	// its own 0-RTT-discard path (Get0RTTSealer then reports unavailable).
+	c.offerEarlyData = false
+	c.DiscardEarlyKeys()
 	// ClientHello2 carries the echoed cookie. Single curveSM2 group: reuse the
 	// existing ephemeral (HRR does not select a different group here).
 	ch2, err := c.buildClientHello(cookie)
@@ -667,11 +728,41 @@ func (c *ClientHandshaker) HandleEncryptedExtensions(encryptedExt []byte) error 
 	if tp := findExtension(ee.Extensions, ExtensionTypeQUICTransportParams); tp != nil {
 		c.peerTransportParams = tp
 	}
+	// ALPN (RFC 7301 / RFC 9001 §8.1): a client that offered a protocol list
+	// must have exactly one of its offered protocols selected — anything else
+	// (no ALPN in EE, a multi-element list, or a protocol we never offered)
+	// fails the handshake.
+	if len(c.nextProtos) > 0 {
+		alpn := findExtension(ee.Extensions, ExtensionTypeALPN)
+		if alpn == nil {
+			return errors.New("tls13gm: server did not negotiate an ALPN protocol (RFC 9001 §8.1 requires ALPN for QUIC)")
+		}
+		selected, err := parseALPNExtension(alpn)
+		if err != nil {
+			return fmt.Errorf("tls13gm: server ALPN: %w", err)
+		}
+		if len(selected) != 1 {
+			return fmt.Errorf("tls13gm: server ALPN selection must carry exactly one protocol, got %d", len(selected))
+		}
+		offered := false
+		for _, p := range c.nextProtos {
+			if p == selected[0] {
+				offered = true
+				break
+			}
+		}
+		if !offered {
+			return fmt.Errorf("tls13gm: server selected ALPN protocol %q which the client did not offer", selected[0])
+		}
+		c.negotiatedProto = selected[0]
+	}
 	// The server echoes early_data only when it accepted the client's 0-RTT —
-	// and only the 0-RTT the client actually offered. Accepting an echo when
-	// we never offered early_data would let a malicious server flip
-	// ConnectionState().Used0RTT (visibility lie), so gate on our own offer.
-	if c.offerEarlyData && hasExtension(ee.Extensions, ExtensionTypeEarlyData) {
+	// and only the 0-RTT the client actually offered with a PSK the server
+	// selected. Accepting an echo when we never offered early_data would let a
+	// malicious server flip ConnectionState().Used0RTT (visibility lie), and
+	// RFC 8446 §4.2.10 permits the EE early_data extension only on PSK
+	// handshakes — gate on both.
+	if c.offerEarlyData && c.pskMode && hasExtension(ee.Extensions, ExtensionTypeEarlyData) {
 		c.earlyDataAccepted = true
 	}
 	c.transcript.AddMessage(eeType, eeBody)
@@ -814,10 +905,12 @@ func (c *ClientHandshaker) HandleServerFinished(finished []byte) error {
 	if err != nil {
 		return err
 	}
+	defer memsecure.ZeroBytes(serverFinishedKey)
 	expected, err := ComputeFinishedVerifyData(serverFinishedKey, c.transcript.Sum())
 	if err != nil {
 		return err
 	}
+	defer memsecure.ZeroBytes(expected)
 	if !equalConstantTime(expected, fin.VerifyData) {
 		return errors.New("tls13gm: server Finished verify_data mismatch")
 	}
@@ -864,10 +957,12 @@ func (c *ClientHandshaker) ClientFinished() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer memsecure.ZeroBytes(finishedKey)
 	verifyData, err := ComputeFinishedVerifyData(finishedKey, c.transcript.Sum())
 	if err != nil {
 		return nil, err
 	}
+	defer memsecure.ZeroBytes(verifyData) // full 里的消息副本已由 Marshal 复制
 	full, err := MarshalHandshakeMessage(&FinishedMsg{VerifyData: verifyData})
 	if err != nil {
 		return nil, err
@@ -956,6 +1051,17 @@ type ServerHandshaker struct {
 	clientOfferedEarlyData bool
 	acceptedEarlyData      bool // set when the server echoes early_data in EE
 	earlyDataAcceptor      func([]byte, time.Duration) bool
+	// nextProtos is the ALPN support list copied from ServerConfig;
+	// negotiatedProto is the protocol selected from the client's offer (empty
+	// until a ClientHello carrying ALPN selected one).
+	nextProtos      []string
+	negotiatedProto string
+
+	// resumptionAppData is the opaque application-data blob recovered from a
+	// resuming client's ticket (nil for a full handshake or a ticket issued
+	// without data). A QUIC transport reads it via ResumptionAppData to run
+	// the ValidFor0RTT admission check before accepting 0-RTT.
+	resumptionAppData []byte
 }
 
 // DiscardEarlyKeys clears the 0-RTT keys (called by the transport once the
@@ -971,6 +1077,16 @@ func (s *ServerHandshaker) DiscardEarlyKeys() {
 // the client's ClientHello. Empty until HandleClientHello has run.
 func (s *ServerHandshaker) PeerTransportParams() []byte { return s.peerTransportParams }
 
+// NegotiatedProtocol returns the ALPN protocol selected from the client's
+// offer (empty when the client offered no ALPN, or before HandleClientHello).
+func (s *ServerHandshaker) NegotiatedProtocol() string { return s.negotiatedProto }
+
+// ResumptionAppData returns the opaque application data embedded in the
+// resuming client's ticket (nil unless the current handshake resumed from a
+// ticket issued with data — see NewSessionTicketWithData). A QUIC server uses
+// it for the ValidFor0RTT 0-RTT admission check.
+func (s *ServerHandshaker) ResumptionAppData() []byte { return s.resumptionAppData }
+
 // ServerConfig configures a TLS 1.3 GM server handshaker.
 type ServerConfig struct {
 	// DCID seeds the QUIC Initial packet-protection keys. Required.
@@ -985,6 +1101,15 @@ type ServerConfig struct {
 	// consumer; a QUIC transport layer supplies it so the peer can configure the
 	// connection. tls13gm carries the bytes verbatim.
 	TransportParameters []byte
+
+	// NextProtos is the server's supported ALPN protocols (RFC 7301). RFC 9001
+	// §8.1 requires QUIC endpoints to negotiate ALPN, so a QUIC caller must set
+	// it. When the client offers ALPN and this list is non-empty, the first
+	// client-offered protocol also present here is selected (crypto/tls's
+	// client-preference policy) and echoed in EncryptedExtensions; with no
+	// overlap the handshake is aborted (the RFC 7301 no_application_protocol
+	// case).
+	NextProtos []string
 
 	// SessionTicketKeys returns the current session-ticket encryption keys
 	// (TEKs), newest first: typically [current, previous] to cover a rotation
@@ -1054,6 +1179,7 @@ func NewServerHandshakerWithConfig(cfg ServerConfig) (*ServerHandshaker, error) 
 		ticketKeys:           cfg.SessionTicketKeys,
 		allowEarlyData:       cfg.AllowEarlyData,
 		earlyDataAcceptor:    cfg.EarlyDataAcceptor,
+		nextProtos:           cfg.NextProtos,
 	}, nil
 }
 
@@ -1112,6 +1238,34 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 	if ks == nil {
 		return errors.New("tls13gm: ClientHello missing key_share extension")
 	}
+	// ALPN (RFC 7301 / RFC 9001 §8.1): when both sides configured protocols,
+	// select the first client-offered protocol this server also supports
+	// (crypto/tls's client-preference policy). No overlap aborts the handshake —
+	// the RFC 7301 no_application_protocol case. A client that offered no ALPN
+	// negotiates nothing here; the client-side EE gate fails that combination
+	// when the client was configured to offer protocols.
+	if len(s.nextProtos) > 0 {
+		if alpn := findExtension(chMsg.Extensions, ExtensionTypeALPN); alpn != nil {
+			clientProtos, err := parseALPNExtension(alpn)
+			if err != nil {
+				return fmt.Errorf("tls13gm: ClientHello ALPN: %w", err)
+			}
+			selected := ""
+		sel:
+			for _, cp := range clientProtos {
+				for _, sp := range s.nextProtos {
+					if cp == sp {
+						selected = cp
+						break sel
+					}
+				}
+			}
+			if selected == "" {
+				return errors.New("tls13gm: no overlapping ALPN protocol (no_application_protocol)")
+			}
+			s.negotiatedProto = selected
+		}
+	}
 	clientKeyBytes, err := parseClientKeyShare(ks, CurveSM2)
 	if err != nil {
 		return fmt.Errorf("tls13gm: ClientHello key_share: %w", err)
@@ -1152,7 +1306,18 @@ func (s *ServerHandshaker) HandleClientHello(ch []byte) error {
 			// typically consults an AntiReplayCache) — AllowEarlyData alone does
 			// NOT accept 0-RTT. This matches quicgm's policy (AntiReplay != nil
 			// is required) and the ServerConfig.AllowEarlyData doc comment.
-			if s.allowEarlyData && s.earlyDataAcceptor != nil && s.earlyDataAcceptor(s.resumptionSelectedPSK, s.resumptionRealAge) {
+			//
+			// The PSK must have passed binder verification: verifyPSKBinder
+			// DECLINES an undecryptable ticket by returning nil (leaving
+			// resumptionSelectedPSK nil) and falling through to a full
+			// handshake. Deriving early keys in that state would feed the
+			// zero-IKM fallback (DeriveEarlySecret), making the 0-RTT keys a
+			// function of public data only (zero PSK + the attacker's own
+			// ClientHello transcript) — anyone could forge "0-RTT" that the
+			// server decrypts and delivers. Gate on a non-nil PSK.
+			if s.resumptionSelectedPSK != nil &&
+				s.allowEarlyData && s.earlyDataAcceptor != nil &&
+				s.earlyDataAcceptor(s.resumptionSelectedPSK, s.resumptionRealAge) {
 				s.secrets.ClientEarlyKeys, err = DeriveEarlyTrafficKeys(s.resumptionSelectedPSK, s.transcript.Sum())
 				if err != nil {
 					return fmt.Errorf("tls13gm: derive 0-RTT keys: %w", err)
@@ -1188,7 +1353,7 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 	// not guarantee fresh copies (a caller may return a shared static list),
 	// so they must not be zeroed here. Providers that hand out copies (e.g.
 	// quicgm's rotator) own their scrubbing.
-	psk, ageAdd, err := DecryptSessionTicket(s.ticketKeys(), identities[0].Identity)
+	psk, ageAdd, appData, err := DecryptSessionTicketWithData(s.ticketKeys(), identities[0].Identity)
 	if err != nil {
 		// Unknown/expired/rotated-out ticket: DECLINE the PSK and continue
 		// with a full handshake. RFC 8446 §4.2.11: "the server MUST NOT
@@ -1200,6 +1365,11 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 		//nolint:nilerr // deliberate: error means "decline", not "abort"
 		return nil
 	}
+	// The opaque application data the issuing server embedded in the ticket
+	// (for QUIC: its transport parameters at issuance). Surfaced via
+	// ResumptionAppData so the transport can run the ValidFor0RTT admission
+	// check before accepting 0-RTT.
+	s.resumptionAppData = appData
 	// Reconstruct the real ticket age from the obfuscated value the client
 	// reported and the ticket_age_add encoded in the ticket (RFC 8446
 	// §4.2.11.1); forwarded to EarlyDataAcceptor for 0-RTT anti-replay (§8).
@@ -1225,6 +1395,7 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 	if err != nil {
 		return err
 	}
+	defer memsecure.ZeroBytes(expected)
 	if !equalConstantTime(expected, binders[0]) {
 		// The identity decrypted but the binder does not match: a genuinely
 		// forged or corrupted pre_shared_key. Abort (the connection may be
@@ -1285,12 +1456,14 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	if err != nil {
 		return fail(fmt.Errorf("tls13gm: ECDHE: %w", err))
 	}
+	defer memsecure.ZeroBytes(sharedSecret)
 	// PSK resumption: derive the early secret from the selected PSK; otherwise
 	// (nil) DeriveEarlySecret uses zeros. psk_dhe_ke still mixes ECDHE below.
 	earlySecret, err := DeriveEarlySecret(s.resumptionSelectedPSK)
 	if err != nil {
 		return fail(fmt.Errorf("tls13gm: derive early secret: %w", err))
 	}
+	defer memsecure.ZeroBytes(earlySecret)
 	s.handshakeSecret, err = DeriveHandshakeSecret(earlySecret, sharedSecret)
 	if err != nil {
 		return fail(err)
@@ -1318,6 +1491,15 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	ee := &EncryptedExtensionsMsg{}
 	if s.localTransportParams != nil {
 		ee.Extensions = append(ee.Extensions, Extension{Type: ExtensionTypeQUICTransportParams, Data: s.localTransportParams})
+	}
+	// ALPN (RFC 7301): echo the selected protocol — exactly one entry — so the
+	// client can complete its fail-closed negotiation check.
+	if s.negotiatedProto != "" {
+		alpnExt, aerr := marshalALPNExtension([]string{s.negotiatedProto})
+		if aerr != nil {
+			return nil, nil, nil, nil, nil, aerr
+		}
+		ee.Extensions = append(ee.Extensions, Extension{Type: ExtensionTypeALPN, Data: alpnExt})
 	}
 	// Accept the client's 0-RTT only when the early traffic keys were actually
 	// derived in HandleClientHello — which happens iff the policy (allowEarlyData
@@ -1357,10 +1539,12 @@ func (s *ServerHandshaker) ServerFlight() (serverHello, encExt, certificate, cer
 	if err != nil {
 		return fail(err)
 	}
+	defer memsecure.ZeroBytes(serverFinishedKey)
 	verifyData, err := ComputeFinishedVerifyData(serverFinishedKey, s.transcript.Sum())
 	if err != nil {
 		return fail(err)
 	}
+	defer memsecure.ZeroBytes(verifyData) // finished 消息副本已由 Marshal 复制
 	if finished, err = MarshalHandshakeMessage(&FinishedMsg{VerifyData: verifyData}); err != nil {
 		return fail(err)
 	}
@@ -1414,10 +1598,12 @@ func (s *ServerHandshaker) HandleClientFinished(cf []byte) error {
 	if err != nil {
 		return err
 	}
+	defer memsecure.ZeroBytes(finishedKey)
 	expected, err := ComputeFinishedVerifyData(finishedKey, s.transcript.Sum())
 	if err != nil {
 		return err
 	}
+	defer memsecure.ZeroBytes(expected)
 	if !equalConstantTime(expected, fin.VerifyData) {
 		return errors.New("tls13gm: client Finished verify_data mismatch")
 	}
@@ -1443,6 +1629,27 @@ func (s *ServerHandshaker) AcceptedEarlyData() bool { return s.acceptedEarlyData
 // is processed.
 func (c *ClientHandshaker) EarlyDataAccepted() bool { return c.earlyDataAccepted }
 
+// EarlyDataOffered reports whether this client offered 0-RTT (PSK plus the
+// early_data extension) in its most recent ClientHello. The transport uses it
+// after EncryptedExtensions to detect server rejection (offered && !accepted
+// ⇒ the 0-RTT keys must be discarded). After a HelloRetryRequest the offer is
+// withdrawn per RFC 8446 §4.2.10 and this reports false; the transport is
+// expected to discard the CH1-era 0-RTT keys at HRR time instead.
+func (c *ClientHandshaker) EarlyDataOffered() bool { return c.offerEarlyData }
+
+// DiscardEarlyKeys zeroes and drops the client's 0-RTT keys (called by the
+// transport when the server rejects early data, or after a HelloRetryRequest).
+func (c *ClientHandshaker) DiscardEarlyKeys() {
+	if c.secrets.ClientEarlyKeys != nil {
+		c.secrets.ClientEarlyKeys.Zero()
+		c.secrets.ClientEarlyKeys = nil
+	}
+}
+
+// NegotiatedProtocol returns the ALPN protocol the server selected in
+// EncryptedExtensions (empty when no ALPN was offered, or before EE).
+func (c *ClientHandshaker) NegotiatedProtocol() string { return c.negotiatedProto }
+
 // ResumptionMasterSecret returns the resumption master secret computed during
 // HandleNewSessionTicket (nil before). Diagnostic / interop debugging aid.
 func (c *ClientHandshaker) ResumptionMasterSecret() []byte { return c.resumptionMasterSecret }
@@ -1454,15 +1661,20 @@ func (c *ClientHandshaker) TranscriptBytes() []byte { return c.transcript.Bytes(
 // MasterSecret returns the TLS 1.3 master secret. Diagnostic aid.
 func (c *ClientHandshaker) MasterSecret() []byte { return c.masterSecret }
 
-// NewSessionTicket produces a NewSessionTicket handshake message carrying a
-// fresh resumption PSK, for the server to send post-handshake under the 1-RTT
-// keys. HandleClientFinished must have completed. ticketLifetime is the PSK
-// validity in seconds; ticketAgeAdd obfuscates the ticket age the client
-// reports when resuming. The Ticket field carries an opaque stateless ticket
-// (the PSK encrypted under the current TEK via EncryptSessionTicket); the
-// client recovers the PSK itself from the resumption master secret and the
-// ticket nonce (RFC 8446 §4.6.1), so the server keeps no per-ticket state.
-func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32, ticketAgeAdd uint32) ([]byte, error) {
+// NewSessionTicket produces a NewSessionTicket message whose ticket carries
+// only the PSK and ticket_age_add. ticket_age_add is generated fresh from
+// crypto/rand per ticket (RFC 8446 §2.2: it exists to obfuscate the ticket
+// age; a caller-supplied constant would defeat that). The client reads the
+// value from the NST message body. See NewSessionTicketWithData.
+func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32) ([]byte, error) {
+	return s.NewSessionTicketWithData(ticketLifetime, nil)
+}
+
+// NewSessionTicketWithData additionally embeds an opaque application-data blob
+// in the ticket (see EncryptSessionTicketWithData). A QUIC server passes its
+// marshaled transport parameters so a resuming client can restore its 0-RTT
+// limits and a resuming server can run the ValidFor0RTT admission check.
+func (s *ServerHandshaker) NewSessionTicketWithData(ticketLifetime uint32, appData []byte) ([]byte, error) {
 	// RFC 8446 §4.6.1: ticket_lifetime MUST NOT exceed 604800 seconds (7 days).
 	const maxSessionTicketLifetime uint32 = 7 * 24 * 60 * 60
 	if ticketLifetime > maxSessionTicketLifetime {
@@ -1478,6 +1690,13 @@ func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32, ticketAgeAdd 
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return nil, fmt.Errorf("tls13gm: generate ticket nonce: %w", err)
 	}
+	// ticket_age_add:每张票据独立随机(RFC 8446 §2.2 用于模糊化票据年龄;
+	// 常量值会令 0-RTT 重放窗口的年龄校验整体失效)。不取自调用方。
+	var ageAddBytes [4]byte
+	if _, err := rand.Read(ageAddBytes[:]); err != nil {
+		return nil, fmt.Errorf("tls13gm: generate ticket_age_add: %w", err)
+	}
+	ticketAgeAdd := binary.BigEndian.Uint32(ageAddBytes[:])
 	psk, err := DeriveResumptionPSK(s.resumptionMasterSecret, nonce[:])
 	if err != nil {
 		return nil, err
@@ -1489,7 +1708,7 @@ func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32, ticketAgeAdd 
 	if len(keys) == 0 {
 		return nil, errors.New("tls13gm: session-ticket key list is empty")
 	}
-	ticket, err := EncryptSessionTicket(keys[0], psk, ticketAgeAdd)
+	ticket, err := EncryptSessionTicketWithData(keys[0], psk, ticketAgeAdd, appData)
 	if err != nil {
 		memsecure.ZeroBytes(psk) // never linger key material in an error path
 		return nil, fmt.Errorf("tls13gm: encrypt session ticket: %w", err)

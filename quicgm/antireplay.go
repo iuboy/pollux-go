@@ -39,6 +39,14 @@ type memoryAntiReplayCache struct {
 	window   time.Duration
 	maxAge   time.Duration
 	now      func() time.Time
+	// maxEntries bounds the live-set size: every distinct digest (each replay
+	// of a legitimately-issued ticket included) inserts and lives for the full
+	// window, so a long-window config under high resumption volume — or an
+	// attacker replaying many distinct valid tickets — would otherwise grow
+	// the maps without bound for the window duration (memory exhaustion).
+	// When the bound is reached, new 0-RTT attempts are REJECTED (fail-safe:
+	// resumption continues at 1-RTT; only early data is refused).
+	maxEntries int
 }
 
 // NewAntiReplayCache returns a process-local anti-replay cache. window is how
@@ -49,16 +57,42 @@ type memoryAntiReplayCache struct {
 // positive, since a zero window would let the same digest be re-accepted
 // indefinitely (exp.After(now) with a zero expiry is always false), breaking
 // the anti-replay guarantee.
+// DefaultAntiReplayMaxEntries is the default live-entry bound of the
+// process-local anti-replay cache. Each entry costs roughly a map slot + a
+// digest string; 1<<20 entries is on the order of a few hundred MB worst
+// case, chosen as a generous ceiling far above legitimate single-process
+// resumption rates (thousands per second sustained for the whole window).
+const DefaultAntiReplayMaxEntries = 1 << 20
+
+// NewAntiReplayCache returns a process-local anti-replay cache. window is how
+// long a digest is remembered after first sight; maxAge is the maximum
+// acceptable ticket age (reject older tickets as expired). The live-entry
+// bound defaults to DefaultAntiReplayMaxEntries; at the bound, further 0-RTT
+// attempts are rejected (fail-safe) instead of growing the cache without
+// limit.
+//
+// Returns a rejecting cache (rejects all 0-RTT) if window or maxAge is non-
+// positive, since a zero window would let the same digest be re-accepted
+// indefinitely (exp.After(now) with a zero expiry is always false), breaking
+// the anti-replay guarantee.
 func NewAntiReplayCache(window, maxAge time.Duration) AntiReplayCache {
-	if window <= 0 || maxAge <= 0 {
+	return NewAntiReplayCacheWithCap(window, maxAge, DefaultAntiReplayMaxEntries)
+}
+
+// NewAntiReplayCacheWithCap is NewAntiReplayCache with an explicit live-entry
+// bound. maxEntries <= 0 yields the rejecting cache (an unbounded cache is
+// exactly the failure mode the bound exists to prevent).
+func NewAntiReplayCacheWithCap(window, maxAge time.Duration, maxEntries int) AntiReplayCache {
+	if window <= 0 || maxAge <= 0 || maxEntries <= 0 {
 		return rejectingAntiReplayCache{}
 	}
 	return &memoryAntiReplayCache{
-		seen:     make(map[string]int64),
-		byExpiry: make(map[int64][]string),
-		window:   window,
-		maxAge:   maxAge,
-		now:      time.Now,
+		seen:       make(map[string]int64),
+		byExpiry:   make(map[int64][]string),
+		window:     window,
+		maxAge:     maxAge,
+		now:        time.Now,
+		maxEntries: maxEntries,
 	}
 }
 
@@ -98,6 +132,11 @@ func (c *memoryAntiReplayCache) Check(digest []byte, age time.Duration) bool {
 	}
 	if exp, ok := c.seen[key]; ok && exp > nowN {
 		return false // replayed within the window
+	}
+	// Capacity bound: a cache at capacity rejecting new entries is fail-safe
+	// (0-RTT refused; the handshake itself proceeds at 1-RTT).
+	if len(c.seen) >= c.maxEntries {
+		return false
 	}
 	exp := now.Add(c.window).UnixNano()
 	c.seen[key] = exp

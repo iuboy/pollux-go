@@ -39,8 +39,11 @@ func newGMCryptoSetupServerHook(
 		return nil, false
 	}
 	// Route C: RFC 8998 GM handshake driven by pollux-go tls13gm. tlsConf is
-	// ignored; the GM server config carries the certificate/key.
-	cs, err := handshake.NewGMCryptoSetupServer(clientDestConnID, conf.GMHandshakeConfig.Server, params, logger, version)
+	// ignored; the GM server config carries the certificate/key. conf.Allow0RTT
+	// is the transport-level early-data admission switch — ANDed into the
+	// tls13gm-level AllowEarlyData so 0-RTT cannot be accepted (or echoed in
+	// EncryptedExtensions) when the quic.Config forbids it.
+	cs, err := handshake.NewGMCryptoSetupServer(clientDestConnID, conf.GMHandshakeConfig.Server, params, logger, version, conf.Allow0RTT)
 	if err != nil {
 		// Configuration errors (missing GM server config / ECDHE keygen) are
 		// caller bugs; surface them loudly like a bad *tls.Config would.

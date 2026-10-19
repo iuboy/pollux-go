@@ -489,13 +489,38 @@ func ParseECPrivateKey(der []byte) (*ecdsa.PrivateKey, error) {
 	return smx509.ParseECPrivateKey(der)
 }
 
+// errLegacyDESRequiresOptIn rejects legacy PEM envelopes protected with the
+// cryptographically dead DES family unless the caller explicitly opted in
+// via DecryptOptions.AllowLegacyDESPEM (compliance postures must be able to
+// forbid them outright rather than silently accepting every legacy cipher).
+var errLegacyDESRequiresOptIn = errors.New("smx509: legacy DES-CBC/DES-EDE3-CBC PEM cipher requires DecryptOptions.AllowLegacyDESPEM")
+
+// DecryptOptions tunes the PEM decryption policy.
+type DecryptOptions struct {
+	// AllowLegacyDESPEM permits decrypting legacy Proc-Type/DEK-Info envelopes
+	// protected with DES-CBC (56-bit) or DES-EDE3-CBC (112-bit effective).
+	// Both ciphers are cryptographically dead; they remain supported ONLY for
+	// migrating historical key files and require this explicit opt-in.
+	// AES-CBC legacy envelopes stay decryptable without opt-in — the MD5-based
+	// OpenSSL KDF is inherent to the whole legacy format, not an optional
+	// cipher choice.
+	AllowLegacyDESPEM bool
+}
+
 // DecryptPEMPrivateKey decrypts an encrypted PEM private key using the given password.
 // Returns the decrypted key in PEM format.
 // Supports PKCS#8 encrypted keys (PBES2/PBKDF2 with AES-CBC/GCM, SM4-CBC/GCM, SM3 PRF)
-// and traditional PEM encryption (Proc-Type/DEK-Info headers with DES-CBC, DES-EDE3-CBC, AES-CBC).
+// and traditional PEM encryption (Proc-Type/DEK-Info headers with AES-CBC;
+// DES-CBC/DES-EDE3-CBC only via DecryptPEMPrivateKeyWithOptions).
 // Traditional PEM encryption is accepted only for reading legacy OpenSSL-compatible keys;
 // new encrypted keys should use PKCS#8 PBES2 with an authenticated or modern block cipher mode.
 func DecryptPEMPrivateKey(pemData []byte, password string) ([]byte, error) {
+	return DecryptPEMPrivateKeyWithOptions(pemData, password, DecryptOptions{})
+}
+
+// DecryptPEMPrivateKeyWithOptions is DecryptPEMPrivateKey with an explicit
+// decryption policy (see DecryptOptions).
+func DecryptPEMPrivateKeyWithOptions(pemData []byte, password string, opts DecryptOptions) ([]byte, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
 		return nil, fmt.Errorf("smx509: failed to decode PEM data")
@@ -505,7 +530,7 @@ func DecryptPEMPrivateKey(pemData []byte, password string) ([]byte, error) {
 		return pemData, nil
 	}
 
-	der, err := decryptPEMBlock(block, []byte(password))
+	der, err := decryptPEMBlock(block, []byte(password), opts.AllowLegacyDESPEM)
 	if err != nil {
 		return nil, err
 	}
@@ -516,6 +541,12 @@ func DecryptPEMPrivateKey(pemData []byte, password string) ([]byte, error) {
 
 // DecryptPEMPrivateKeyDER decrypts an encrypted PEM private key and returns raw DER bytes.
 func DecryptPEMPrivateKeyDER(pemData []byte, password string) ([]byte, error) {
+	return DecryptPEMPrivateKeyDERWithOptions(pemData, password, DecryptOptions{})
+}
+
+// DecryptPEMPrivateKeyDERWithOptions is DecryptPEMPrivateKeyDER with an
+// explicit decryption policy (see DecryptOptions).
+func DecryptPEMPrivateKeyDERWithOptions(pemData []byte, password string, opts DecryptOptions) ([]byte, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
 		return nil, fmt.Errorf("smx509: failed to decode PEM data")
@@ -525,10 +556,10 @@ func DecryptPEMPrivateKeyDER(pemData []byte, password string) ([]byte, error) {
 		return block.Bytes, nil
 	}
 
-	return decryptPEMBlock(block, []byte(password))
+	return decryptPEMBlock(block, []byte(password), opts.AllowLegacyDESPEM)
 }
 
-func decryptPEMBlock(block *pem.Block, password []byte) ([]byte, error) {
+func decryptPEMBlock(block *pem.Block, password []byte, allowLegacyDES bool) ([]byte, error) {
 	switch block.Type {
 	case pemTypeEncryptedPrivateKey:
 		der, err := decryptPKCS8(block.Bytes, password)
@@ -538,7 +569,7 @@ func decryptPEMBlock(block *pem.Block, password []byte) ([]byte, error) {
 		return der, nil
 
 	default:
-		der, err := decryptLegacyPEM(block, password)
+		der, err := decryptLegacyPEM(block, password, allowLegacyDES)
 		if err != nil {
 			return nil, fmt.Errorf("smx509: decrypt PEM block failed: %w", err)
 		}
@@ -844,7 +875,7 @@ func pkcs7Unpad(data []byte, blockSize int) ([]byte, error) {
 
 // --- Legacy PEM encryption (Proc-Type/DEK-Info) ---
 
-func decryptLegacyPEM(block *pem.Block, password []byte) ([]byte, error) {
+func decryptLegacyPEM(block *pem.Block, password []byte, allowLegacyDES bool) ([]byte, error) {
 	dekInfo := block.Headers["DEK-Info"]
 	if dekInfo == "" {
 		return nil, fmt.Errorf("smx509: missing DEK-Info header")
@@ -864,6 +895,10 @@ func decryptLegacyPEM(block *pem.Block, password []byte) ([]byte, error) {
 	keyLen := legacyKeyLen(cipherName)
 	if keyLen == 0 {
 		return nil, fmt.Errorf("unsupported encryption algorithm: %s", cipherName)
+	}
+	// DES family policy gate (see DecryptOptions.AllowLegacyDESPEM).
+	if !allowLegacyDES && (cipherName == legacyCipherDESCBC || cipherName == legacyCipherDES3CBC) {
+		return nil, errLegacyDESRequiresOptIn
 	}
 	// Salt 是 IV 的前 8 字节（与 OpenSSL/Go x509 一致）
 	if len(iv) < 8 {
@@ -901,17 +936,26 @@ func decryptLegacyPEM(block *pem.Block, password []byte) ([]byte, error) {
 	return unpadded, nil
 }
 
+// legacy cipher names (DEK-Info 头;常量避免散落字符串)
+const (
+	legacyCipherDESCBC    = "DES-CBC"
+	legacyCipherDES3CBC   = "DES-EDE3-CBC"
+	legacyCipherAES128CBC = "AES-128-CBC"
+	legacyCipherAES192CBC = "AES-192-CBC"
+	legacyCipherAES256CBC = "AES-256-CBC"
+)
+
 func legacyKeyLen(name string) int {
 	switch name {
-	case "DES-CBC":
+	case legacyCipherDESCBC:
 		return 8
-	case "DES-EDE3-CBC":
+	case legacyCipherDES3CBC:
 		return 24
-	case "AES-128-CBC":
+	case legacyCipherAES128CBC:
 		return 16
-	case "AES-192-CBC":
+	case legacyCipherAES192CBC:
 		return 24
-	case "AES-256-CBC":
+	case legacyCipherAES256CBC:
 		return 32
 	default:
 		return 0
@@ -922,11 +966,11 @@ func legacyKeyLen(name string) int {
 // existing Proc-Type/DEK-Info private keys. Do not use DES or 3DES for new data.
 func legacyNewCipher(name string, key []byte) (cipher.Block, error) {
 	switch name {
-	case "DES-CBC":
+	case legacyCipherDESCBC:
 		return des.NewCipher(key)
-	case "DES-EDE3-CBC":
+	case legacyCipherDES3CBC:
 		return des.NewTripleDESCipher(key)
-	case "AES-128-CBC", "AES-192-CBC", "AES-256-CBC":
+	case legacyCipherAES128CBC, legacyCipherAES192CBC, legacyCipherAES256CBC:
 		return aes.NewCipher(key)
 	default:
 		return nil, fmt.Errorf("unsupported encryption algorithm: %s", name)

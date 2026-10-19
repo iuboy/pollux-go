@@ -79,7 +79,7 @@ func TestGMCryptoSetup_FullHandshake(t *testing.T) {
 	server, err := NewGMCryptoSetupServer(connID, &tls13gm.ServerConfig{
 		Certificate: cert,
 		PrivateKey:  serverKey,
-	}, serverTP, utils.DefaultLogger, protocol.Version1)
+	}, serverTP, utils.DefaultLogger, protocol.Version1, true)
 	if err != nil {
 		t.Fatalf("NewGMCryptoSetupServer: %v", err)
 	}

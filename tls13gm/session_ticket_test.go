@@ -73,7 +73,9 @@ func TestSessionTicket_RejectsUnknownKey(t *testing.T) {
 func TestSessionTicket_RejectsBadVersion(t *testing.T) {
 	tek := bytes.Repeat([]byte{0x55}, SessionTicketKeyLen)
 	ticket, _ := EncryptSessionTicket(tek, bytes.Repeat([]byte{0x01}, 32), 0)
-	ticket[0] = 0x03 // corrupt version
+	// 0x7F has never been a valid version (0x02/0x03 are the retired/current
+	// ones — corrupting to the CURRENT version would be a no-op).
+	ticket[0] = 0x7F
 	if _, _, err := DecryptSessionTicket([][]byte{tek}, ticket); err == nil {
 		t.Fatal("decrypted ticket with bad version")
 	}
@@ -131,13 +133,16 @@ func TestSessionTicket_MatchAtAnyPosition(t *testing.T) {
 // semantics: when more than one candidate key decrypts (e.g. duplicate TEKs in
 // the list), the LAST successful result is returned. This pins the behavior the
 // constant-time traversal relies on — it records rather than returns.
-func TestSessionTicket_MultiMatchTakesLast(t *testing.T) {
+func TestSessionTicket_MultiMatchDuplicateKeys(t *testing.T) {
 	k := bytes.Repeat([]byte{0x55}, SessionTicketKeyLen)
 	ticket, err := EncryptSessionTicket(k, bytes.Repeat([]byte{0x01}, 32), 0)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	// Same key three times — every Open succeeds identically, result is the PSK.
+	// Same key three times — every Open succeeds identically, and the
+	// keep-FIRST policy (teks newest-first; see DecryptSessionTicketWithData)
+	// yields the same PSK. AEAD guarantees distinct keys never both decrypt,
+	// so duplicates are the only multi-match case.
 	got, _, err := DecryptSessionTicket([][]byte{k, k, k}, ticket)
 	if err != nil {
 		t.Fatalf("multi-match should decrypt: %v", err)

@@ -50,6 +50,10 @@ func generateTestCertPair(t *testing.T) (signCert, encCert *tls.Certificate) {
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour * 24),
 		KeyUsage:     smx509.KeyUsageDigitalSignature | smx509.KeyUsageKeyEncipherment | smx509.KeyUsageDataEncipherment,
+		// A DNS SAN is mandatory for hostname verification: the client configs
+		// in these tests set ServerName ("test"), and smx509 rejects matching
+		// against a SAN-less certificate ("relies on legacy Common Name field").
+		DNSNames: []string{"test"},
 	}
 
 	// 签名证书
@@ -163,6 +167,12 @@ func handshakeOverPipe(t *testing.T, serverConfig, clientConfig *Config) (*Conn,
 
 	clientTLCP = Client(clientConn, clientConfig)
 	clientErr = clientTLCP.Handshake()
+	if clientErr != nil {
+		// net.Pipe writes are synchronous: a server mid-flight write blocks
+		// until its reader reads. Close the client side so the server goroutine
+		// unblocks (io.ErrClosedPipe) and <-done below cannot deadlock.
+		clientConn.Close()
+	}
 
 	<-done
 
@@ -296,6 +306,7 @@ func TestCertificateVerify_SelfSigned(t *testing.T) {
 		SignCertificate:      signCert,
 		EncCertificate:       encCert,
 		CipherSuites:         []uint16{SuiteECDHE_SM2_SM4_GCM_SM3},
+		ServerName:           "test",
 		InsecureSkipVerify:   false,
 		SignRootCAs:          signPool,
 		EncRootCAs:           encPool,
@@ -341,6 +352,7 @@ func TestCertificateVerify_WithRootCA(t *testing.T) {
 		SignCertificate:      signCert,
 		EncCertificate:       encCert,
 		CipherSuites:         []uint16{SuiteECDHE_SM2_SM4_GCM_SM3},
+		ServerName:           "test",
 		InsecureSkipVerify:   false,
 		SignRootCAs:          signPool,
 		EncRootCAs:           encPool,
@@ -382,6 +394,7 @@ func TestClientAuth_ECDHE(t *testing.T) {
 		SignCertificate:      signCert,
 		EncCertificate:       encCert,
 		CipherSuites:         []uint16{SuiteECDHE_SM2_SM4_GCM_SM3},
+		ServerName:           "test",
 		InsecureSkipVerify:   false,
 		SignRootCAs:          signPool,
 		EncRootCAs:           encPool,
@@ -422,6 +435,7 @@ func TestClientAuth_ECC(t *testing.T) {
 		SignCertificate:      signCert,
 		EncCertificate:       encCert,
 		CipherSuites:         []uint16{SuiteECC_SM2_SM4_GCM_SM3},
+		ServerName:           "test",
 		InsecureSkipVerify:   false,
 		SignRootCAs:          signPool,
 		EncRootCAs:           encPool,
@@ -460,6 +474,7 @@ func TestClientAuth_RequireVerifyWithoutClientCAsFails(t *testing.T) {
 		SignCertificate:      signCert,
 		EncCertificate:       encCert,
 		CipherSuites:         []uint16{SuiteECDHE_SM2_SM4_GCM_SM3},
+		ServerName:           "test",
 		InsecureSkipVerify:   false,
 		SignRootCAs:          signPool,
 		EncRootCAs:           encPool,
@@ -707,6 +722,7 @@ func TestClientAuth_VerifyIfGivenAcceptsNoClientCert(t *testing.T) {
 	clientConfig := &Config{
 		Version:            Version11,
 		CipherSuites:       []uint16{SuiteECC_SM2_SM4_GCM_SM3},
+		ServerName:         "test",
 		InsecureSkipVerify: false,
 		SignRootCAs:        signPool,
 		EncRootCAs:         encPool,

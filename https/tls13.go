@@ -53,7 +53,16 @@ func NewTLS13Server(opts TLS13ServerOptions) (*http.Server, error) {
 }
 
 // NewTLS13Client creates an *http.Client that only connects with TLS 1.3.
+//
+// The https layer applies its fail-closed trust gate (mirroring NewClient's
+// standard-TLS path): at least one client certificate, a root pool, or an
+// explicit InsecureSkipVerify is required. The underlying tls13 PACKAGE
+// deliberately keeps crypto/tls's system-roots fallback (the QUIC wrapper
+// depends on it); this constructor is the strict-posture convenience surface.
 func NewTLS13Client(opts TLS13ClientOptions) (*http.Client, error) {
+	if len(opts.Certificates) == 0 && opts.RootCAs == nil && !opts.InsecureSkipVerify {
+		return nil, errors.New("pollux/https: at least one certificate, root pool, or InsecureSkipVerify is required")
+	}
 	cfg, err := tls13.ClientConfig(tls13.ClientOptions{
 		ServerName:         opts.ServerName,
 		RootCAs:            opts.RootCAs,

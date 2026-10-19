@@ -3,6 +3,7 @@ package tls13gm
 import (
 	"errors"
 	"fmt"
+	"github.com/iuboy/pollux-go/internal/memsecure"
 
 	"github.com/iuboy/pollux-go/sm3"
 )
@@ -202,15 +203,18 @@ func computeResumptionBinder(psk, truncatedClientHello []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: derive early secret for binder: %w", err)
 	}
+	defer memsecure.ZeroBytes(earlySecret)
 	emptyHash := sm3.Sum(nil)
 	binderKey, err := DeriveSecret(earlySecret, LabelResumptionBinder, emptyHash[:])
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: derive binder key: %w", err)
 	}
+	defer memsecure.ZeroBytes(binderKey)
 	finishedKey, err := HKDFExpandLabel(binderKey, LabelFinished, nil, sm3.Size)
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: derive binder finished key: %w", err)
 	}
+	defer memsecure.ZeroBytes(finishedKey)
 	chHash := sm3.Sum(truncatedClientHello)
 	mac := sm3.NewHMAC(finishedKey)
 	mac.Write(chHash[:])

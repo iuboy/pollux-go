@@ -16,6 +16,14 @@ var ErrInvalidIteration = errors.New("kdf: iteration count must be positive")
 // practical request.
 var ErrInvalidKeyLen = errors.New("kdf: key length must be positive")
 
+// ErrInvalidSalt is returned when the salt is empty. An empty salt makes the
+// derivation deterministic across all users of the same password, defeating
+// rainbow-table resistance outright; RFC 2898 test vectors use non-empty
+// salts (4 bytes) and remain valid. Password-hashing callers that want a
+// stronger floor (e.g. the pwHash package's 8-byte minimum) enforce it at
+// their own trust boundary.
+var ErrInvalidSalt = errors.New("kdf: salt must not be empty")
+
 // maxIteration is a sanity upper bound on the iteration count. OWASP-recommended
 // strengths (as of 2023) for PBKDF2-HMAC-SHA-256 are ≤ 1,000,000; we allow a
 // generous margin above that while still rejecting attacker-controlled values
@@ -78,6 +86,9 @@ func PBKDF2(password, salt []byte, iter, keyLen int, h func() hash.Hash) ([]byte
 	}
 	if h == nil {
 		return nil, errors.New("kdf: hash factory must not be nil")
+	}
+	if len(salt) == 0 {
+		return nil, ErrInvalidSalt
 	}
 
 	// stdlib crypto/pbkdf2.Key signature: Key(h, password string, salt, iter,

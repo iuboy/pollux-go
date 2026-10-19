@@ -146,9 +146,17 @@ func DeriveEarlyTrafficKeys(psk, transcriptHash []byte) (*QUICPacketKeys, error)
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: derive early secret for 0-RTT keys: %w", err)
 	}
+	defer memsecure.ZeroBytes(earlySecret)
 	earlyTraffic, err := DeriveSecret(earlySecret, LabelClientEarlyTraffic, transcriptHash)
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: derive client early traffic secret: %w", err)
 	}
+	defer memsecure.ZeroBytes(earlyTraffic) // QUICPacketKeys 内部持有独立的派生副本
 	return DeriveQUICPacketKeys(earlyTraffic)
 }
+
+// ZeroBytes overwrites b with zeros. Exported thin wrapper over the internal
+// memsecure helper so the vendored quic-go fork — a separate module that
+// cannot import this module's internal/ packages — can zero key material it
+// holds (0-RTT PSK copies, rolling traffic secrets).
+func ZeroBytes(b []byte) { memsecure.ZeroBytes(b) }

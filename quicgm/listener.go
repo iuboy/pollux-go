@@ -30,6 +30,16 @@ func Listen(ctx context.Context, cfg ServerConfig) (*Listener, error) {
 	if cfg.Certificate == nil || cfg.PrivateKey == nil {
 		return nil, errNoServerCert
 	}
+	// RFC 9001 §8.1: ALPN is mandatory for QUIC — without a negotiated
+	// application protocol a GM QUIC connection could be confused with any
+	// other QUIC dialect sharing the wire (the quic/ Route A wrapper enforces
+	// the same). Fail closed at configuration time.
+	if len(cfg.NextProtos) == 0 {
+		return nil, errEmptyALPN
+	}
+	if err := validateTransportKnobs(cfg.MaxIdleTimeout, cfg.MaxIncomingStreams); err != nil {
+		return nil, err
+	}
 	// ClientCAs is declared on ServerConfig but the GM handshake layer does
 	// not yet support mutual TLS. Fail loudly rather than silently ignoring
 	// the field — a caller who sets ClientCAs expects client-cert enforcement.
@@ -53,9 +63,13 @@ func Listen(ctx context.Context, cfg ServerConfig) (*Listener, error) {
 		err error
 	}
 	qcfg := &quic.Config{
-		GMSM4GCM:           true,
-		GMHandshakeConfig:  &quic.GMHandshakeConfig{Server: cfg.tls13ServerConfig(rotator.keys)},
-		MaxIdleTimeout:     cfg.idleTimeout(),
+		GMSM4GCM:          true,
+		GMHandshakeConfig: &quic.GMHandshakeConfig{Server: cfg.tls13ServerConfig(rotator.keys)},
+		MaxIdleTimeout:    cfg.idleTimeout(),
+		// The transport-level 0-RTT admission switch. The GM hook ANDs this
+		// into the tls13gm-level AllowEarlyData, so mirror the quicgm policy:
+		// 0-RTT only when an anti-replay cache is configured (fail-safe).
+		Allow0RTT:          cfg.AllowEarlyData && cfg.AntiReplay != nil,
 		MaxIncomingStreams: cfg.MaxIncomingStreams,
 	}
 	// tls.Config is unused in GM mode (GMCryptoSetup ignores it), but a non-nil
@@ -111,6 +125,7 @@ type Conn struct {
 	ticketMu        sync.Mutex
 	sessionIdentity []byte
 	sessionPSK      []byte
+	sessionParams   []byte
 	ticketAgeAdd    uint32
 }
 
@@ -119,10 +134,11 @@ type Conn struct {
 // returns a shallow-cloned *quic.Config carrying the callback.
 func withTicketCollector(qcfg *quic.Config, conn *Conn) *quic.Config {
 	clone := *qcfg
-	clone.GMOnClientSessionTicket = func(identity, psk []byte, ticketAgeAdd uint32) {
+	clone.GMOnClientSessionTicket = func(identity, psk []byte, ticketAgeAdd uint32, serverParams []byte) {
 		conn.ticketMu.Lock()
 		conn.sessionIdentity = append(conn.sessionIdentity[:0], identity...)
 		conn.sessionPSK = append(conn.sessionPSK[:0], psk...)
+		conn.sessionParams = append(conn.sessionParams[:0], serverParams...)
 		conn.ticketAgeAdd = ticketAgeAdd
 		conn.ticketMu.Unlock()
 	}
@@ -130,19 +146,22 @@ func withTicketCollector(qcfg *quic.Config, conn *Conn) *quic.Config {
 }
 
 // SessionTicket returns the opaque ticket identity, the derived resumption PSK,
+// the server's transport parameters received on the ticket-issuing connection,
 // and ticket_age_add from the most recent NewSessionTicket received from the
 // server (client side). Feed them back as ClientConfig.ResumptionIdentity /
-// ResumptionPSK / ResumptionObfuscatedTicketAge on a subsequent Dial(Early) to
-// resume. ok is false until a ticket has arrived; tickets arrive
+// ResumptionPSK / ResumptionAppData / ResumptionObfuscatedTicketAge on a
+// subsequent Dial(Early) to resume — EarlyData additionally requires the
+// serverParams. ok is false until a ticket has arrived; tickets arrive
 // post-handshake, so callers must allow time after Dial returns.
-func (c *Conn) SessionTicket() (identity, psk []byte, ticketAgeAdd uint32, ok bool) {
+func (c *Conn) SessionTicket() (identity, psk, serverParams []byte, ticketAgeAdd uint32, ok bool) {
 	c.ticketMu.Lock()
 	defer c.ticketMu.Unlock()
 	// Return defensive copies so internal buffers never escape — the ticket
 	// collector callback reuses the same backing arrays for the next ticket.
 	identity = append([]byte(nil), c.sessionIdentity...)
 	psk = append([]byte(nil), c.sessionPSK...)
-	return identity, psk, c.ticketAgeAdd, len(c.sessionPSK) > 0
+	serverParams = append([]byte(nil), c.sessionParams...)
+	return identity, psk, serverParams, c.ticketAgeAdd, len(c.sessionPSK) > 0
 }
 
 // Dial establishes a GM QUIC connection to cfg.Addr. On success the underlying

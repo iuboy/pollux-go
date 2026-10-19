@@ -39,6 +39,21 @@ func NewTLCPTransport(config *tlcp.Config) (*http.Transport, error) {
 	}
 	return &http.Transport{
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// net/http backfills ServerName from the URL host on its standard
+			// TLS path, but NOT for custom dialers — and the tlcp engine now
+			// rejects "verification enabled + empty ServerName" (hostname
+			// matching would be silently skipped). Backfill from addr so
+			// callers get net/http-equivalent behavior. The engine treats
+			// Config as read-only (configToNative copies what it needs), so a
+			// shallow copy with one field overridden is safe to dial with.
+			cfg := config
+			if cfg.ServerName == "" && !cfg.InsecureSkipVerify {
+				if host, _, err := net.SplitHostPort(addr); err == nil && host != "" {
+					copied := *cfg
+					copied.ServerName = host
+					cfg = &copied
+				}
+			}
 			// tlcp.DialContext honors the ctx deadline, but a blocked dial or
 			// handshake cannot be interrupted by ctx.Done() from inside. Race
 			// the dial against cancellation; on cancel, reap the eventual
@@ -50,7 +65,7 @@ func NewTLCPTransport(config *tlcp.Config) (*http.Transport, error) {
 			}
 			resCh := make(chan dialResult, 1)
 			go func() {
-				conn, err := tlcp.DialContext(ctx, network, addr, config)
+				conn, err := tlcp.DialContext(ctx, network, addr, cfg)
 				resCh <- dialResult{conn, err}
 			}()
 			select {

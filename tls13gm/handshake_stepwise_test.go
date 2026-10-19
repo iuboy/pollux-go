@@ -236,13 +236,17 @@ func TestHandshake_TransportParametersExchange(t *testing.T) {
 // sentinel random) with the given cookie, for client-side HRR tests.
 func buildTestHRR(t *testing.T, cookie []byte) []byte {
 	t.Helper()
+	cookieExt, err := marshalCookieExtension(cookie)
+	if err != nil {
+		t.Fatalf("marshal cookie: %v", err)
+	}
 	hrr := &ServerHelloMsg{
 		LegacyVersion: uint16(VersionTLS13),
 		Random:        helloRetryRequestRandom,
 		CipherSuite:   TLS_SM4_GCM_SM3,
 		Extensions: []Extension{
 			{Type: ExtensionTypeSupportedVersions, Data: []byte{0x03, 0x03}},
-			{Type: ExtensionTypeCookie, Data: marshalCookieExtension(cookie)},
+			{Type: ExtensionTypeCookie, Data: cookieExt},
 		},
 	}
 	full, err := MarshalHandshakeMessage(hrr)
@@ -513,7 +517,7 @@ func TestHandshake_PSKResumption(t *testing.T) {
 	if err := server1.HandleClientFinished(cf1); err != nil {
 		t.Fatalf("server1 HandleClientFinished: %v", err)
 	}
-	ticketMsg, err := server1.NewSessionTicket(7200, 0x12345678)
+	ticketMsg, err := server1.NewSessionTicket(7200)
 	if err != nil {
 		t.Fatalf("NewSessionTicket: %v", err)
 	}

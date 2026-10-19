@@ -64,8 +64,10 @@ func parseClientKeyShare(data []byte, wantGroup uint16) ([]byte, error) {
 		return nil, errors.New("tls13gm: ClientHello key_share truncated at list length")
 	}
 	listLen := int(data[0])<<8 | int(data[1])
-	if 2+listLen > len(data) {
-		return nil, fmt.Errorf("tls13gm: ClientHello key_share list length %d out of range", listLen)
+	// 严格长度:声明列表之后不得有多余字节(与其它解析器一致的
+	// trailing-byte 纪律,静默忽略会掩盖畸形消息)。
+	if 2+listLen != len(data) {
+		return nil, fmt.Errorf("tls13gm: ClientHello key_share list length %d does not match extension data (%d bytes)", listLen, len(data)-2)
 	}
 	p := data[2 : 2+listLen]
 	for len(p) > 0 {
@@ -82,11 +84,15 @@ func parseClientKeyShare(data []byte, wantGroup uint16) ([]byte, error) {
 }
 
 // parseServerKeyShare parses the ServerHello single key_share entry and returns
-// its key exchange bytes, verifying the group matches wantGroup.
+// its key exchange bytes, verifying the group matches wantGroup. The entry must
+// consume the whole extension (trailing bytes are a protocol violation).
 func parseServerKeyShare(data []byte, wantGroup uint16) ([]byte, error) {
-	group, key, _, err := parseKeyShareEntry(data)
+	group, key, n, err := parseKeyShareEntry(data)
 	if err != nil {
 		return nil, err
+	}
+	if n != len(data) {
+		return nil, fmt.Errorf("tls13gm: ServerHello key_share has %d trailing bytes", len(data)-n)
 	}
 	if group != wantGroup {
 		return nil, fmt.Errorf("tls13gm: ServerHello key_share group %#x, want %#x", group, wantGroup)

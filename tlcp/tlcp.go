@@ -161,6 +161,17 @@ func configToNative(c *Config, isClient bool) (*tlcpEngineConfig, error) {
 	if len(cipherSuites) == 0 {
 		cipherSuites = DefaultCipherSuites()
 	}
+	// Suite validation: Config.Validate() checks this too, but it also
+	// requires leaf certificates and is deliberately not called here — so
+	// without this loop a garbage or non-TLCP suite ID (e.g. a stdlib TLS
+	// suite) flowed silently into the engine and only failed obscurely at
+	// suite selection. Static-ECC suites stay accepted: legacy interop is a
+	// deliberate capability (see LegacyCipherSuites).
+	for _, suite := range cipherSuites {
+		if !IsTLCPCipherSuite(suite) {
+			return nil, fmt.Errorf("%w: cipher suite %#04x is not a TLCP suite", ErrInvalidCipherSuite, suite)
+		}
+	}
 	nc := &tlcpEngineConfig{
 		rand:               rand.Reader,
 		cipherSuites:       cipherSuites,

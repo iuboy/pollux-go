@@ -18,9 +18,14 @@ const (
 	SuiteECDHE_SM2_SM4_GCM_SM3 uint16 = 0xE051
 	// SuiteECDHE_SM2_SM4_CBC_SM3 is the CBC variant of the ECDHE suite.
 	SuiteECDHE_SM2_SM4_CBC_SM3 uint16 = 0xE011
-	// SuiteECC_SM2_SM4_GCM_SM3 is the static-ECC (no PFS) GCM suite.
+	// SuiteECC_SM2_SM4_GCM_SM3 is the static-ECC GCM suite. WARNING: static
+	// ECC key exchange provides NO forward secrecy — the server's long-term
+	// encryption-certificate key compromise decrypts all past traffic.
+	// Legacy interop only; prefer SuiteECDHE_SM2_SM4_GCM_SM3.
 	SuiteECC_SM2_SM4_GCM_SM3 uint16 = 0xE053
-	// SuiteECC_SM2_SM4_CBC_SM3 is the static-ECC CBC suite (legacy only).
+	// SuiteECC_SM2_SM4_CBC_SM3 is the static-ECC CBC suite. WARNING: no
+	// forward secrecy (see SuiteECC_SM2_SM4_GCM_SM3) AND CBC without
+	// per-record random IVs is weak — legacy interop only.
 	SuiteECC_SM2_SM4_CBC_SM3 uint16 = 0xE013
 )
 
@@ -49,6 +54,10 @@ func DefaultCipherSuites() []uint16 {
 //
 // Returns a defensive copy of allTLCPSuites (the single source of truth) so
 // adding a suite only requires editing allTLCPSuites, not this function.
+// LegacyCipherSuites returns ALL TLCP cipher suites, including the
+// static-ECC (no forward secrecy) and CBC variants. Legacy interop only —
+// new deployments should use DefaultCipherSuites (ECDHE+GCM); the static-ECC
+// suites' constant docs explain the forward-secrecy trade-off.
 func LegacyCipherSuites() []uint16 {
 	return append([]uint16(nil), allTLCPSuites...)
 }

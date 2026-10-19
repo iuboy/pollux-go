@@ -101,7 +101,10 @@ func LoadDualCertPairFromPEM(signCertPEM, signKeyPEM, encCertPEM, encKeyPEM []by
 }
 
 // ValidateDualCertPair validates the dual certificate pair.
-// Checks: certificate type, key usage, issuer consistency, validity period.
+// Checks: certificate type, key usage, issuer consistency.
+// (Validity-period checking is deliberately NOT done here: the handshake
+// verifies peer certificates against the clock, and local key material may
+// legitimately be pre-issued for a future NotBefore.)
 func ValidateDualCertPair(pair *DualCertPair) error {
 	if pair == nil {
 		return errors.New("tlcp: dual cert pair is nil")
@@ -203,18 +206,24 @@ func (p *DualCertPair) ToTLSCertificates() ([]tls.Certificate, error) {
 	return []tls.Certificate{signTLSCert, encTLSCert}, nil
 }
 
-// toTLSCertificate converts x509 certificate and SM2 private key to tls.Certificate.
+// toTLSCertificate builds a tls.Certificate from the x509 certificate's own
+// DER encoding and the SM2 private key.
+//
+// The previous implementation re-encoded the certificate via
+// polluxSmx509.CreateCertificate and, on error, silently fell back to
+// cert.Raw while returning a nil error (swallowing the failure). Re-encoding
+// was pointless — cert.Raw IS the authoritative encoding and is what goes on
+// the wire — and the fallback hid real errors. Using Raw directly is both
+// simpler and honest; the only failure mode now is a nil input.
 func (p *DualCertPair) toTLSCertificate(cert *x509.Certificate, key *sm2.PrivateKey) (tls.Certificate, error) {
-	certDER, err := polluxSmx509.CreateCertificate(cert, cert, cert.PublicKey, key)
-	if err != nil {
-		return tls.Certificate{
-			Certificate: [][]byte{cert.Raw},
-			PrivateKey:  key,
-		}, nil
+	if cert == nil {
+		return tls.Certificate{}, errors.New("tlcp: nil certificate in dual certificate pair")
 	}
-
+	if len(cert.Raw) == 0 {
+		return tls.Certificate{}, errors.New("tlcp: certificate has no raw DER encoding")
+	}
 	return tls.Certificate{
-		Certificate: [][]byte{certDER},
+		Certificate: [][]byte{cert.Raw},
 		PrivateKey:  key,
 	}, nil
 }

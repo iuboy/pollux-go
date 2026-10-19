@@ -3,6 +3,7 @@ package tls13gm
 import (
 	"errors"
 	"fmt"
+	"github.com/iuboy/pollux-go/internal/memsecure"
 
 	"github.com/iuboy/pollux-go/sm3"
 )
@@ -198,16 +199,22 @@ func marshalPSKKeyExchangeModesExtension(modes []uint8) []byte {
 // ends at the identities vector — i.e. up to but not including the binders
 // field, per RFC 8446 §4.2.11 and the OpenSSL/Go crypto/tls wire convention.
 func computeResumptionBinder(psk, truncatedClientHello []byte) ([]byte, error) {
-	earlySecret := DeriveEarlySecret(psk)
+	earlySecret, err := DeriveEarlySecret(psk)
+	if err != nil {
+		return nil, fmt.Errorf("tls13gm: derive early secret for binder: %w", err)
+	}
+	defer memsecure.ZeroBytes(earlySecret)
 	emptyHash := sm3.Sum(nil)
 	binderKey, err := DeriveSecret(earlySecret, LabelResumptionBinder, emptyHash[:])
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: derive binder key: %w", err)
 	}
+	defer memsecure.ZeroBytes(binderKey)
 	finishedKey, err := HKDFExpandLabel(binderKey, LabelFinished, nil, sm3.Size)
 	if err != nil {
 		return nil, fmt.Errorf("tls13gm: derive binder finished key: %w", err)
 	}
+	defer memsecure.ZeroBytes(finishedKey)
 	chHash := sm3.Sum(truncatedClientHello)
 	mac := sm3.NewHMAC(finishedKey)
 	mac.Write(chHash[:])

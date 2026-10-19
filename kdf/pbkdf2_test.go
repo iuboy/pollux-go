@@ -155,3 +155,16 @@ func TestPBKDF2_RejectsExcessiveKeyLen(t *testing.T) {
 		t.Errorf("err = %v, want ErrInvalidKeyLen", err)
 	}
 }
+
+// TestPBKDF2_RejectsEmptySalt 锁定第三轮审查 C4:空盐使派生跨用户确定,
+// 彩虹表抵抗整体失效——直接拒绝(4 字节的 RFC 2898 向量盐仍合法)。
+func TestPBKDF2_RejectsEmptySalt(t *testing.T) {
+	if _, err := PBKDF2([]byte("password"), nil, 4096, 32, sha1.New); err == nil {
+		t.Fatal("空盐应被拒绝")
+	} else if !errors.Is(err, ErrInvalidSalt) {
+		t.Fatalf("应返回 ErrInvalidSalt, got %v", err)
+	}
+	if _, err := PBKDF2([]byte("password"), []byte("salt"), 1, 20, sha1.New); err != nil {
+		t.Fatalf("非空盐(RFC 向量的 4 字节盐)应被接受: %v", err)
+	}
+}

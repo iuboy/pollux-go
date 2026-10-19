@@ -164,7 +164,20 @@ func NewPrivateKey(der []byte) (*PrivateKey, error) {
 
 // NewPrivateKeyFromInt creates an SM2 private key from a scalar value.
 // Inverse of reading (*PrivateKey).D; scalar-based counterpart to [NewPrivateKey].
+//
+// The scalar domain is [1, n-1] (n being the SM2 curve order). Values outside
+// it are rejected up front: the underlying gmsm implementation would panic on
+// scalars >= 2^256 (FillBytes overflow — a remote-crash DoS when the scalar
+// comes from untrusted input) and silently take the absolute value of
+// negatives (deriving the wrong key, since -d and d are distinct mod-n
+// residues handed in by callers doing their own modular arithmetic).
 func NewPrivateKeyFromInt(key *big.Int) (*PrivateKey, error) {
+	if key == nil || key.Sign() <= 0 {
+		return nil, errors.New("sm2: private key scalar must be a positive integer in [1, n-1]")
+	}
+	if key.Cmp(P256().Params().N) >= 0 {
+		return nil, errors.New("sm2: private key scalar is >= curve order n; must be in [1, n-1]")
+	}
 	return gmsmSM2.NewPrivateKeyFromInt(key)
 }
 

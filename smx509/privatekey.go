@@ -14,6 +14,12 @@ import (
 	"github.com/iuboy/pollux-go/sm2"
 )
 
+// PEM block types shared by privatekey.go / cert.go.
+const (
+	pemTypePrivateKey          = "PRIVATE KEY"
+	pemTypeEncryptedPrivateKey = "ENCRYPTED PRIVATE KEY"
+)
+
 // errEncryptedPrivateKey is returned when the input PEM is encrypted. Callers
 // must decrypt first with DecryptPEMPrivateKey, then re-parse the cleartext.
 var errEncryptedPrivateKey = errors.New("smx509: PEM private key is encrypted; decrypt first with DecryptPEMPrivateKey")
@@ -38,7 +44,7 @@ func ParsePrivateKeyPEM(pemData []byte) (any, error) {
 
 	// Detect encrypted PEM up front so the caller gets a clear, uniform error
 	// regardless of which downstream parser would have rejected it. PKCS#8
-	// encrypted envelopes ("ENCRYPTED PRIVATE KEY") and legacy PEM headers
+	// encrypted envelopes (pemTypeEncryptedPrivateKey) and legacy PEM headers
 	// ("Proc-Type: 4,ENCRYPTED") both require DecryptPEMPrivateKey first.
 	if isEncryptedPEMBlock(block) {
 		return nil, errEncryptedPrivateKey
@@ -111,33 +117,33 @@ func MarshalPrivateKey(key any) ([]byte, error) {
 }
 
 // PEMTypeForPrivateKey returns the PEM block type for a private key. SM2, RSA
-// and Ed25519 return "PRIVATE KEY" (PKCS#8); standard ECDSA returns
+// and Ed25519 return pemTypePrivateKey (PKCS#8); standard ECDSA returns
 // "EC PRIVATE KEY" (SEC1). Paired with MarshalPrivateKey.
 func PEMTypeForPrivateKey(key any) string {
 	switch key.(type) {
 	case *sm2.PrivateKey:
-		return "PRIVATE KEY"
+		return pemTypePrivateKey
 	case *ecdsa.PrivateKey:
 		return "EC PRIVATE KEY"
 	case *rsa.PrivateKey:
-		return "PRIVATE KEY"
+		return pemTypePrivateKey
 	case ed25519.PrivateKey:
-		return "PRIVATE KEY"
+		return pemTypePrivateKey
 	default:
-		return "PRIVATE KEY"
+		return pemTypePrivateKey
 	}
 }
 
 // isEncryptedPEMBlock reports whether the PEM block carries an encrypted
 // private key. It detects both PKCS#8 encrypted envelopes (RFC 7468
-// "ENCRYPTED PRIVATE KEY" type) and legacy PKCS#1/SEC1 PEM headers
+// pemTypeEncryptedPrivateKey type) and legacy PKCS#1/SEC1 PEM headers
 // ("Proc-Type: 4,ENCRYPTED" + DEK-Info). Mirrors the detection in
 // sm2.ParsePrivateKeyFromPEM so all paths surface a uniform error.
 func isEncryptedPEMBlock(block *pem.Block) bool {
 	if block == nil {
 		return false
 	}
-	if block.Type == "ENCRYPTED PRIVATE KEY" {
+	if block.Type == pemTypeEncryptedPrivateKey {
 		return true
 	}
 	if strings.Contains(block.Headers["Proc-Type"], "ENCRYPTED") {

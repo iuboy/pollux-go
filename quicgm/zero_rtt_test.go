@@ -54,17 +54,17 @@ func runEchoServer(t *testing.T, ln *Listener) {
 }
 
 // waitForTicket polls the connection for a session ticket up to the timeout.
-func waitForTicket(t *testing.T, conn *Conn, timeout time.Duration) (identity, psk []byte, ageAdd uint32) {
+func waitForTicket(t *testing.T, conn *Conn, timeout time.Duration) (identity, psk, serverParams []byte, ageAdd uint32) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if id, p, age, ok := conn.SessionTicket(); ok {
-			return id, p, age
+		if id, p, sp, age, ok := conn.SessionTicket(); ok {
+			return id, p, sp, age
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("no session ticket received within %v", timeout)
-	return nil, nil, 0
+	return nil, nil, nil, 0
 }
 
 // Test0RTT_TicketHarvest verifies the end-to-end ticket flow: a full handshake
@@ -75,6 +75,7 @@ func Test0RTT_TicketHarvest(t *testing.T) {
 	cert, key := generateSM2ServerCert(t)
 
 	ln, err := Listen(context.Background(), ServerConfig{
+		NextProtos:     []string{"echo"},
 		Addr:           "127.0.0.1:0",
 		Certificate:    cert,
 		PrivateKey:     key,
@@ -90,6 +91,7 @@ func Test0RTT_TicketHarvest(t *testing.T) {
 	// Phase 1: full handshake, drive it to completion with a stream exchange,
 	// then harvest the ticket.
 	conn1, err := Dial(context.Background(), ClientConfig{
+		NextProtos:         []string{"echo"},
 		Addr:               ln.Addr().String(),
 		InsecureSkipVerify: true,
 		MaxIdleTimeout:     5 * time.Second,
@@ -112,7 +114,7 @@ func Test0RTT_TicketHarvest(t *testing.T) {
 		t.Fatalf("warmup echo read: %v", err)
 	}
 
-	identity, psk, ageAdd := waitForTicket(t, conn1, 3*time.Second)
+	identity, psk, _, ageAdd := waitForTicket(t, conn1, 3*time.Second)
 	if len(psk) == 0 || len(identity) == 0 {
 		t.Fatal("harvested identity/PSK is empty")
 	}
@@ -122,6 +124,7 @@ func Test0RTT_TicketHarvest(t *testing.T) {
 	// proves the ticket carried a usable resumption PSK (binder verifies
 	// server-side after the server decrypts the identity to recover the PSK).
 	conn2, err := Dial(context.Background(), ClientConfig{
+		NextProtos:                    []string{"echo"},
 		Addr:                          ln.Addr().String(),
 		InsecureSkipVerify:            true,
 		MaxIdleTimeout:                5 * time.Second,
@@ -162,6 +165,7 @@ func Test0RTT_DialEarly(t *testing.T) {
 
 	replay := &countingReplay{inner: NewAntiReplayCache(30*time.Second, 3600*time.Second)}
 	ln, err := Listen(context.Background(), ServerConfig{
+		NextProtos:     []string{"echo"},
 		Addr:           "127.0.0.1:0",
 		Certificate:    cert,
 		PrivateKey:     key,
@@ -178,6 +182,7 @@ func Test0RTT_DialEarly(t *testing.T) {
 
 	// Phase 1: full handshake, harvest the ticket.
 	conn1, err := Dial(context.Background(), ClientConfig{
+		NextProtos:         []string{"echo"},
 		Addr:               ln.Addr().String(),
 		InsecureSkipVerify: true,
 		MaxIdleTimeout:     5 * time.Second,
@@ -194,17 +199,19 @@ func Test0RTT_DialEarly(t *testing.T) {
 	s0.Close()
 	io.ReadAll(s0)
 
-	identity, psk, ageAdd := waitForTicket(t, conn1, 3*time.Second)
+	identity, psk, serverParams, ageAdd := waitForTicket(t, conn1, 3*time.Second)
 	conn1.Close()
 
 	// Phase 2: DialEarly + send 0-RTT data before the handshake completes.
 	conn2, err := DialEarly(context.Background(), ClientConfig{
+		NextProtos:                    []string{"echo"},
 		Addr:                          ln.Addr().String(),
 		InsecureSkipVerify:            true,
 		MaxIdleTimeout:                5 * time.Second,
 		ResumptionIdentity:            identity,
 		ResumptionPSK:                 psk,
 		ResumptionObfuscatedTicketAge: ageAdd,
+		ResumptionAppData:             serverParams,
 		EarlyData:                     true,
 	})
 	if err != nil {
@@ -239,27 +246,28 @@ func Test0RTT_DialEarly(t *testing.T) {
 	// connection still completes (1-RTT PSK resumption); Used0RTT is false and
 	// any data the client tried to send as 0-RTT is not echoed.
 	conn3, err := DialEarly(context.Background(), ClientConfig{
+		NextProtos:                    []string{"echo"},
 		Addr:                          ln.Addr().String(),
 		InsecureSkipVerify:            true,
 		MaxIdleTimeout:                5 * time.Second,
 		ResumptionIdentity:            identity,
 		ResumptionPSK:                 psk,
 		ResumptionObfuscatedTicketAge: ageAdd,
+		ResumptionAppData:             serverParams,
 		EarlyData:                     true,
 	})
 	if err != nil {
 		t.Fatalf("DialEarly (replay): %v", err)
 	}
 	defer conn3.Close()
-	// Allow the handshake to settle so ConnectionState reflects the final verdict.
-	// A fresh stream exchange drives 1-RTT completion.
-	s3, err := conn3.OpenStream(context.Background())
-	if err != nil {
-		t.Fatalf("OpenStream (replay): %v", err)
+	// 0-RTT was rejected: per the upstream contract, streams opened on the
+	// early connection surface Err0RTTRejected (previously the rejection was
+	// silent and the 0-RTT stream data was retransmitted at 1-RTT — the exact
+	// behavior the third security review's M10 fix removed). Wait for the
+	// handshake to complete; the rejection verdict is then final.
+	for i := 0; i < 500 && !conn3.ConnectionState().TLS.HandshakeComplete; i++ {
+		time.Sleep(10 * time.Millisecond)
 	}
-	s3.Write([]byte("after-replay"))
-	s3.Close()
-	io.ReadAll(s3)
 	if conn3.ConnectionState().Used0RTT {
 		t.Fatalf("replayed PSK was accepted for 0-RTT (anti-replay failed); acceptor accepted %d times", replay.accepted.Load())
 	}
@@ -271,6 +279,7 @@ func Test0RTT_DialEarly(t *testing.T) {
 func Test0RTT_TEKRotation(t *testing.T) {
 	cert, key := generateSM2ServerCert(t)
 	ln, err := Listen(context.Background(), ServerConfig{
+		NextProtos:     []string{"echo"},
 		Addr:           "127.0.0.1:0",
 		Certificate:    cert,
 		PrivateKey:     key,
@@ -284,6 +293,7 @@ func Test0RTT_TEKRotation(t *testing.T) {
 
 	// Phase 1: harvest a ticket (encrypted under the current TEK).
 	conn1, err := Dial(context.Background(), ClientConfig{
+		NextProtos:         []string{"echo"},
 		Addr:               ln.Addr().String(),
 		InsecureSkipVerify: true,
 		MaxIdleTimeout:     5 * time.Second,
@@ -295,7 +305,7 @@ func Test0RTT_TEKRotation(t *testing.T) {
 	s0.Write([]byte("warmup"))
 	s0.Close()
 	io.ReadAll(s0)
-	identity, psk, ageAdd := waitForTicket(t, conn1, 3*time.Second)
+	identity, psk, _, ageAdd := waitForTicket(t, conn1, 3*time.Second)
 	conn1.Close()
 
 	// Force a TEK rotation: current becomes previous, a fresh current is drawn.
@@ -304,6 +314,7 @@ func Test0RTT_TEKRotation(t *testing.T) {
 	// Phase 2: resume with the pre-rotation ticket. The server must decrypt it
 	// under the (now previous) key and complete a PSK-mode handshake.
 	conn2, err := Dial(context.Background(), ClientConfig{
+		NextProtos:                    []string{"echo"},
 		Addr:                          ln.Addr().String(),
 		InsecureSkipVerify:            true,
 		MaxIdleTimeout:                5 * time.Second,

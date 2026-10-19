@@ -1,4 +1,10 @@
 // Package panicsafe converts unexpected panics into errors at public API boundaries.
+//
+// Security note: the errors returned by Do, Do1 and Do2 may embed the raw
+// panic value and a full stack trace (including internal file paths).
+// Callers must treat the error text as potentially sensitive — never echo
+// it verbatim to an untrusted party (log it, don't return it in an API
+// response body).
 package panicsafe
 
 import (
@@ -15,6 +21,10 @@ const panicPrefix = "pollux: unexpected error"
 // Centralizing the recover logic avoids drift across the three variants
 // (format, prefix, stack-trace inclusion). The named-error idiom (`err error`)
 // plus `defer` lets the recovered value overwrite the wrapper's named return.
+//
+// The resulting error embeds the panic value and the full runtime stack
+// (debug.Stack, internal paths included) — see the package doc's security
+// note before forwarding it anywhere untrusted.
 func recoverAsError(err *error, r any) {
 	*err = fmt.Errorf("%s: %v\n%s", panicPrefix, r, debug.Stack())
 }

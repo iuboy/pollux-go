@@ -48,40 +48,24 @@ func TestCryptoStreamManagerInvalidEncryptionLevel(t *testing.T) {
 	)
 }
 
-func TestCryptoStreamManagerDropEncryptionLevel(t *testing.T) {
+func TestCryptoStreamManagerFinishEncryptionLevel(t *testing.T) {
 	t.Run("Initial", func(t *testing.T) {
-		testCryptoStreamManagerDropEncryptionLevel(t, protocol.EncryptionInitial)
+		testCryptoStreamManagerFinishEncryptionLevel(t, protocol.EncryptionInitial)
 	})
 	t.Run("Handshake", func(t *testing.T) {
-		testCryptoStreamManagerDropEncryptionLevel(t, protocol.EncryptionHandshake)
+		testCryptoStreamManagerFinishEncryptionLevel(t, protocol.EncryptionHandshake)
 	})
 }
 
-func testCryptoStreamManagerDropEncryptionLevel(t *testing.T, encLevel protocol.EncryptionLevel) {
+func testCryptoStreamManagerFinishEncryptionLevel(t *testing.T, encLevel protocol.EncryptionLevel) {
 	initialStream := newInitialCryptoStream(true)
 	handshakeStream := newCryptoStream()
 	oneRTTStream := newCryptoStream()
 	csm := newCryptoStreamManager(initialStream, handshakeStream, oneRTTStream)
 
 	require.NoError(t, csm.HandleCryptoFrame(&wire.CryptoFrame{Data: []byte("foo")}, encLevel))
-	require.ErrorContains(t, csm.Drop(encLevel), "encryption level changed, but crypto stream has more data to read")
+	require.ErrorContains(t, csm.Finish(encLevel), "encryption level changed, but crypto stream has more data to read")
 
 	require.Equal(t, []byte("foo"), csm.GetCryptoData(encLevel))
-	require.NoError(t, csm.Drop(encLevel))
-}
-
-func TestCryptoStreamManagerPostHandshake(t *testing.T) {
-	initialStream := newInitialCryptoStream(true)
-	handshakeStream := newCryptoStream()
-	oneRTTStream := newCryptoStream()
-	csm := newCryptoStreamManager(initialStream, handshakeStream, oneRTTStream)
-
-	_, err := oneRTTStream.Write([]byte("foo"))
-	require.NoError(t, err)
-	_, err = oneRTTStream.Write([]byte("bar"))
-	require.NoError(t, err)
-	require.Equal(t,
-		&wire.CryptoFrame{Data: []byte("foobar")},
-		csm.GetPostHandshakeData(protocol.ByteCount(10)),
-	)
+	require.NoError(t, csm.Finish(encLevel))
 }

@@ -71,7 +71,7 @@ func NewCFBEncrypter(key, iv []byte) (cipher.Stream, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cipher.NewCFBEncrypter(block, iv), nil //nolint:staticcheck
+	return cipher.NewCFBEncrypter(block, iv), nil
 }
 
 // NewCFBDecrypter creates an SM4-CFB decryptor.
@@ -85,7 +85,7 @@ func NewCFBDecrypter(key, iv []byte) (cipher.Stream, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cipher.NewCFBDecrypter(block, iv), nil //nolint:staticcheck
+	return cipher.NewCFBDecrypter(block, iv), nil
 }
 
 // GenerateIV generates a random IV of the same size as the block.

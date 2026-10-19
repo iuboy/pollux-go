@@ -26,6 +26,7 @@ import (
 	"github.com/iuboy/pollux-go/tls13gm"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/internal/qerr"
 )
 
 // gmHeaderSampleLen is the header-protection sample length in bytes (RFC 9001
@@ -113,6 +114,10 @@ type gmLongOpener struct {
 	km            *gmKeyMaterial
 	isLong        bool
 	highestRcvdPN protocol.PacketNumber
+	// invalidPacketCount bounds the pre-1-RTT decryption oracle (RFC 9001
+	// §6.6): Initial/Handshake/0-RTT openers previously had no integrity
+	// limit, so garbage packets burned unbounded SM4-GCM Open CPU.
+	invalidPacketCount uint64
 }
 
 func (o *gmLongOpener) DecryptHeader(sample []byte, firstByte *byte, pnBytes []byte) {
@@ -126,6 +131,10 @@ func (o *gmLongOpener) DecodePacketNumber(wirePN protocol.PacketNumber, wirePNLe
 func (o *gmLongOpener) Open(dst, src []byte, pn protocol.PacketNumber, ad []byte) ([]byte, error) {
 	pt, err := o.km.aead.Open(uint64(pn), src, ad)
 	if err != nil {
+		o.invalidPacketCount++
+		if o.invalidPacketCount >= gmAEADInvalidPacketLimit {
+			return nil, &qerr.TransportError{ErrorCode: qerr.AEADLimitReached}
+		}
 		return nil, ErrDecryptionFailed
 	}
 	if pn > o.highestRcvdPN {

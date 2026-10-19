@@ -4,24 +4,36 @@ import (
 	"crypto/cipher"
 	"crypto/subtle"
 	"hash"
+
+	"github.com/emmansun/gmsm/cbcmac"
 )
 
 // CMAC implements the Cipher-based Message Authentication Code (CMAC)
 // algorithm per NIST SP 800-38B, using SM4 as the underlying block cipher.
 //
+// The CMAC finalization (subkey derivation + last-block padding + tag
+// computation) is delegated to github.com/emmansun/gmsm/cbcmac, a vetted
+// implementation already used elsewhere in this module. The one-shot MAC()
+// path of gmsm/cbcmac is correct on all NIST SP 800-38B test vectors.
+//
+// gmsm's StreamingMAC.Write has a known multi-part buffering defect where
+// split writes can produce a different tag than a single write of the same
+// bytes (verified: 17-byte message, 16+3 split, etc.). CMAC's contract
+// requires the tag to be independent of how the input is chunked, so this
+// wrapper does NOT forward Write calls to gmsm incrementally. Instead it
+// buffers all written bytes and runs the full MAC in Sum via the correct
+// one-shot path. This is slightly more memory-heavy than a true streaming
+// implementation but is simple, obviously correct, and safe.
+//
 // Concurrency: CMAC is NOT safe for concurrent use. The Write/Sum/Reset
-// methods mutate internal buffer and state fields without synchronization,
-// matching the contract of the standard library's hash.Hash (which also does
-// not require concurrency safety). Callers sharing a CMAC across goroutines
-// must serialize access externally; for parallel MAC computation, construct
-// one CMAC per goroutine.
+// methods mutate internal buffer fields without synchronization, matching
+// the contract of the standard library's hash.Hash (which also does not
+// require concurrency safety). Callers sharing a CMAC across goroutines must
+// serialize access externally; for parallel MAC computation, construct one
+// CMAC per goroutine.
 type CMAC struct {
-	k1, k2    []byte
-	buffer    []byte // accumulates incoming data (partial block)
-	state     []byte // running CBC-MAC chain (X_i)
-	bufSize   int
-	block     cipher.Block
-	processed int
+	block cipher.Block // kept so Sum can build a fresh, zero-state gmsm MAC
+	buf   []byte       // accumulates all written bytes until Sum/Reset
 }
 
 // NewCMAC creates a new SM4-CMAC instance with the given 16-byte key.
@@ -30,139 +42,32 @@ func NewCMAC(key []byte) (*CMAC, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// Step 1: Encrypt zero block to get L
-	zeroBlock := make([]byte, BlockSize)
-	L := make([]byte, BlockSize)
-	block.Encrypt(L, zeroBlock)
-
-	// Step 2: Derive subkey K1 from L
-	k1 := make([]byte, BlockSize)
-	copy(k1, L)
-	leftShift(k1)
-	if L[0]&0x80 != 0 {
-		k1[BlockSize-1] ^= 0x87
-	}
-
-	// Step 3: Derive subkey K2 from K1
-	k2 := make([]byte, BlockSize)
-	copy(k2, k1)
-	leftShift(k2)
-	if k1[0]&0x80 != 0 {
-		k2[BlockSize-1] ^= 0x87
-	}
-
-	return &CMAC{
-		k1:     k1,
-		k2:     k2,
-		buffer: make([]byte, BlockSize),
-		state:  make([]byte, BlockSize),
-		block:  block,
-	}, nil
+	return &CMAC{block: block}, nil
 }
 
-// leftShift shifts a byte slice left by one bit in place.
-func leftShift(data []byte) {
-	var overflow byte
-	for i := len(data) - 1; i >= 0; i-- {
-		newOverflow := data[i] >> 7
-		data[i] = (data[i] << 1) | overflow
-		overflow = newOverflow
-	}
-}
-
-// Write absorbs data into the CMAC state.
-//
-// Per NIST SP 800-38B, the final block (whether complete or incomplete)
-// must be XORed with subkey K1 or K2 *before* encryption. To ensure the
-// final block is available for this treatment in Sum(), Write defers
-// processing by one block: when a full block accumulates, it is only
-// processed if *more* data follows — otherwise it stays in the buffer as
-// the pending final block.
+// Write absorbs data into the CMAC buffer. The bytes are not processed until
+// Sum is called, so any chunking of the input produces the same tag.
 func (c *CMAC) Write(p []byte) (int, error) {
-	written := len(p)
-	for len(p) > 0 {
-		todo := BlockSize - c.bufSize
-		if todo > len(p) {
-			todo = len(p)
-		}
-		copy(c.buffer[c.bufSize:], p[:todo])
-		c.bufSize += todo
-		p = p[todo:]
-
-		if c.bufSize == BlockSize && len(p) > 0 {
-			// Not the final block — process it now.
-			c.processBlock(c.buffer)
-			c.bufSize = 0
-		}
-	}
-	c.processed += written
-	return written, nil
+	c.buf = append(c.buf, p...)
+	return len(p), nil
 }
 
-// processBlock XORs the block with the running CBC-MAC state and encrypts.
-func (c *CMAC) processBlock(data []byte) {
-	for i := 0; i < BlockSize; i++ {
-		c.state[i] ^= data[i]
-	}
-	c.block.Encrypt(c.state, c.state)
-}
-
-// Sum returns the CMAC tag, appending it to b.
-// It does not change the underlying state.
-//
-// Per NIST SP 800-38B, the final block is XORed with K1 (if complete)
-// or padded with 10* and XORed with K2 (if incomplete), then encrypted.
-//
-// The complete/incomplete decision and 10* padding are performed in constant
-// time (crypto/subtle) to avoid timing side channels that could reveal whether
-// the last block is complete — relevant since CMAC feeds into TLCP key
-// derivation and authentication.
+// Sum returns the CMAC tag, appending it to b. It does not change the
+// underlying state (a fresh MAC is built from the buffered bytes).
 func (c *CMAC) Sum(b []byte) []byte {
-	// Work on a copy of state + partial buffer to preserve internal state.
-	// Write() defers the final block: state holds the CBC-MAC chain over all
-	// prior complete blocks (X_{n-1}); buffer holds the final block bytes
-	// (0..BlockSize). Sum assembles M_n* = M_n || 10* around X_{n-1}, then XORs
-	// subkey K1 (final block complete) or K2 (incomplete) and encrypts.
-	lastBlock := make([]byte, BlockSize)
-	copy(lastBlock, c.state[:])
-	for i := 0; i < c.bufSize; i++ {
-		lastBlock[i] ^= c.buffer[i]
-	}
-
-	// Constant-time path: avoid branching on bufSize.
-	// isComplete is 1 when bufSize == BlockSize, 0 otherwise.
-	isComplete := subtle.ConstantTimeEq(int32(c.bufSize), int32(BlockSize))
-
-	// Apply 10* padding for incomplete blocks (constant-time). Only the single
-	// pad position (i == bufSize) receives an extra ⊕0x80, and only when the
-	// final block is incomplete. Positions beyond bufSize are NOT zeroed: they
-	// still carry the X_{n-1} chain value, and the pad's implicit trailing
-	// zeros combine with it as XOR-with-0.
-	for i := 0; i < BlockSize; i++ {
-		atPadPos := subtle.ConstantTimeEq(int32(i), int32(c.bufSize))
-		// padMask = 1 only when incomplete AND at the pad position; else 0.
-		padMask := subtle.ConstantTimeSelect(isComplete, 0, atPadPos)
-		lastBlock[i] ^= byte(padMask) * 0x80
-	}
-
-	// XOR with subkey: K1 for complete blocks, K2 for incomplete blocks.
-	for i := 0; i < BlockSize; i++ {
-		lastBlock[i] ^= byte(subtle.ConstantTimeSelect(isComplete, int(c.k1[i]), int(c.k2[i])))
-	}
-
-	// Encrypt the final block.
-	tag := make([]byte, BlockSize)
-	c.block.Encrypt(tag, lastBlock)
+	// Build a fresh MAC in zero state and run the correct one-shot path.
+	// cbcmac.NewCMAC is cheap (one block encrypt for subkey derivation) and
+	// does not mutate c.block, so this is safe to call repeatedly.
+	mac := cbcmac.NewCMAC(c.block, BlockSize)
+	tag := mac.MAC(c.buf)
 	return append(b, tag...)
 }
 
-// Reset resets the CMAC to its initial state.
+// Reset resets the CMAC to its initial state, discarding all buffered bytes.
+// The underlying block cipher is stateless (just a key schedule), so there is
+// nothing else to clear.
 func (c *CMAC) Reset() {
-	c.buffer = make([]byte, BlockSize)
-	c.state = make([]byte, BlockSize)
-	c.bufSize = 0
-	c.processed = 0
+	c.buf = nil
 }
 
 // Size returns the CMAC tag size in bytes (16).
@@ -184,6 +89,8 @@ func ComputeCMAC(key, data []byte) ([]byte, error) {
 }
 
 // VerifyCMAC reports whether the given MAC matches the computed CMAC.
+// The comparison is constant-time (crypto/subtle) so the result bit does not
+// leak via timing.
 func VerifyCMAC(key, data, mac []byte) bool {
 	expected, err := ComputeCMAC(key, data)
 	if err != nil {
@@ -192,12 +99,20 @@ func VerifyCMAC(key, data, mac []byte) bool {
 	return subtle.ConstantTimeCompare(expected, mac) == 1
 }
 
-// cmacHash wraps CMAC to implement hash.Hash for interop.
+// cmacHash adapts CMAC to the hash.Hash interface for interop with code that
+// consumes a generic hash (e.g. HMAC constructions). It embeds *CMAC which
+// already satisfies hash.Hash.
 type cmacHash struct {
 	*CMAC
 }
 
 // NewCMACHash returns a hash.Hash backed by SM4-CMAC.
+//
+// Memory note: the implementation buffers the ENTIRE message before
+// computing the tag (a deliberate workaround for a gmsm StreamingMAC
+// multi-part Write defect; the tag is chunk-order independent by contract).
+// For attacker-sized inputs this is O(n) memory — callers streaming
+// untrusted large data should bound the input first.
 func NewCMACHash(key []byte) (hash.Hash, error) {
 	c, err := NewCMAC(key)
 	if err != nil {

@@ -6,7 +6,7 @@ import (
 )
 
 func TestGenerateSerialNumber_Range(t *testing.T) {
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		s, err := GenerateSerialNumber()
 		if err != nil {
 			t.Fatalf("GenerateSerialNumber: %v", err)
@@ -27,7 +27,7 @@ func TestGenerateSerialNumber_Range(t *testing.T) {
 
 func TestGenerateSerialNumber_Uniqueness(t *testing.T) {
 	seen := make(map[string]bool, 1000)
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		s, err := GenerateSerialNumber()
 		if err != nil {
 			t.Fatalf("GenerateSerialNumber: %v", err)

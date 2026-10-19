@@ -1,8 +1,6 @@
 package tlcp
 
 import (
-	"fmt"
-
 	"golang.org/x/crypto/cryptobyte"
 )
 
@@ -610,7 +608,7 @@ func (m *tlcpServerHelloDoneMsg) marshal() ([]byte, error) {
 		return m.raw, nil
 	}
 	var err error
-	m.raw, err = tlcpMarshalHandshake(tlcpTypeServerHelloDone, func(b *cryptobyte.Builder) {})
+	m.raw, err = tlcpMarshalHandshake(tlcpTypeServerHelloDone, func(_ *cryptobyte.Builder) {})
 	return m.raw, err
 }
 
@@ -716,28 +714,4 @@ func (m *tlcpFinishedMsg) unmarshal(data []byte) bool {
 	}
 	m.verifyData = []byte(s)
 	return true
-}
-
-// tlcpTranscriptWrite marshals msg and writes the result into the handshake
-// transcript hash h (used by the state machines to feed every message).
-func tlcpTranscriptWrite(msg tlcpHandshakeMessage, h writeTranscript) error {
-	type marshalable interface {
-		marshal() ([]byte, error)
-	}
-	mm, ok := msg.(marshalable)
-	if !ok {
-		return fmt.Errorf("tlcp: message %T is not marshalable", msg)
-	}
-	data, err := mm.marshal()
-	if err != nil {
-		return err
-	}
-	_, err = h.Write(data)
-	return err
-}
-
-// writeTranscript is the minimal interface the transcript helper needs (a
-// hash.Hash satisfies it).
-type writeTranscript interface {
-	Write([]byte) (int, error)
 }

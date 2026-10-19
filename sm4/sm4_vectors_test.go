@@ -50,7 +50,7 @@ func TestIterationVector(t *testing.T) {
 	data := make([]byte, sm4.BlockSize)
 	copy(data, initial)
 
-	for i := 0; i < 1000000; i++ {
+	for range 1000000 {
 		dst := make([]byte, sm4.BlockSize)
 		block.Encrypt(dst, data)
 		data = dst

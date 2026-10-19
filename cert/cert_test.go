@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"testing"
 	"time"
@@ -120,7 +121,7 @@ func TestParseCertificatePEM(t *testing.T) {
 
 func TestParseCertificatePEM_Invalid(t *testing.T) {
 	_, err := ParseCertificatePEM([]byte("not PEM"))
-	if err != ErrInvalidPEM {
+	if !errors.Is(err, ErrInvalidPEM) {
 		t.Errorf("expected ErrInvalidPEM, got %v", err)
 	}
 }
@@ -141,14 +142,14 @@ func TestParseCertificatesPEM(t *testing.T) {
 func TestVerifyCertificate_NoRoots(t *testing.T) {
 	cert, _ := generateTestCert(t)
 	err := VerifyCertificate(cert, VerifyOptions{})
-	if err != ErrNoRoots {
+	if !errors.Is(err, ErrNoRoots) {
 		t.Errorf("expected ErrNoRoots, got %v", err)
 	}
 }
 
 func TestVerifyCertificate_NilCert(t *testing.T) {
 	err := VerifyCertificate(nil, VerifyOptions{Roots: NewPool()})
-	if err != ErrUnsupportedCert {
+	if !errors.Is(err, ErrUnsupportedCert) {
 		t.Errorf("expected ErrUnsupportedCert, got %v", err)
 	}
 }

@@ -7,32 +7,92 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/iuboy/pollux-go/tlcp"
 )
 
+// Transport-level defaults applied where the zero value would mean
+// "unlimited". Without them a malicious or stalled server can pin client
+// goroutines and sockets indefinitely (TLSHandshakeTimeout) and idle
+// connections accumulate forever (IdleConnTimeout). They mirror
+// http.DefaultTransport (10s/90s) plus a 30s response-header bound.
+const (
+	defaultTLSHandshakeTimeout   = 10 * time.Second
+	defaultIdleConnTimeout       = 90 * time.Second
+	defaultResponseHeaderTimeout = 30 * time.Second
+	// defaultClientTimeout bounds the whole request (connect + headers +
+	// body) when ClientOptions.Timeout is nil. Long-polling callers should
+	// set an explicit larger Timeout (or a non-nil zero to opt out).
+	defaultClientTimeout = 120 * time.Second
+)
+
 // NewTLCPTransport returns an *http.Transport that dials using TLCP.
 // HTTP/2 is disabled since TLCP 1.1 does not support ALPN negotiation.
+//
+// Context cancellation is fully honored: the dial runs under tlcp.DialContext
+// and a watchdog closes the in-flight connection when ctx is done (dialers
+// alone only observe deadlines, not cancellation).
 func NewTLCPTransport(config *tlcp.Config) (*http.Transport, error) {
 	if config == nil {
 		return nil, errors.New("pollux/https: nil config")
 	}
 	return &http.Transport{
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			dialer := &net.Dialer{}
-			if deadline, ok := ctx.Deadline(); ok {
-				dialer.Deadline = deadline
+			// net/http backfills ServerName from the URL host on its standard
+			// TLS path, but NOT for custom dialers — and the tlcp engine now
+			// rejects "verification enabled + empty ServerName" (hostname
+			// matching would be silently skipped). Backfill from addr so
+			// callers get net/http-equivalent behavior. The engine treats
+			// Config as read-only (configToNative copies what it needs), so a
+			// shallow copy with one field overridden is safe to dial with.
+			cfg := config
+			if cfg.ServerName == "" && !cfg.InsecureSkipVerify {
+				if host, _, err := net.SplitHostPort(addr); err == nil && host != "" {
+					copied := *cfg
+					copied.ServerName = host
+					cfg = &copied
+				}
 			}
-			return tlcp.DialWithDialer(dialer, network, addr, config)
+			// tlcp.DialContext honors the ctx deadline, but a blocked dial or
+			// handshake cannot be interrupted by ctx.Done() from inside. Race
+			// the dial against cancellation; on cancel, reap the eventual
+			// connection (the dial goroutine hands it over and we close it) so
+			// nothing leaks.
+			type dialResult struct {
+				conn net.Conn
+				err  error
+			}
+			resCh := make(chan dialResult, 1)
+			go func() {
+				conn, err := tlcp.DialContext(ctx, network, addr, cfg)
+				resCh <- dialResult{conn, err}
+			}()
+			select {
+			case r := <-resCh:
+				return r.conn, r.err
+			case <-ctx.Done():
+				go func() {
+					if r := <-resCh; r.conn != nil {
+						_ = r.conn.Close()
+					}
+				}()
+				return nil, ctx.Err()
+			}
 		},
-		ForceAttemptHTTP2: false,
+		ForceAttemptHTTP2:     false,
+		IdleConnTimeout:       defaultIdleConnTimeout,
+		ResponseHeaderTimeout: defaultResponseHeaderTimeout,
 	}, nil
 }
 
 // NewTLSTransport returns an *http.Transport that dials using standard TLS.
 func NewTLSTransport(config *tls.Config) *http.Transport {
 	return &http.Transport{
-		TLSClientConfig: config,
+		TLSClientConfig:       config,
+		TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
+		IdleConnTimeout:       defaultIdleConnTimeout,
+		ResponseHeaderTimeout: defaultResponseHeaderTimeout,
 	}
 }
 
@@ -73,11 +133,16 @@ func NewClient(opts *ClientOptions) (*http.Client, error) {
 	client := &http.Client{
 		Transport: transport,
 	}
-	// Pointer semantics: nil leaves http.Client.Timeout at zero (unlimited,
-	// the stdlib default); non-nil applies the pointed-to value (which may
-	// itself be zero — explicit opt-out, equivalent to nil for http.Client).
+	// Pointer semantics: nil → conservative default (bounded end-to-end
+	// request time, the same fail-safe posture as ServerOptions); non-nil
+	// applies the pointed-to value (which may itself be zero — explicit
+	// opt-out). The old nil-means-unlimited default produced clients that a
+	// stalled server could pin forever when combined with the transport's
+	// per-phase timeouts.
 	if opts.Timeout != nil {
 		client.Timeout = *opts.Timeout
+	} else {
+		client.Timeout = defaultClientTimeout
 	}
 
 	// Configure redirect policy.

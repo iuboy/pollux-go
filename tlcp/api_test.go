@@ -14,9 +14,6 @@ func TestVersionString(t *testing.T) {
 	if Version11.String() != "1.1" {
 		t.Errorf("Version11.String() = %q, want \"1.1\"", Version11.String())
 	}
-	if Version12.String() != "1.2" {
-		t.Errorf("Version12.String() = %q, want \"1.2\"", Version12.String())
-	}
 }
 
 // TestVersionFromString 覆盖所有合法/非法分支。
@@ -28,8 +25,8 @@ func TestVersionFromString(t *testing.T) {
 	}{
 		{"1.1", Version11, true},
 		{"11", Version11, true},
-		{"1.2", Version12, true},
-		{"12", Version12, true},
+		{"1.2", "", false},
+		{"12", "", false},
 		{"2.0", "", false},
 		{"", "", false},
 		{"garbage", "", false},
@@ -52,40 +49,6 @@ func TestVersionFromString(t *testing.T) {
 			}
 		}
 	}
-}
-
-// TestIsAvailable 验证可用性标志。
-func TestIsAvailable(t *testing.T) {
-	if !IsAvailable() {
-		t.Error("IsAvailable() = false, want true (native engine always available)")
-	}
-}
-
-// TestGetStandardSummary 验证标准摘要非空。
-func TestGetStandardSummary(t *testing.T) {
-	s := GetStandardSummary()
-	if s == "" {
-		t.Fatal("GetStandardSummary() returned empty")
-	}
-	// 应包含核心标准号
-	for _, want := range []string{"GB/T 38636-2020", "RFC 8998", "ECDHE_SM2_WITH_SM4_GCM_SM3"} {
-		if !contains(s, want) {
-			t.Errorf("GetStandardSummary() missing %q", want)
-		}
-	}
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (indexOf(s, sub) >= 0)
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
 
 // TestEnableDisable 验证在 tls.Config 上启用/禁用国密套件。
@@ -119,7 +82,7 @@ func TestEnableDisable(t *testing.T) {
 // 这里仅确认 Enable 在正常情况下不返回该错误。
 func TestEnable_NoNationalSuites(t *testing.T) {
 	cfg := &tls.Config{}
-	if err := Enable(cfg); err == ErrTLCPNotSupported {
+	if err := Enable(cfg); errors.Is(err, ErrTLCPNotSupported) {
 		t.Logf("Enable returned ErrTLCPNotSupported (national suites empty); acceptable")
 	}
 }

@@ -34,7 +34,10 @@ import (
 func tlcpMakeClientHello(config *tlcpEngineConfig) (*tlcpClientHelloMsg, error) {
 	suites := config.cipherSuites
 	if len(suites) == 0 {
-		suites = []uint16{SuiteECC_SM2_SM4_GCM_SM3, SuiteECC_SM2_SM4_CBC_SM3}
+		// 空列表回退与 DefaultCipherSuites 保持一致(ECDHE+GCM,前向保密)。
+		// 此前回退到 static-ECC(无 PFS)+CBC 套件,与包级默认安全姿态
+		// 矛盾——直接配置 tlcpEngineConfig 的调用方会静默降级。
+		suites = DefaultCipherSuites()
 	}
 	random := make([]byte, 32)
 	// Per TLCP (like TLS 1.2), the first 4 bytes carry gmt_unix_time.
@@ -65,13 +68,22 @@ func (c *tlcpConn) clientHandshakeReal() error {
 	if config == nil {
 		return errors.New("tlcp: nil config")
 	}
+	// Fail closed (mirrors crypto/tls handshake_client.go): the certificate
+	// verifier runs hostname matching under DNSName = ServerName, and an empty
+	// DNSName makes it skip hostname matching entirely. "Verification enabled
+	// + empty ServerName" would therefore degrade to chain-only validation —
+	// any certificate issued under a trusted CA would be accepted. Callers
+	// must name the server or explicitly opt out with InsecureSkipVerify.
+	if config.serverName == "" && !config.insecureSkipVerify {
+		return errors.New("tlcp: either ServerName or InsecureSkipVerify must be specified in Config")
+	}
 
 	// 0. Load a cached session (keyed by server identity: SNI + remote address)
 	// so we can offer to resume. Binding SNI into the key prevents reusing a
 	// session authenticated under one server identity against a different
 	// service that shares the same IP (resume skips certificate verification).
 	if config.sessionCache != nil && c.isClient {
-		if sess, ok := config.sessionCache.Get(sessionCacheKey(c.conn.RemoteAddr().String(), config.serverName)); ok && sess != nil {
+		if sess, ok := config.sessionCache.Get(sessionCacheKey(c.conn.RemoteAddr().String(), config.serverName)); ok && sess != nil && sessionFresh(sess) {
 			c.session = sess
 		}
 	}
@@ -135,6 +147,23 @@ func (c *tlcpConn) clientHandshakeReal() error {
 		return errors.New("tlcp: server selected non-null compression")
 	}
 	c.serverName = config.serverName
+	// ALPN 信任门:服务端选择的协议必须落在客户端实际提议的列表内
+	// (tlcpMakeClientHello 目前从不提议 ALPN,任何选择都是未协商的——
+	// 恶意服务器此前可让 ConnectionState().NegotiatedProtocol 报告任意
+	// 协议,与 tls13gm 已修的 ALPN 信任族同类)。按提议列表而非"列表
+	// 必空"写,未来接线 ALPN 配置时此门语义不变。
+	if serverHello.alpnProtocol != "" {
+		offered := false
+		for _, p := range hello.alpnProtocols {
+			if p == serverHello.alpnProtocol {
+				offered = true
+				break
+			}
+		}
+		if !offered {
+			return errors.New("tlcp: server selected ALPN protocol that was not offered")
+		}
+	}
 	c.clientProtocol = serverHello.alpnProtocol
 
 	// 2b. Resume branch: server echoed our sessionId and we have a matching
@@ -413,7 +442,7 @@ func (c *tlcpConn) createNewClientSession(serverHello *tlcpServerHelloMsg, maste
 	copy(msCopy, masterSecret)
 	peerCertsCopy := make([][]byte, len(c.peerCertificates))
 	copy(peerCertsCopy, c.peerCertificates)
-	sess := &tlcpSessionState{
+	sess := &SessionState{
 		sessionID:        serverHello.sessionID,
 		version:          c.vers,
 		cipherSuite:      c.cipherSuite,
@@ -488,7 +517,10 @@ func (c *tlcpConn) readServerCCSAndFinished(transcript *tlcpFinishedHash, master
 	}
 	want := transcript.serverSum(masterSecret)
 	if constantTimeEq(fin.verifyData, want) != 1 {
-		return fmt.Errorf("tlcp: server's Finished verify_data mismatch (got %x want %x)", fin.verifyData, want)
+		// Do not leak the expected verify_data — it is derived from the master
+		// secret and transcript hash; exposing it could enable Finished-message
+		// oracle attacks (same posture as the server side, readClientCCSAndFinished).
+		return errors.New("tlcp: server's Finished verify_data mismatch")
 	}
 	// Now feed the verified serverFinished into the transcript.
 	transcript.Write(finData)

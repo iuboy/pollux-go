@@ -28,7 +28,7 @@ func BenchmarkPayloadEncrypt_SM4GCM(b *testing.B) {
 			payload := make([]byte, size)
 			b.SetBytes(int64(size))
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				_, _ = p.EncryptPayload(1, header, payload)
 			}
 		})
@@ -45,7 +45,7 @@ func BenchmarkPayloadDecrypt_SM4GCM(b *testing.B) {
 		b.Run(strconv.Itoa(size), func(b *testing.B) {
 			b.SetBytes(int64(size))
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				_, _ = p.DecryptPayload(1, header, ct)
 			}
 		})
@@ -65,7 +65,7 @@ func BenchmarkPayloadEncrypt_AES128GCM(b *testing.B) {
 			payload := make([]byte, size)
 			b.SetBytes(int64(size))
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				aead.Seal(nil, nonce, payload, header)
 			}
 		})
@@ -83,7 +83,7 @@ func BenchmarkPayloadDecrypt_AES128GCM(b *testing.B) {
 		b.Run(strconv.Itoa(size), func(b *testing.B) {
 			b.SetBytes(int64(size))
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				_, _ = aead.Open(nil, nonce, ct, header)
 			}
 		})
@@ -103,7 +103,7 @@ func BenchmarkHeaderProtection(b *testing.B) {
 	original[4] = 0x12
 	original[5] = 0x34
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		buf := append([]byte(nil), original...)
 		_ = p.ApplyHeaderProtection(buf, 4, 2, true)
 		_, _ = p.RemoveHeaderProtection(buf, 4, true)

@@ -47,6 +47,8 @@ func (h *PBKDF2SM3) Algorithm() string { return pbkdf2SM3Algo }
 // generated for each call via crypto/rand.
 func (h *PBKDF2SM3) Hash(password string) (string, error) {
 	salt := make([]byte, h.params.SaltLength)
+	// readRandom is a test-only seam — see its declaration doc in
+	// argon2id.go; never replace it in production.
 	if _, err := readRandom(salt); err != nil {
 		return "", fmt.Errorf("pwhash/pbkdf2-sm3: %w", err)
 	}
@@ -147,7 +149,7 @@ func decodePBKDF2SM3(encoded string) (PBKDF2Params, []byte, []byte, error) {
 	// e.g. iter > maxPBKDF2Iteration or a too-short salt would only be caught
 	// downstream (or worse, accepted by a permissive PBKDF2 implementation).
 	if err := params.Validate(); err != nil {
-		return PBKDF2Params{}, nil, nil, fmt.Errorf("%w: %v", ErrMalformedHash, err)
+		return PBKDF2Params{}, nil, nil, fmt.Errorf("%w: %w", ErrMalformedHash, err)
 	}
 	return params, salt, dk, nil
 }

@@ -20,7 +20,7 @@ func TestNative_Resume_NativeServer(t *testing.T) {
 	signPriv := signCert.PrivateKey.(*polluxSM2.PrivateKey)
 	encPriv := encCert.PrivateKey.(*polluxSM2.PrivateKey)
 
-	sharedCache := NewTLCPLRUSessionCache(8)
+	sharedCache := NewLRUSessionCache(8)
 
 	serverConfig := &tlcpEngineConfig{
 		rand:         rand.Reader,

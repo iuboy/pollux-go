@@ -20,7 +20,7 @@ pollux-go 是 **Go 语言国密（GM）算法与协议的集成工具包，不�
 
 | 概念                    | 定义                                                                                       | pollux-go 包             |
 | ----------------------- | ------------------------------------------------------------------------------------------ | ------------------------ |
-| **TLCP**                | GB/T 38636-2020，国标传输层密码协议，基于 TLS 1.2 框架，采用**双证书**（签名 + 加密）体系  | `tlcp`（基于 gotlcp）    |
+| **TLCP**                | GB/T 38636-2020，国标传输层密码协议，基于 TLS 1.2 框架，采用**双证书**（签名 + 加密）体系  | `tlcp`（自研实现，参考开源实现重写）    |
 | **RFC 8998**            | IETF 标准 *ShangMi Cipher Suites for TLS 1.3*，在 TLS 1.3 框架内注册国密套件，不改握手流程 | `tls13gm` + `quicgm`     |
 | **标准 TLS 1.3 / QUIC** | RFC 8446 / RFC 9000-9001，非国密                                                           | `tls13` / `quic` / `tls` |
 
@@ -70,7 +70,7 @@ QUIC TLS 1.3 传输安全 + 应用层 SM2 证书认证、HMAC-SM3、SM4-GCM 负�
   quic-go/   vendored fork：注入 GMCryptoSetup，让 quic-go 状态机跑 RFC 8998 握手
 
 协议（待审计）
-  tlcp       TLCP 1.1（GB/T 38636-2020，基于 gotlcp 封装）
+  tlcp       TLCP 1.1（GB/T 38636-2020，自研实现，参考开源实现重写）
 
 基础设施
   gmstd                GM/T 标准辅助函数
@@ -83,7 +83,7 @@ QUIC TLS 1.3 传输安全 + 应用层 SM2 证书认证、HMAC-SM3、SM4-GCM 负�
 1. **QUIC 用标准 TLS 1.3，不复用 TLCP**——TLCP 与 TLS 1.3 不兼容，QUIC 强制 TLS 1.3。
 2. **`tls` 包 registry-only**——只登记套件 ID/名称，不实现握手，常量不进 `crypto/tls.Config`。
 3. **默认配置安全收敛**——HTTP/cert/TLCP 默认 GCM-only，CBC 标记 legacy 须显式启用；默认不启用 `InsecureSkipVerify`、hybrid listener、CBC。
-4. **TLCP 在独立审计前保持 EXPERIMENTAL**——底层 gotlcp 未审计，不应暴露于不可信网络。
+4. **TLCP 在独立审计前保持 EXPERIMENTAL**——自研 TLCP 协议栈未审计，不应暴露于不可信网络。
 5. **不误导**——README 与 package doc 不宣称 crypto/tls 不具备的能力，experimental 能力明确标记。
 6. **smx509 验证不做 leaf-as-root fallback**——CertPool 保留 raw DER，不从 `Subjects()` 反推证书。
 

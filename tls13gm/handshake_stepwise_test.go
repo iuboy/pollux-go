@@ -236,13 +236,17 @@ func TestHandshake_TransportParametersExchange(t *testing.T) {
 // sentinel random) with the given cookie, for client-side HRR tests.
 func buildTestHRR(t *testing.T, cookie []byte) []byte {
 	t.Helper()
+	cookieExt, err := marshalCookieExtension(cookie)
+	if err != nil {
+		t.Fatalf("marshal cookie: %v", err)
+	}
 	hrr := &ServerHelloMsg{
 		LegacyVersion: uint16(VersionTLS13),
 		Random:        helloRetryRequestRandom,
 		CipherSuite:   TLS_SM4_GCM_SM3,
 		Extensions: []Extension{
 			{Type: ExtensionTypeSupportedVersions, Data: []byte{0x03, 0x03}},
-			{Type: ExtensionTypeCookie, Data: marshalCookieExtension(cookie)},
+			{Type: ExtensionTypeCookie, Data: cookieExt},
 		},
 	}
 	full, err := MarshalHandshakeMessage(hrr)
@@ -441,7 +445,10 @@ func TestServerHandshake_VerifyPSKBinder(t *testing.T) {
 		t.Fatalf("HandleClientHello with recognized PSK: %v", err)
 	}
 
-	// Server without the PSK must reject.
+	// Server without the PSK must DECLINE it (not abort): RFC 8446 §4.2.11
+	// requires a server that cannot use the offered identity to continue with
+	// a full handshake rather than terminate. The declined server selects no
+	// PSK, so its flight must carry Certificate/CertificateVerify.
 	server2, err := NewServerHandshakerWithConfig(ServerConfig{
 		DCID:              dcid,
 		Certificate:       cert,
@@ -451,8 +458,19 @@ func TestServerHandshake_VerifyPSKBinder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
 	}
-	if err := server2.HandleClientHello(ch); err == nil {
-		t.Fatal("HandleClientHello accepted an unrecognized PSK")
+	if err := server2.HandleClientHello(ch); err != nil {
+		t.Fatalf("HandleClientHello with unrecognized PSK: %v (want graceful decline)", err)
+	}
+	sh, ee, crt, cv, fin, err := server2.ServerFlight()
+	if err != nil {
+		t.Fatalf("ServerFlight after declined PSK: %v", err)
+	}
+	if sh == nil || ee == nil || fin == nil {
+		t.Fatal("ServerFlight after declined PSK returned nil messages")
+	}
+	// Full handshake: certificate and CertificateVerify MUST be present.
+	if crt == nil || cv == nil {
+		t.Fatal("ServerFlight after declined PSK omitted Certificate/CertificateVerify (want full handshake)")
 	}
 }
 
@@ -499,7 +517,7 @@ func TestHandshake_PSKResumption(t *testing.T) {
 	if err := server1.HandleClientFinished(cf1); err != nil {
 		t.Fatalf("server1 HandleClientFinished: %v", err)
 	}
-	ticketMsg, err := server1.NewSessionTicket(7200, 0x12345678)
+	ticketMsg, err := server1.NewSessionTicket(7200)
 	if err != nil {
 		t.Fatalf("NewSessionTicket: %v", err)
 	}

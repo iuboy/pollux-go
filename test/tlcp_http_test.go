@@ -33,7 +33,7 @@ func TestTLCPServerWithTongsuoCerts(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status: got %d, want 200", resp.StatusCode)
 	}
 
@@ -81,13 +81,13 @@ func TestTLCPMultipleRequests(t *testing.T) {
 	}
 	client := &http.Client{Transport: transport}
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		resp, err := client.Get(fmt.Sprintf("https://%s/req/%d", addr, i))
 		if err != nil {
 			t.Fatalf("request %d: %v", i, err)
 		}
 		resp.Body.Close()
-		if resp.StatusCode != 200 {
+		if resp.StatusCode != http.StatusOK {
 			t.Errorf("request %d: status %d", i, resp.StatusCode)
 		}
 	}

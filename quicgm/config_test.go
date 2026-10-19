@@ -11,6 +11,7 @@ import (
 func TestTls13ClientConfig_EarlyDataRequiresPSK(t *testing.T) {
 	// EarlyData=true but no ResumptionPSK → must error.
 	cfg := ClientConfig{
+		NextProtos:    []string{"echo"},
 		ServerName:    "example.com",
 		EarlyData:     true,
 		ResumptionPSK: nil,
@@ -21,6 +22,7 @@ func TestTls13ClientConfig_EarlyDataRequiresPSK(t *testing.T) {
 
 	// Same with an empty (non-nil) PSK.
 	cfgEmpty := ClientConfig{
+		NextProtos:    []string{"echo"},
 		ServerName:    "example.com",
 		EarlyData:     true,
 		ResumptionPSK: []byte{},
@@ -30,17 +32,20 @@ func TestTls13ClientConfig_EarlyDataRequiresPSK(t *testing.T) {
 	}
 
 	// EarlyData=false (or no EarlyData) without a PSK is fine — full handshake.
-	cfgFull := ClientConfig{ServerName: "example.com"}
+	cfgFull := ClientConfig{ServerName: "example.com", NextProtos: []string{"echo"}}
 	if _, err := cfgFull.tls13ClientConfig(); err != nil {
 		t.Fatalf("full-handshake config (no EarlyData, no PSK) should be valid: %v", err)
 	}
 
-	// EarlyData=true WITH a PSK AND an identity is fine.
+	// EarlyData=true WITH a PSK AND an identity AND the harvested server
+	// params is fine.
 	cfgPSK := ClientConfig{
+		NextProtos:         []string{"echo"},
 		ServerName:         "example.com",
 		EarlyData:          true,
 		ResumptionPSK:      []byte("a-resumption-psk-of-some-length"),
 		ResumptionIdentity: []byte("opaque-server-ticket"),
+		ResumptionAppData:  []byte("saved-server-transport-params"),
 	}
 	if _, err := cfgPSK.tls13ClientConfig(); err != nil {
 		t.Fatalf("EarlyData with a PSK and identity should be valid: %v", err)
@@ -49,6 +54,7 @@ func TestTls13ClientConfig_EarlyDataRequiresPSK(t *testing.T) {
 	// EarlyData=true with a PSK but NO identity must be rejected per RFC 8446
 	// §4.2.11 (pre_shared_key requires a non-empty identity).
 	cfgPSKNoIdentity := ClientConfig{
+		NextProtos:    []string{"echo"},
 		ServerName:    "example.com",
 		EarlyData:     true,
 		ResumptionPSK: []byte("a-resumption-psk-of-some-length"),

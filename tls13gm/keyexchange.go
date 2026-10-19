@@ -5,9 +5,8 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 
-	"github.com/iuboy/pollux-go/sm2"
+	"github.com/emmansun/gmsm/sm2"
 )
 
 // CurveSM2 is the TLS NamedCurve ID for the SM2 elliptic curve
@@ -18,11 +17,16 @@ const CurveSM2 uint16 = 0x0029
 const CurveSM2KeySize = 65 // 0x04 + 32 + 32
 
 // GenerateCurveSM2KeyPair generates an SM2 key pair for use in TLS 1.3 key_share.
-func GenerateCurveSM2KeyPair(r io.Reader) (*sm2.PrivateKey, error) {
-	if r == nil {
-		r = rand.Reader
-	}
-	return sm2.GenerateKey(r)
+//
+// Since the Go 1.26 crypto modernization this function takes no randomness
+// source. The standard library now ignores caller-supplied io.Reader
+// randomness in crypto/ecdh.Curve.GenerateKey, crypto/rand.Prime and the
+// key-generation paths of ecdsa/ed25519/rsa, because a weak, nil, or replayed
+// reader silently degrades key material at the most sensitive point of a
+// protocol. pollux-go aligns with that semantics: the ephemeral key is always
+// drawn from crypto/rand, and a caller cannot opt out.
+func GenerateCurveSM2KeyPair() (*sm2.PrivateKey, error) {
+	return sm2.GenerateKey(rand.Reader)
 }
 
 // CurveSM2ECDHE computes the shared secret using SM2 ECDH.
@@ -31,6 +35,15 @@ func GenerateCurveSM2KeyPair(r io.Reader) (*sm2.PrivateKey, error) {
 //
 // This performs raw ECDH scalar multiplication (x-coordinate only),
 // matching the TLS 1.3 key agreement semantics (not GM/T 0003.3 key exchange).
+//
+// The exchange is delegated to gmsm's ecdh package — the SM2 equivalent of
+// crypto/ecdh, built on the constant-time point arithmetic ported from
+// crypto/internal/nistec. This replaces the previous hand-rolled
+// elliptic.Curve.ScalarMult call (deprecated API) and strengthens validation:
+// the conversion path rejects private scalars outside [1, N-1] and off-curve
+// peer points, the multiplication is constant-time, and the result is the
+// fixed-width 32-byte x-coordinate with the point at infinity rejected — so
+// the manual zero-padding of the shared secret is no longer needed.
 func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]byte, error) {
 	if privateKey == nil {
 		return nil, errors.New("tls13gm: privateKey is nil")
@@ -44,60 +57,35 @@ func CurveSM2ECDHE(privateKey *sm2.PrivateKey, peerPublic *ecdsa.PublicKey) ([]b
 	// cross-curve error leaking the private scalar. sm2.PublicKey is a type
 	// alias for ecdsa.PublicKey, so the type system cannot enforce this — the
 	// check must be explicit on BOTH the local private key's curve AND the
-	// peer's public key's curve.
+	// peer's public key's curve. (The gmsm conversions below enforce it again;
+	// these guards keep the error specific.)
 	if privateKey.Curve != sm2.P256() {
 		return nil, errors.New("tls13gm: local private key is not on the SM2 curve")
 	}
 	if peerPublic.Curve != sm2.P256() {
 		return nil, errors.New("tls13gm: peer public key is not on the SM2 curve")
 	}
-	// Defense in depth: even with the correct curve, reject off-curve points to
-	// prevent invalid-curve attacks. Callers arriving via sm2.UnmarshalUncompressed
-	// have already validated this, but CurveSM2ECDHE is a public API and must not
-	// rely on that invariant.
-	if !peerPublic.Curve.IsOnCurve(peerPublic.X, peerPublic.Y) { //nolint:staticcheck // SM2 curve; crypto/ecdh has no SM2 support
-		return nil, errors.New("tls13gm: peer public key is not on the SM2 curve")
-	}
 	// privateKey.D is populated by sm2.GenerateKey, but CurveSM2ECDHE is a public
 	// API reachable from keys constructed via other means (unmarshal, zero-value
-	// declarations) where D may be nil. A nil D would panic at .Bytes() below.
+	// declarations) where D may be nil. A nil D would panic inside gmsm's
+	// conversion below (big.Int method on nil receiver).
 	if privateKey.D == nil {
 		return nil, errors.New("tls13gm: private key scalar D is nil")
 	}
-	// sm2.PrivateKey embeds ecdsa.PrivateKey (via PublicKey), so .D and .Curve
-	// are directly accessible. Perform raw scalar multiplication on the peer's
-	// public point using our private scalar.
-	//
-	// ScalarMult is deprecated for NIST curves (use crypto/ecdh instead), but
-	// SM2 uses a custom curve that crypto/ecdh does not support, so this is
-	// the correct approach.
-	//
-	// Pad private scalar to 32 bytes (SM2 field element size) for constant-time
-	// consistency. D.Bytes() returns minimal encoding, which may be shorter
-	// than 32 bytes if leading bytes happen to be zero.
-	const scalarSize = 32
-	dBytes := make([]byte, scalarSize)
-	rawD := privateKey.D.Bytes()
-	copy(dBytes[scalarSize-len(rawD):], rawD)
-
-	x, _ := peerPublic.Curve.ScalarMult(peerPublic.X, peerPublic.Y, dBytes) //nolint:staticcheck // SM2 raw ECDHE; crypto/ecdh has no SM2 support, scalar padded to 32B for gmsm constant-time path
-	if x == nil {
-		return nil, errors.New("tls13gm: ECDH scalar multiplication failed")
+	priv, err := privateKey.ECDH()
+	if err != nil {
+		return nil, fmt.Errorf("tls13gm: convert SM2 private key for ECDH: %w", err)
 	}
-	shared := x.Bytes()
-	// Defense in depth: the SM2 curve's x-coordinate is at most 32 bytes
-	// (256-bit field), but a future curve change or implementation bug could
-	// produce a longer value. Cap at scalarSize explicitly rather than
-	// silently truncating via shared[:scalarSize].
-	if len(shared) > scalarSize {
-		return nil, fmt.Errorf("tls13gm: ECDH shared secret %d bytes exceeds scalar size %d (curve mismatch?)", len(shared), scalarSize)
+	// PublicKeyToECDH re-validates that the peer point is on the curve (defense
+	// in depth against invalid-curve attacks for callers that did not parse
+	// the point via sm2.UnmarshalUncompressed).
+	peer, err := sm2.PublicKeyToECDH(peerPublic)
+	if err != nil {
+		return nil, fmt.Errorf("tls13gm: convert SM2 public key for ECDH: %w", err)
 	}
-	// Pad shared secret to 32 bytes (left-pad with zeros for fixed-width
-	// HKDF extraction downstream).
-	if len(shared) < scalarSize {
-		padded := make([]byte, scalarSize)
-		copy(padded[scalarSize-len(shared):], shared)
-		shared = padded
+	shared, err := priv.ECDH(peer)
+	if err != nil {
+		return nil, fmt.Errorf("tls13gm: SM2 ECDH: %w", err)
 	}
-	return shared[:scalarSize], nil
+	return shared, nil
 }

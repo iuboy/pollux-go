@@ -77,8 +77,10 @@ func BuildServerTLSConfig(opts TLSProxyServerOptions) (*tls.Config, error) {
 	return cfg, nil
 }
 
-// copyCertificates returns a deep copy of a []tls.Certificate slice, so the
-// returned tls.Config does not share its backing array with the caller.
+// copyCertificates returns a shallow copy of a []tls.Certificate slice: a new
+// backing array is allocated (the returned config never aliases the caller's
+// slice for append/re-slice purposes), but the tls.Certificate elements
+// themselves are shared — the underlying DER and PrivateKey are NOT duplicated.
 func copyCertificates(in []tls.Certificate) []tls.Certificate {
 	if len(in) == 0 {
 		return nil
@@ -88,7 +90,8 @@ func copyCertificates(in []tls.Certificate) []tls.Certificate {
 	return out
 }
 
-// copyStrings returns a deep copy of a []string slice.
+// copyStrings returns a shallow copy of a []string slice (new backing array;
+// string elements are immutable and shared).
 func copyStrings(in []string) []string {
 	if len(in) == 0 {
 		return nil

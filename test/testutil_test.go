@@ -78,7 +78,7 @@ func buildTLCPConfig(t *testing.T) *polluxTlcp.Config {
 // echoHandler returns a simple HTTP handler that responds with path + method.
 func echoHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(r.Method + " " + r.URL.Path))
 	}
 }

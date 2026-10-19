@@ -53,7 +53,9 @@ func CreateRevocationList(template *x509.RevocationList, issuer *x509.Certificat
 // A fresh template (Raw empty) cannot round-trip, so it falls back to a
 // reflection field copy (copyCertFields): shared fields carry over, smx509-only
 // fields stay zero, and enum-typed fields (SignatureAlgorithm) and entry slices
-// (RevokedCertificateEntries) convert element-wise.
+// (RevokedCertificateEntries) convert element-wise. The entry count is asserted
+// after the copy: any loss aborts the conversion (see copyCertFields drift
+// reporting) rather than silently signing an under-populated CRL.
 func toSMX509RevocationList(tpl *x509.RevocationList) (*smx509pkg.RevocationList, error) {
 	if tpl == nil {
 		return nil, nil
@@ -64,6 +66,12 @@ func toSMX509RevocationList(tpl *x509.RevocationList) (*smx509pkg.RevocationList
 		return smx509pkg.ParseRevocationList(tpl.Raw)
 	}
 	sm := &smx509pkg.RevocationList{}
-	copyCertFields(reflect.ValueOf(tpl).Elem(), reflect.ValueOf(sm).Elem())
+	reportCopyDrift(copyCertFields(reflect.ValueOf(tpl).Elem(), reflect.ValueOf(sm).Elem()))
+	// Fail-closed：撤销条目在转换中丢失（gmsm/x509 结构漂移）时绝不允许
+	// 继续签发——一张缺员的 CRL 一旦发布，被漏掉的已撤销证书会在所有
+	// 依赖方"复活"。条目数是漂移的最小充分指标。
+	if len(sm.RevokedCertificateEntries) != len(tpl.RevokedCertificateEntries) {
+		return nil, errors.New("smx509: revocation entries lost in conversion — gmsm/x509 struct drift")
+	}
 	return sm, nil
 }

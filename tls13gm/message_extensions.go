@@ -77,6 +77,10 @@ func findExtension(exts []Extension, typ uint16) []byte {
 // hasExtension reports whether an extension of the given type is present,
 // regardless of its data (use this for empty-valued extensions like early_data
 // where findExtension's nil return is ambiguous).
+//
+// to test only early_data, but the helper mirrors findExtension's shape.
+//
+//nolint:unparam // generic presence check by design; today's callers happen
 func hasExtension(exts []Extension, typ uint16) bool {
 	for _, e := range exts {
 		if e.Type == typ {
@@ -86,23 +90,75 @@ func hasExtension(exts []Extension, typ uint16) bool {
 	return false
 }
 
+// marshalALPNExtension encodes the ALPN ProtocolNameList (RFC 7301 §3.1):
+// uint16 list length, then per protocol a uint8 length prefix + name. Protocol
+// names are opaque bytes; empty names and names over 255 bytes cannot be
+// encoded in the uint8 prefix and are rejected here (fail at config/marshal
+// time rather than producing wire bytes that only fail opaquely at the peer's
+// parser — parseALPNExtension rejects them on the receiving side).
+func marshalALPNExtension(protocols []string) ([]byte, error) {
+	out := make([]byte, 2)
+	for _, p := range protocols {
+		if len(p) == 0 {
+			return nil, fmt.Errorf("tls13gm: ALPN protocol name must not be empty")
+		}
+		if len(p) > 255 {
+			return nil, fmt.Errorf("tls13gm: ALPN protocol name over 255 bytes (%d)", len(p))
+		}
+		out = append(out, byte(len(p)))
+		out = append(out, p...)
+	}
+	n := len(out) - 2
+	out[0] = byte(n >> 8)
+	out[1] = byte(n)
+	return out, nil
+}
+
+// parseALPNExtension parses the ALPN ProtocolNameList (RFC 7301 §3.1). It
+// rejects empty lists, empty protocol names, and length fields that do not
+// exactly cover the extension data.
+func parseALPNExtension(data []byte) ([]string, error) {
+	if len(data) < 2 {
+		return nil, fmt.Errorf("tls13gm: ALPN extension too short (%d bytes)", len(data))
+	}
+	listLen := int(data[0])<<8 | int(data[1])
+	if listLen != len(data)-2 {
+		return nil, fmt.Errorf("tls13gm: ALPN list length %d does not match extension data (%d bytes)", listLen, len(data)-2)
+	}
+	p := data[2:]
+	var out []string
+	for len(p) > 0 {
+		n := int(p[0])
+		if n == 0 {
+			return nil, fmt.Errorf("tls13gm: ALPN protocol name must not be empty")
+		}
+		if n > len(p)-1 {
+			return nil, fmt.Errorf("tls13gm: ALPN protocol name overruns the protocol list")
+		}
+		out = append(out, string(p[1:1+n]))
+		p = p[1+n:]
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("tls13gm: ALPN protocol list must not be empty")
+	}
+	return out, nil
+}
+
 // marshalCookieExtension encodes a cookie as the TLS opaque cookie vector
 // [length(2) | cookie] used by the cookie extension (RFC 8446 §4.2.2).
-// Cookies longer than 0xFFFF (65535) bytes are truncated to the low 16 bits of
-// the length, producing malformed wire bytes; the caller is expected to keep
-// stateless cookies short. To make such misuse loud rather than silent, a
-// length over 0xFFFF is clamped to 0xFFFF (the wire encoding's natural ceiling)
-// rather than wrapping. RFC 8446 recommends cookies be small.
-func marshalCookieExtension(cookie []byte) []byte {
-	cl := len(cookie)
-	if cl > 0xFFFF {
-		cl = 0xFFFF
+// Cookies longer than 0xFFFF (65535) bytes cannot be represented in the
+// uint16 length prefix and are REJECTED (previously silently clamped to
+// 0xFFFF, truncating content into malformed ClientHello2 wire bytes).
+// RFC 8446 recommends cookies be small.
+func marshalCookieExtension(cookie []byte) ([]byte, error) {
+	if len(cookie) > 0xFFFF {
+		return nil, fmt.Errorf("tls13gm: cookie over 65535 bytes (%d)", len(cookie))
 	}
-	out := make([]byte, 2+cl)
-	out[0] = byte(cl >> 8)
-	out[1] = byte(cl)
-	copy(out[2:], cookie[:cl])
-	return out
+	out := make([]byte, 2+len(cookie))
+	out[0] = byte(len(cookie) >> 8)
+	out[1] = byte(len(cookie))
+	copy(out[2:], cookie)
+	return out, nil
 }
 
 // parseCookieExtension decodes the cookie extension value ([length(2) | cookie])

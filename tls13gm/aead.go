@@ -57,7 +57,7 @@ func (a *AEAD) Overhead() int { return a.aead.Overhead() }
 func (a *AEAD) computeNonce(seqNum uint64) []byte {
 	nonce := make([]byte, len(a.fixedNonce))
 	copy(nonce, a.fixedNonce)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		nonce[len(nonce)-1-i] ^= byte(seqNum >> (i * 8))
 	}
 	return nonce

@@ -48,6 +48,7 @@ func TestListen_Dial_StreamEcho(t *testing.T) {
 	cert, key := generateSM2ServerCert(t)
 
 	ln, err := Listen(context.Background(), ServerConfig{
+		NextProtos:     []string{"echo"},
 		Addr:           "127.0.0.1:0",
 		Certificate:    cert,
 		PrivateKey:     key,
@@ -89,6 +90,7 @@ func TestListen_Dial_StreamEcho(t *testing.T) {
 	}()
 
 	conn, err := Dial(context.Background(), ClientConfig{
+		NextProtos:         []string{"echo"},
 		Addr:               ln.Addr().String(),
 		InsecureSkipVerify: true,
 		MaxIdleTimeout:     5 * time.Second,

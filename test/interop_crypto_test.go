@@ -639,7 +639,7 @@ func TestInteropSM4_CFB_CrossVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream := cipher.NewCFBDecrypter(gmsmBlock, iv) //nolint:staticcheck
+	stream := cipher.NewCFBDecrypter(gmsmBlock, iv)
 	decrypted := make([]byte, len(ciphertext))
 	stream.XORKeyStream(decrypted, ciphertext)
 	if !bytes.Equal(decrypted, plaintext) {
@@ -1098,7 +1098,10 @@ func TestInteropSM3_HKDFExtract_Expand_Split(t *testing.T) {
 	}
 
 	// 方式2: 分步 Extract + Expand
-	prk := polluxSM3.HKDFExtract(salt, ikm)
+	prk, err := polluxSM3.HKDFExtract(salt, ikm)
+	if err != nil {
+		t.Fatalf("HKDFExtract: %v", err)
+	}
 	splitOut, err := polluxSM3.HKDFExpand(prk, info, length)
 	if err != nil {
 		t.Fatal(err)

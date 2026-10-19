@@ -82,11 +82,14 @@ func TestConnIDManagerLimit(t *testing.T) {
 			StatelessResetToken: protocol.StatelessResetToken{i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i},
 		}))
 	}
-	require.Equal(t, &qerr.TransportError{ErrorCode: qerr.ConnectionIDLimitError}, m.Add(&wire.NewConnectionIDFrame{
-		SequenceNumber:      uint64(9999),
-		ConnectionID:        protocol.ParseConnectionID([]byte{1, 2, 3, 4}),
-		StatelessResetToken: protocol.StatelessResetToken{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
-	}))
+	require.ErrorIs(t,
+		m.Add(&wire.NewConnectionIDFrame{
+			SequenceNumber:      uint64(9999),
+			ConnectionID:        protocol.ParseConnectionID([]byte{1, 2, 3, 4}),
+			StatelessResetToken: protocol.StatelessResetToken{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		}),
+		&qerr.TransportError{ErrorCode: qerr.ConnectionIDLimitError},
+	)
 }
 
 func TestConnIDManagerRetiringConnectionIDs(t *testing.T) {
@@ -326,11 +329,14 @@ func TestConnIDManagerPathMigration(t *testing.T) {
 	removedTokens = removedTokens[:0]
 	require.False(t, m.IsActiveStatelessResetToken(protocol.StatelessResetToken{16, 15, 14, 13}))
 
+	frameQueue = nil
 	m.Close()
 	require.Equal(t, []protocol.StatelessResetToken{
 		{6, 5, 4, 3, 6, 5, 4, 3}, // currently active connection ID
 		{5, 4, 3, 2, 5, 4, 3, 2}, // path 2
 	}, removedTokens)
+	m.RetireConnIDForPath(2)
+	require.Empty(t, frameQueue)
 }
 
 func TestConnIDManagerZeroLengthConnectionID(t *testing.T) {

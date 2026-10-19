@@ -74,11 +74,13 @@ func (p *CertPool) AppendCertsFromPEM(pemData []byte) bool {
 		if block == nil {
 			break
 		}
-		cert, err := ParseCertificate(block.Bytes)
-		if err != nil {
+		// 先验块类型再解析：非 CERTIFICATE 块（如 PRIVATE KEY）不该浪费一次
+		// 解析尝试（对齐 cert/pool.go 的顺序）。
+		if block.Type != "CERTIFICATE" {
 			continue
 		}
-		if block.Type != "CERTIFICATE" {
+		cert, err := ParseCertificate(block.Bytes)
+		if err != nil {
 			continue
 		}
 		p.AddCert(cert)

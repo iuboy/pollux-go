@@ -8,6 +8,9 @@ import (
 	polluxSmx509 "github.com/iuboy/pollux-go/smx509"
 )
 
+// PEM block type for certificates (shared by cert.go / load.go / pool.go).
+const pemTypeCertificate = "CERTIFICATE"
+
 // Kind represents the type of certificate.
 type Kind int
 
@@ -50,7 +53,7 @@ func ParseCertificatePEM(pemData []byte) (*x509.Certificate, error) {
 	if block == nil {
 		return nil, ErrInvalidPEM
 	}
-	if block.Type != "CERTIFICATE" {
+	if block.Type != pemTypeCertificate {
 		return nil, fmt.Errorf("cert: unexpected PEM block type %q, want CERTIFICATE", block.Type)
 	}
 	return ParseCertificate(block.Bytes)
@@ -77,7 +80,7 @@ func ParseCertificatesPEM(pemData []byte) ([]*x509.Certificate, error) {
 		if block == nil {
 			break
 		}
-		if block.Type != "CERTIFICATE" {
+		if block.Type != pemTypeCertificate {
 			continue
 		}
 		cert, err := ParseCertificate(block.Bytes)

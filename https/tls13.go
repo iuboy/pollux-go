@@ -53,7 +53,16 @@ func NewTLS13Server(opts TLS13ServerOptions) (*http.Server, error) {
 }
 
 // NewTLS13Client creates an *http.Client that only connects with TLS 1.3.
+//
+// The https layer applies its fail-closed trust gate (mirroring NewClient's
+// standard-TLS path): at least one client certificate, a root pool, or an
+// explicit InsecureSkipVerify is required. The underlying tls13 PACKAGE
+// deliberately keeps crypto/tls's system-roots fallback (the QUIC wrapper
+// depends on it); this constructor is the strict-posture convenience surface.
 func NewTLS13Client(opts TLS13ClientOptions) (*http.Client, error) {
+	if len(opts.Certificates) == 0 && opts.RootCAs == nil && !opts.InsecureSkipVerify {
+		return nil, errors.New("pollux/https: at least one certificate, root pool, or InsecureSkipVerify is required")
+	}
 	cfg, err := tls13.ClientConfig(tls13.ClientOptions{
 		ServerName:         opts.ServerName,
 		RootCAs:            opts.RootCAs,
@@ -66,11 +75,19 @@ func NewTLS13Client(opts TLS13ClientOptions) (*http.Client, error) {
 	}
 	client := &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig: cfg,
+			TLSClientConfig:       cfg,
+			TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
+			IdleConnTimeout:       defaultIdleConnTimeout,
+			ResponseHeaderTimeout: defaultResponseHeaderTimeout,
 		},
 	}
+	// A zero Timeout leaves requests unlimited; the convenience constructor
+	// applies the package default unless the caller opts out with an explicit
+	// zero/negative-free choice (Timeout > 0 required to override).
 	if opts.Timeout > 0 {
 		client.Timeout = opts.Timeout
+	} else {
+		client.Timeout = defaultClientTimeout
 	}
 	return client, nil
 }
@@ -101,7 +118,10 @@ func ListenAndServeTLS13(addr string, handler http.Handler, cfg *tls.Config) err
 	if err != nil {
 		return err
 	}
-	defer ln.Close()
+	// No defer ln.Close() here: http.Server.Serve closes the listener it is
+	// handed (tls.NewListener wraps ln and propagates Close), so an extra
+	// defer would double-close ln — the same invariant documented on
+	// ListenAndServe/serveTLS in server.go.
 
 	srv := &http.Server{
 		Handler:      handler,

@@ -17,9 +17,8 @@ var (
 )
 
 var (
-	errNilPublicKey   = errors.New("smx509: public key is nil")
-	errNilTemplate    = errors.New("smx509: template is nil")
-	errNilCertificate = errors.New("smx509: certificate is nil")
+	errNilPublicKey = errors.New("smx509: public key is nil")
+	errNilTemplate  = errors.New("smx509: template is nil")
 )
 
 // CreateSubjectKeyIdentifierExtension builds a SubjectKeyIdentifier extension
@@ -50,6 +49,9 @@ func CreateSubjectKeyIdentifierExtension(keyID []byte) (pkix.Extension, error) {
 // public key). SHA-1 is safe for key-identifier binding (no preimage concern).
 // SM2-aware: MarshalPKIXPublicKey handles both SM2 and standard keys.
 func GenerateSubjectKeyIdentifier(pubKey crypto.PublicKey) ([]byte, error) {
+	if pubKey == nil {
+		return nil, errNilPublicKey
+	}
 	pubKeyBytes, err := MarshalPKIXPublicKey(pubKey)
 	if err != nil {
 		return nil, fmt.Errorf("smx509: encode public key: %w", err)
@@ -231,6 +233,11 @@ func ValidateKeyIdentifiers(cert *x509.Certificate) (bool, []string) {
 	if len(ski) == 0 {
 		issues = append(issues, "missing SubjectKeyIdentifier extension")
 	} else if len(ski) < 16 {
+		// 16 bytes is a PACKAGE POLICY threshold, not an RFC 5280 requirement:
+		// the RFC only mandates a non-empty key identifier (§4.2.1.2) and
+		// recommends — does not require — the SHA-1 method (20 bytes). The
+		// floor here flags identifiers below 128 bits of collision resistance;
+		// treat the reported issue as advisory, not a standards violation.
 		issues = append(issues, "SubjectKeyIdentifier shorter than 16 bytes")
 	}
 
@@ -244,6 +251,10 @@ func ValidateKeyIdentifiers(cert *x509.Certificate) (bool, []string) {
 		if len(aki) == 0 {
 			issues = append(issues, "non-self-signed certificate missing AuthorityKeyIdentifier extension")
 		} else if len(aki) < 16 {
+			// Same package-policy threshold as the SKI check above: RFC 5280
+			// §4.2.1.1 only requires the keyIdentifier field to be present
+			// when the extension is used; 16 bytes is this package's
+			// 128-bit floor, advisory only.
 			issues = append(issues, "AuthorityKeyIdentifier shorter than 16 bytes")
 		}
 	}

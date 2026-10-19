@@ -59,21 +59,31 @@ func NewQUICPacketProtector(trafficSecret []byte) (*QUICPacketProtector, error) 
 
 // NewQUICPacketProtectorFromKeys constructs a protector directly from keys
 // already derived by the handshake (e.g. tls13gm.HandshakeSecrets), avoiding a
-// redundant HKDF expansion. The caller retains ownership of keys; the protector
-// holds the pointer and zeroes it via Zero().
+// redundant HKDF expansion. The key bytes are SNAPSHOT (deep-copied) into the
+// protector: the source keys and the protector's copies are fully independent,
+// so a concurrent tls13gm.Handshaker.Zero() zeroing the HandshakeSecrets can
+// never race (or tear) the protector's key material, and protector.Zero()
+// clears only the protector's own copy — both sides must be zeroed at teardown.
 func NewQUICPacketProtectorFromKeys(keys *tls13gm.QUICPacketKeys) (*QUICPacketProtector, error) {
 	if keys == nil {
 		return nil, errors.New("quicgm: nil packet keys")
 	}
-	aead, err := tls13gm.NewAEAD(keys.AEADKey, keys.AEADIV)
+	own := &tls13gm.QUICPacketKeys{
+		AEADKey:   append([]byte(nil), keys.AEADKey...),
+		AEADIV:    append([]byte(nil), keys.AEADIV...),
+		HeaderKey: append([]byte(nil), keys.HeaderKey...),
+	}
+	aead, err := tls13gm.NewAEAD(own.AEADKey, own.AEADIV)
 	if err != nil {
+		own.Zero()
 		return nil, err
 	}
-	hpBlock, err := sm4.NewCipher(keys.HeaderKey)
+	hpBlock, err := sm4.NewCipher(own.HeaderKey)
 	if err != nil {
+		own.Zero()
 		return nil, fmt.Errorf("quicgm: header protection cipher: %w", err)
 	}
-	return &QUICPacketProtector{keys: keys, aead: aead, hpBlock: hpBlock}, nil
+	return &QUICPacketProtector{keys: own, aead: aead, hpBlock: hpBlock}, nil
 }
 
 // EncryptPayload encrypts a QUIC packet payload with SM4-GCM. The full packet
@@ -147,7 +157,7 @@ func (p *QUICPacketProtector) RemoveHeaderProtection(buffer []byte, pnOffset int
 	if pnOffset+pnLen > len(buffer) {
 		return 0, fmt.Errorf("quicgm: packet number field (offset %d, len %d) exceeds buffer length %d", pnOffset, pnLen, len(buffer))
 	}
-	for i := 0; i < pnLen; i++ {
+	for i := range pnLen {
 		buffer[pnOffset+i] ^= mask[1+i]
 	}
 	return decodePacketNumber(buffer[pnOffset : pnOffset+pnLen]), nil
@@ -238,7 +248,7 @@ func firstByteMask(isLongHeader bool) byte {
 
 func xorHeaderMask(buffer, mask []byte, pnOffset, pnLen int, isLongHeader bool) {
 	buffer[0] ^= mask[0] & firstByteMask(isLongHeader)
-	for i := 0; i < pnLen; i++ {
+	for i := range pnLen {
 		buffer[pnOffset+i] ^= mask[1+i]
 	}
 }

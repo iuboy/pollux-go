@@ -250,7 +250,10 @@ func dialRFC8998EarlyData(conn net.Conn, serverName string, resumeIdentity, resu
 	// feed it through trafficAEAD.
 	acceptedEarly := false
 	if len(earlyData) > 0 {
-		earlySecret := tls13gm.DeriveEarlySecret(resumePSK)
+		earlySecret, err := tls13gm.DeriveEarlySecret(resumePSK)
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("derive early secret: %w", err)
+		}
 		chHash := sm3.Sum(ch)
 		earlyTraffic, err := tls13gm.DeriveSecret(earlySecret, tls13gm.LabelClientEarlyTraffic, chHash[:])
 		if err != nil {

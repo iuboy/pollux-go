@@ -162,7 +162,10 @@ func TestKeyScheduleChain(t *testing.T) {
 	earlyIKM := make([]byte, 32) // all-zero
 
 	// Early Secret = HKDF-Extract(salt=0^32, IKM)
-	earlySecret := sm3.HKDFExtract(nil, earlyIKM)
+	earlySecret, err := sm3.HKDFExtract(nil, earlyIKM)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(earlySecret) != 32 {
 		t.Fatalf("earlySecret length: got %d, want 32", len(earlySecret))
 	}
@@ -180,7 +183,10 @@ func TestKeyScheduleChain(t *testing.T) {
 	// Handshake Secret = HKDF-Extract(salt=derivedEarly, IKM=shared_secret)
 	// Simulate with a non-zero shared secret
 	sharedSecret := bytes.Repeat([]byte{0x42}, 32)
-	handshakeSecret := sm3.HKDFExtract(derivedEarly, sharedSecret)
+	handshakeSecret, err := sm3.HKDFExtract(derivedEarly, sharedSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(handshakeSecret) != 32 {
 		t.Fatalf("handshakeSecret length: got %d, want 32", len(handshakeSecret))
 	}
@@ -195,7 +201,10 @@ func TestKeyScheduleChain(t *testing.T) {
 	}
 
 	// Master Secret = HKDF-Extract(salt=derivedHandshake, IKM=0^32)
-	masterSecret := sm3.HKDFExtract(derivedHandshake, make([]byte, 32))
+	masterSecret, err := sm3.HKDFExtract(derivedHandshake, make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(masterSecret) != 32 {
 		t.Fatalf("masterSecret length: got %d, want 32", len(masterSecret))
 	}
@@ -206,7 +215,10 @@ func TestKeyScheduleChain(t *testing.T) {
 	}
 
 	// Verify determinism: re-derive the entire chain
-	earlySecret2 := sm3.HKDFExtract(nil, earlyIKM)
+	earlySecret2, err2 := sm3.HKDFExtract(nil, earlyIKM)
+	if err2 != nil {
+		t.Fatal(err2)
+	}
 	if !bytes.Equal(earlySecret, earlySecret2) {
 		t.Fatal("earlySecret not deterministic")
 	}
@@ -219,7 +231,10 @@ func TestKeyScheduleChain(t *testing.T) {
 		t.Fatal("derivedEarly not deterministic")
 	}
 
-	handshakeSecret2 := sm3.HKDFExtract(derivedEarly, sharedSecret)
+	handshakeSecret2, err2 := sm3.HKDFExtract(derivedEarly, sharedSecret)
+	if err2 != nil {
+		t.Fatal(err2)
+	}
 	if !bytes.Equal(handshakeSecret, handshakeSecret2) {
 		t.Fatal("handshakeSecret not deterministic")
 	}
@@ -232,7 +247,10 @@ func TestKeyScheduleChain(t *testing.T) {
 		t.Fatal("derivedHandshake not deterministic")
 	}
 
-	masterSecret2 := sm3.HKDFExtract(derivedHandshake, make([]byte, 32))
+	masterSecret2, err2 := sm3.HKDFExtract(derivedHandshake, make([]byte, 32))
+	if err2 != nil {
+		t.Fatal(err2)
+	}
 	if !bytes.Equal(masterSecret, masterSecret2) {
 		t.Fatal("masterSecret not deterministic")
 	}

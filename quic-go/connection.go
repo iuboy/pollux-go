@@ -211,6 +211,15 @@ type Conn struct {
 	pacingDeadline monotime.Time
 
 	peerParams *wire.TransportParameters
+	// peerParamsMutex guards peerParams for app-goroutine readers (0-RTT
+	// stream creation in newFlowController, ConnectionState) against the
+	// connection goroutine's writes (restoreTransportParameters /
+	// handleTransportParameters). Upstream v0.64.0 accesses the field
+	// unsynchronized — the 0-RTT race is quic-go#4303, still open upstream;
+	// the fork's GM event timing made it deterministic under CI's race
+	// detector. Conn-goroutine-only readers (applyTransportParameters,
+	// maxPacketSize, the ValidForUpdate check) stay lock-free.
+	peerParamsMutex sync.RWMutex
 
 	timer *time.Timer
 	// keepAlivePingSent stores whether a keep alive PING is in flight.
@@ -792,10 +801,12 @@ func (c *Conn) ConnectionState() ConnectionState {
 	cs := c.cryptoStreamHandler.ConnectionState()
 	c.connState.TLS = cs.ConnectionState
 	c.connState.Used0RTT = cs.Used0RTT
+	c.peerParamsMutex.RLock()
 	if c.peerParams != nil {
-		c.connState.SupportsDatagrams.Remote = c.supportsDatagrams()
+		c.connState.SupportsDatagrams.Remote = c.peerParams.MaxDatagramFrameSize > 0
 		c.connState.SupportsStreamResetPartialDelivery.Remote = c.peerParams.EnableResetStreamAt
 	}
+	c.peerParamsMutex.RUnlock()
 	c.connState.SupportsDatagrams.Local = c.config.EnableDatagrams
 	c.connState.SupportsStreamResetPartialDelivery.Local = c.config.EnableStreamResetPartialDelivery
 	c.connState.GSO = c.conn.capabilities().GSO
@@ -2367,7 +2378,9 @@ func (c *Conn) restoreTransportParameters(params *wire.TransportParameters) {
 		})
 	}
 
+	c.peerParamsMutex.Lock()
 	c.peerParams = params
+	c.peerParamsMutex.Unlock()
 	c.connIDGenerator.SetMaxActiveConnIDs(params.ActiveConnectionIDLimit)
 	c.connFlowController.UpdateSendWindow(params.InitialMaxData)
 	c.streamsMap.HandleTransportParameters(params)
@@ -2391,7 +2404,9 @@ func (c *Conn) handleTransportParameters(params *wire.TransportParameters) error
 		}
 	}
 
+	c.peerParamsMutex.Lock()
 	c.peerParams = params
+	c.peerParamsMutex.Unlock()
 	// On the client side we have to wait for handshake completion.
 	// During a 0-RTT connection, we are only allowed to use the new transport parameters for 1-RTT packets.
 	if c.perspective == protocol.PerspectiveServer {
@@ -2961,6 +2976,10 @@ func (c *Conn) OpenUniStreamSync(ctx context.Context) (*SendStream, error) {
 }
 
 func (c *Conn) newFlowController(id protocol.StreamID) *streamFlowController {
+	// App goroutines reach here via streamsMap stream-creation closures
+	// (0-RTT streams open before the handshake completes) — read under
+	// peerParamsMutex (quic-go#4303).
+	c.peerParamsMutex.RLock()
 	initialSendWindow := c.peerParams.InitialMaxStreamDataUni
 	if protocol.StreamTypeOf(id) == protocol.StreamTypeBidi {
 		if protocol.StreamInitiator(id) == c.perspective {
@@ -2969,6 +2988,7 @@ func (c *Conn) newFlowController(id protocol.StreamID) *streamFlowController {
 			initialSendWindow = c.peerParams.InitialMaxStreamDataBidiLocal
 		}
 	}
+	c.peerParamsMutex.RUnlock()
 	return newStreamFlowController(
 		id,
 		c.connFlowController,

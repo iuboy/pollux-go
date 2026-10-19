@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — v0.5.1 发布后:GM 0-RTT 数据竞争修复(上游 quic-go#4303 同源)
+
+v0.5.1 的 main CI(Go 1.26.9 race)暴露真实数据竞争,PR 检查未触发、本地 Go 1.27.2 未触发——GM 事件时序放大了窗口。根因属上游 quic-go v0.64.0(issue #4303,上游至今未修):DialEarly 早返回后 app 开 0-RTT 流,`newFlowController` 读 `peerParams` 与连接 goroutine 处理 EE 写并发;第二处为 `streamsMap.supportsResetStreamAt`(构造闭包读 vs `HandleTransportParameters` 写)。fork 修复:`peerParams` 专用 RWMutex(app 侧读 RLock、连接侧写 Lock,连接内读保持无锁)、`supportsResetStreamAt` 改 `atomic.Bool`;PATCHES.md 已记录为上游核心文件分歧,上游若修将优先采用其实现。验证:Test0RTT* -race 20 次压力全绿 + fork 全量 + CI 复跑。
+
 ## [v0.5.1] - 2026-10-18
 
 ### Added — 第三轮安全审查遗留项收尾(5 项功能/加固)

@@ -3,14 +3,14 @@ module github.com/iuboy/pollux-go
 go 1.26.9
 
 require (
-	github.com/emmansun/gmsm v0.45.0
+	github.com/emmansun/gmsm v0.45.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/quic-go/quic-go v0.64.0
 	golang.org/x/crypto v0.58.0
 )
 
 require (
-	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 )
 

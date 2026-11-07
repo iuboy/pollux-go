@@ -46,9 +46,12 @@ required to route into the GM hooks.
 
 Note: `internal/handshake/crypto_setup.go` is **not** modified — the GM branch
 lives in `connection.go` (the call sites), not inside the `cryptoSetup` struct.
-As of P0f the call sites delegate to `gm_hook.go`, so the only upstream files
-the fork touches are `interface.go` (3 struct fields), `config.go` (1 function
-call), and `connection.go` (2 hook calls).
+As of P0f the call sites delegate to `gm_hook.go`; with the #4303 race fix
+(see `streams_map.go` row) the upstream files the fork touches are
+`interface.go` (3 struct fields), `config.go` (1 function call),
+`connection.go` (hook calls + GM flow-control plumbing), and `streams_map.go`
+(`supportsResetStreamAt` atomicization) — plus `config_test.go`/`go.mod`/
+`go.sum` test-and-build adaptations, all listed in the patch index above.
 
 v0.61.0→v0.62.0 merge note: the v0.60.0→v0.61.0 sync had been done by manual
 copy, so this subtree pull's merge base still reflected v0.60.0 — files the

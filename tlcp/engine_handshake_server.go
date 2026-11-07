@@ -35,6 +35,34 @@ type tlcpServerCerts struct {
 	encDecrypter crypto.Decrypter // encryption cert private key (for PMS decryption)
 }
 
+// tlcpNegotiateServerALPN 服务端 ALPN 裁决（RFC 7301）：在「客户端提议 ∩
+// 本地 NextProtos」中按客户端优先序取第一个两侧都支持的协议——对齐
+// tls13gm 的 client-preference 选择（RFC 7301 不强制顺序）。
+//
+// 语义裁决（依据 stdlib crypto/tls negotiateALPN，Go 1.27 核实）：
+//   - 任一侧未配置（服务端无 NextProtos 或客户端未提议）：返回空串、
+//     不报错——stdlib 对空 serverProtos/clientProtos 返回 ("", nil)。服务端
+//     未配置时若采纳客户端首个提议，会把操作者从未配置的协议"协商"成真
+//     （客户端可借此让服务端报告任意 ALPN 标签），故不采纳。
+//   - 两侧都配置但无交集：返回错误，握手中止。stdlib 发
+//     no_application_protocol(120) alert；本引擎 alert 词表只有
+//     close_notify/handshake_failure，故统一走 Handshake() 的通用握手失败
+//     路径发 handshake_failure(40)，错误文本保留 no_application_protocol
+//     字样供定位（改动需先扩引擎 alert 词表，属破坏性协议面变更）。
+func tlcpNegotiateServerALPN(clientProtocols, serverProtocols []string) (string, error) {
+	if len(clientProtocols) == 0 || len(serverProtocols) == 0 {
+		return "", nil
+	}
+	for _, cp := range clientProtocols {
+		for _, sp := range serverProtocols {
+			if cp == sp {
+				return cp, nil
+			}
+		}
+	}
+	return "", errors.New("tlcp: no overlapping ALPN protocol (no_application_protocol)")
+}
+
 // serverHandshake drives the full TLCP server handshake (Phase 4: ECC suites,
 // no session resume, no client auth).
 func (c *tlcpConn) serverHandshakeReal() error {
@@ -75,11 +103,20 @@ func (c *tlcpConn) serverHandshakeReal() error {
 	c.cipherSuite = suite.id
 	isECDHE := suite.flags&tlcpFlagECDHE != 0
 
+	// 2a. ALPN 裁决（全握手与 resume 共用同一决定点；无 overlap 中止握手）。
+	// 选中协议写入 c.clientProtocol（ConnectionState 暴露）并经 ServerHello
+	// ALPN 扩展回传；未选中则不回扩展。
+	alpnSelected, err := tlcpNegotiateServerALPN(clientHello.alpnProtocols, config.nextProtos)
+	if err != nil {
+		return err
+	}
+	c.clientProtocol = alpnSelected
+
 	// 2b. Resume check: if the client offered a sessionId that hits our cache,
 	// perform an abbreviated handshake (no Certificate/SKE/SHD), reusing the
 	// cached master secret. The server sends Finished first in a resume.
 	if sess := c.lookupResumedSession(&clientHello, suite); sess != nil {
-		if err := c.serverResumeHandshake(suite, &clientHello, chData, sess); err != nil {
+		if err := c.serverResumeHandshake(suite, &clientHello, chData, sess, alpnSelected); err != nil {
 			return err
 		}
 		c.didResume = true
@@ -102,6 +139,7 @@ func (c *tlcpConn) serverHandshakeReal() error {
 		sessionID:         sessionID,
 		cipherSuite:       suite.id,
 		compressionMethod: 0,
+		alpnProtocol:      alpnSelected,
 	}
 
 	// 4. Initialize transcript and feed ClientHello + ServerHello.
@@ -341,8 +379,10 @@ func (c *tlcpConn) lookupResumedSession(clientHello *tlcpClientHelloMsg, suite *
 // Resume ordering (opposite of full): send ServerHello (echoed sessionId) →
 // establishKeys → send server CCS+Finished → read client CCS+Finished. The
 // transcript covers only ClientHello + ServerHello. masterSecret comes from
-// the cached session.
-func (c *tlcpConn) serverResumeHandshake(suite *tlcpCipherSuite, clientHello *tlcpClientHelloMsg, chData []byte, sess *SessionState) error {
+// the cached session. alpnProtocol is the ALPN selection already negotiated
+// for this ClientHello（stdlib TLS 1.2 亦在 resume 的 ServerHello 中回传
+// ALPN 选择，客户端信任门同样覆盖 resume 路径）。
+func (c *tlcpConn) serverResumeHandshake(suite *tlcpCipherSuite, clientHello *tlcpClientHelloMsg, chData []byte, sess *SessionState, alpnProtocol string) error {
 	serverRandom := make([]byte, 32)
 	binary.BigEndian.PutUint32(serverRandom, uint32(time.Now().Unix()))
 	if _, err := io.ReadFull(c.config.rand, serverRandom[4:]); err != nil {
@@ -354,6 +394,7 @@ func (c *tlcpConn) serverResumeHandshake(suite *tlcpCipherSuite, clientHello *tl
 		sessionID:         clientHello.sessionID, // echo the same sessionId
 		cipherSuite:       suite.id,
 		compressionMethod: 0,
+		alpnProtocol:      alpnProtocol,
 	}
 
 	transcript := newTLCPFinishedHash()

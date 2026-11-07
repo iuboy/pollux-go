@@ -19,9 +19,6 @@ import (
 )
 
 var (
-	// ErrTLCPNotSupported TLCP not supported error
-	ErrTLCPNotSupported = errors.New("tlcp: pure Go implementation not available")
-
 	// ErrInvalidVersion invalid TLCP version
 	ErrInvalidVersion = errors.New("tlcp: invalid version")
 
@@ -121,6 +118,16 @@ type Config struct {
 	// matching ClientHellos. Entries expire after 24h. nil disables
 	// resumption (the default).
 	SessionCache SessionCache
+
+	// NextProtos 支持的 ALPN 协议列表（RFC 7301），命名对齐 stdlib
+	// crypto/tls。客户端非空时在 ClientHello 中提议；服务端非空时按
+	// 「客户端提议 ∩ 本地偏好」选择（客户端优先序），选中协议经
+	// ServerHello ALPN 扩展回传，两端经 ConnectionState().NegotiatedProtocol
+	// 与 [Conn.NegotiatedProtocol] 读取。任一侧未配置（或客户端未提议）
+	// 时不选择、不报错；两侧都配置但无交集时握手中止（错误文本含
+	// no_application_protocol）。列表为空（默认）时 wire 行为与未引入
+	// 本字段前完全一致。
+	NextProtos []string
 }
 
 // NewConfig creates default TLCP configuration
@@ -138,7 +145,7 @@ func NewConfig() *Config {
 // configToNative converts a public Config into the engine's tlcpEngineConfig.
 func configToNative(c *Config, isClient bool) (*tlcpEngineConfig, error) {
 	if c == nil {
-		return nil, ErrTLCPNotSupported
+		return nil, errors.New("tlcp: config is nil")
 	}
 	// Default the version if unset (callers that construct Config{} directly,
 	// like the http package, may leave Version empty). Use a local — do NOT
@@ -178,6 +185,9 @@ func configToNative(c *Config, isClient bool) (*tlcpEngineConfig, error) {
 		serverName:         c.ServerName,
 		insecureSkipVerify: c.InsecureSkipVerify,
 		sessionCache:       c.SessionCache,
+		// NextProtos 防御性拷贝：与 CipherSuites 同一姿态，Config 并发改动
+		// 不得撕裂进行中握手的协商输入。
+		nextProtos: cloneStringSlice(c.NextProtos),
 	}
 	if c.SignCertificate != nil && c.EncCertificate != nil {
 		certs, err := buildServerCerts(c.SignCertificate, c.EncCertificate)
@@ -501,6 +511,11 @@ func (c *Config) Clone() *Config {
 		copy(clone.ClientCACertificates, c.ClientCACertificates)
 	}
 
+	// NextProtos 深拷贝（同 CipherSuites），克隆后的并发改动互不可见。
+	if len(c.NextProtos) > 0 {
+		clone.NextProtos = cloneStringSlice(c.NextProtos)
+	}
+
 	// SessionCache is shared by pointer, matching how crypto/tls.Config.Clone
 	// shares ClientSessionCache: the cache is a long-lived, concurrency-safe
 	// store whose whole point is to survive across connections.
@@ -654,8 +669,10 @@ func dialWithDialer(dialer *net.Dialer, network, addr string, config *Config) (*
 }
 
 // DialContext establishes a TLCP client connection, honoring context
-// cancellation during the dial (the handshake itself is bounded by the
-// context's deadline, if any).
+// cancellation during BOTH the dial and the handshake: a canceled or
+// deadline-exceeded context interrupts an in-flight handshake by closing the
+// underlying conn (see [Conn.HandshakeContext]), and the call returns promptly
+// with the context error.
 func DialContext(ctx context.Context, network, addr string, config *Config) (*Conn, error) {
 	return panicsafe.Do1(func() (*Conn, error) {
 		return dialContext(ctx, network, addr, config)
@@ -668,7 +685,11 @@ func dialContext(ctx context.Context, network, addr string, config *Config) (*Co
 	if err != nil {
 		return nil, err
 	}
-	// Propagate the context deadline (if any) to the handshake phase.
+	// Still propagate the context deadline (if any) to the conn: the handshake
+	// is canceled via HandshakeContext, and the deadline additionally bounds
+	// post-handshake I/O until the caller sets its own deadlines. Like
+	// tls.DialWithDialer, the deadline is cleared once the handshake returns so
+	// it does not silently cap the data plane forever.
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := conn.SetDeadline(deadline); err != nil {
 			_ = conn.Close()
@@ -679,108 +700,33 @@ func dialContext(ctx context.Context, network, addr string, config *Config) (*Co
 		}()
 	}
 	tlcpConn := Client(conn, config)
-	if err := tlcpConn.Handshake(); err != nil {
+	if err := tlcpConn.HandshakeContext(ctx); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
 	return tlcpConn, nil
 }
 
-// BuildClientConfig builds TLS client configuration
-func (c *Config) BuildClientConfig() (*tls.Config, error) {
-	cfg := &tls.Config{
-		ServerName:         c.ServerName,
-		CipherSuites:       cloneUint16Slice(c.CipherSuites),
-		InsecureSkipVerify: c.InsecureSkipVerify,
-		MinVersion:         tls.VersionTLS12,
-		MaxVersion:         tls.VersionTLS12,
-	}
-
-	if c.SignCertificate != nil {
-		cfg.Certificates = []tls.Certificate{*c.SignCertificate}
-	} else if c.EncCertificate != nil {
-		cfg.Certificates = []tls.Certificate{*c.EncCertificate}
-	}
-
-	if c.SignRootCAs != nil {
-		cfg.RootCAs = c.SignRootCAs
-	}
-
-	return cfg, nil
-}
-
-// BuildServerConfig builds TLS server configuration
-func (c *Config) BuildServerConfig() (*tls.Config, error) {
-	cfg := &tls.Config{
-		CipherSuites:       cloneUint16Slice(c.CipherSuites),
-		InsecureSkipVerify: c.InsecureSkipVerify,
-		MinVersion:         tls.VersionTLS12,
-		MaxVersion:         tls.VersionTLS12,
-	}
-
-	var certs []tls.Certificate
-	if c.SignCertificate != nil {
-		certs = append(certs, *c.SignCertificate)
-	}
-	if c.EncCertificate != nil {
-		certs = append(certs, *c.EncCertificate)
-	}
-	if len(certs) > 0 {
-		cfg.Certificates = certs
-	}
-
-	switch c.ClientAuth {
-	case NoClientCert:
-		cfg.ClientAuth = tls.NoClientCert
-	case RequestClientCert:
-		cfg.ClientAuth = tls.RequestClientCert
-	case RequireAnyClientCert:
-		cfg.ClientAuth = tls.RequireAnyClientCert
-	case VerifyClientCertIfGiven:
-		cfg.ClientAuth = tls.VerifyClientCertIfGiven
-	case RequireAndVerifyClientCert:
-		cfg.ClientAuth = tls.RequireAndVerifyClientCert
-	}
-
-	return cfg, nil
-}
-
-// Enable enables TLCP Cipher Suites on existing TLS configuration
-func Enable(tlsCfg *tls.Config) error {
-	if tlsCfg == nil {
-		return errors.New("tlcp: tls config is nil")
-	}
-	nationalSuites := polluxtls.NationalCipherSuites()
-	if len(nationalSuites) == 0 {
-		return ErrTLCPNotSupported
-	}
-	tlsCfg.CipherSuites = append(tlsCfg.CipherSuites, nationalSuites...)
-	return nil
-}
-
-// Disable disables TLCP Cipher Suites on TLS configuration
-func Disable(tlsCfg *tls.Config) {
-	if tlsCfg == nil {
-		return
-	}
-	filtered := make([]uint16, 0, len(tlsCfg.CipherSuites))
-	for _, suite := range tlsCfg.CipherSuites {
-		if !polluxtls.IsNationalCipherSuite(suite) {
-			filtered = append(filtered, suite)
-		}
-	}
-	tlsCfg.CipherSuites = filtered
-}
-
 // cloneUint16Slice returns a defensive copy of s (or nil if s is empty). Used by
-// the Build* builders so the returned *tls.Config does not alias the Config's
-// CipherSuites backing array — a caller mutating the source slice after building
-// would otherwise corrupt the built config.
+// configToNative so the engine's negotiated suite list does not alias the
+// Config's CipherSuites backing array — a caller mutating the source slice
+// mid-handshake would otherwise corrupt the engine's input.
 func cloneUint16Slice(s []uint16) []uint16 {
 	if len(s) == 0 {
 		return nil
 	}
 	out := make([]uint16, len(s))
+	copy(out, s)
+	return out
+}
+
+// cloneStringSlice returns a defensive copy of s (or nil if s is empty). Mirrors
+// cloneUint16Slice for string-list config fields（NextProtos）。
+func cloneStringSlice(s []string) []string {
+	if len(s) == 0 {
+		return nil
+	}
+	out := make([]string, len(s))
 	copy(out, s)
 	return out
 }

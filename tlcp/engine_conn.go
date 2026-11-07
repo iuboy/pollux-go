@@ -423,6 +423,7 @@ type tlcpEngineConfig struct {
 	requestClientCert  bool                   // server: send CertificateRequest
 	clientRoots        *polluxsmx509.CertPool // 客户端证书验证根池（服务端 mTLS，nil=不验）
 	clientAuth         ClientAuthType         // 客户端证书校验级别（精确区分 Require/VerifyIfGiven）
+	nextProtos         []string               // ALPN 协议列表（RFC 7301）：客户端提议/服务端支持面，空=不启用
 }
 
 // newTLCPConn wraps a transport connection.
@@ -440,7 +441,27 @@ func newTLCPConn(c net.Conn, config *tlcpEngineConfig, isClient bool) *tlcpConn 
 // serverHandshake is implemented in engine_handshake_server.go (Phase 4).
 
 // Handshake drives the handshake (client or server) and stores any error.
+// Equivalent to HandshakeContext(context.Background()) — no cancellation.
 func (c *tlcpConn) Handshake() error {
+	return c.HandshakeContext(context.Background())
+}
+
+// HandshakeContext drives the handshake, honoring context cancellation. The
+// model mirrors crypto/tls.Conn.HandshakeContext: the handshake state machine
+// has no cancellation points of its own, so a cancel is delivered by CLOSING
+// the underlying conn — the read/write blocked inside the handshake unblocks
+// with a transport error, and THIS call maps its return value to ctx.Err() so
+// the caller can tell an intentional cancel from a peer/transport failure
+// (the underlying transport error stays in handshakeErr). Callers that wrap
+// the conn deadline as min(timeout, remaining ctx budget) are unaffected;
+// SetDeadline keeps working and is now a performance backstop rather than the
+// only interruption mechanism.
+//
+// The AfterFunc is registered in the branch that actually RUNS the handshake
+// (handshakeMutex held, handshake not yet complete): registering earlier would
+// let a concurrent second caller's cancellation spuriously close the conn
+// under the first caller's live handshake.
+func (c *tlcpConn) HandshakeContext(ctx context.Context) (ret error) {
 	c.handshakeMutex.Lock()
 	defer c.handshakeMutex.Unlock()
 	if atomic.LoadUint32(&c.handshakeStatus) == 1 {
@@ -449,6 +470,25 @@ func (c *tlcpConn) Handshake() error {
 	if c.handshakeErr != nil {
 		return c.handshakeErr
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if ctx.Done() != nil {
+		// Close the connection if ctx is canceled before the function returns.
+		stop := context.AfterFunc(ctx, func() {
+			_ = c.conn.Close()
+		})
+		defer func() {
+			if !stop() {
+				// The AfterFunc fired: ctx was canceled mid-handshake and the
+				// conn has been closed to interrupt it. Return the context
+				// error to the caller (see the doc above).
+				ret = ctx.Err()
+			}
+		}()
+	}
+
 	if c.isClient {
 		c.handshakeErr = c.clientHandshake()
 	} else {
@@ -470,16 +510,6 @@ func (c *tlcpConn) Handshake() error {
 	_ = c.writeRecord(tlcpRecordAlert, []byte{tlcpAlertLevelError, tlcpAlertHandshakeFailure})
 	_ = c.flush()
 	return c.handshakeErr
-}
-
-// HandshakeContext drives the handshake, honoring context cancellation. The
-// native engine does not yet support mid-handshake cancellation; the context is
-// best-effort (the underlying conn deadline should be set for hard timeouts).
-func (c *tlcpConn) HandshakeContext(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return c.Handshake()
 }
 
 // NetConn returns the underlying transport connection.

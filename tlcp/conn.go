@@ -55,7 +55,10 @@ func (c *Conn) Handshake() error {
 	})
 }
 
-// HandshakeContext performs the TLCP handshake with context.
+// HandshakeContext performs the TLCP handshake with context. Cancellation
+// mirrors crypto/tls.Conn.HandshakeContext: a canceled or deadline-exceeded
+// ctx interrupts an in-flight handshake by closing the underlying conn, and
+// this call returns promptly with the context error.
 func (c *Conn) HandshakeContext(ctx context.Context) error {
 	return panicsafe.Do(func() error {
 		if c.initErr != nil {
@@ -172,6 +175,18 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 		return c.rawConn.SetWriteDeadline(t)
 	}
 	return errors.New("tlcp: connection not initialized")
+}
+
+// NegotiatedProtocol 返回握手协商的 ALPN 协议（RFC 7301）；未协商时为空串。
+// 命名对齐 tls13gm 的 Handshaker.NegotiatedProtocol，取值与
+// ConnectionState().NegotiatedProtocol 一致。任一侧未配置 NextProtos、
+// 客户端未提议、或服务端未回 ALPN 扩展均视为未协商。连接未初始化
+// （构造期配置错误）时返回空串。
+func (c *Conn) NegotiatedProtocol() string {
+	if c.inner == nil {
+		return ""
+	}
+	return c.inner.ConnectionState().NegotiatedProtocol
 }
 
 // ConnectionState returns the connection's security parameters.

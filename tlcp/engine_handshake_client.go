@@ -39,6 +39,22 @@ func tlcpMakeClientHello(config *tlcpEngineConfig) (*tlcpClientHelloMsg, error) 
 		// 矛盾——直接配置 tlcpEngineConfig 的调用方会静默降级。
 		suites = DefaultCipherSuites()
 	}
+	// NextProtos 校验与 stdlib makeClientHello 对齐：ALPN 协议名以 uint8
+	// 长度前缀上 wire（RFC 7301 §3.1），空名与超 255 字节的名字无法编码；
+	// 全部名字加总超 0xffff 则装不进扩展的 uint16 列表长度。此处报错而非
+	// 等 marshal 深处失败——mustMarshal 对 marshal 错误 panic，校验前移后
+	// 非法配置只会得到显式 error（fail-closed）。
+	nextProtosLength := 0
+	for _, proto := range config.nextProtos {
+		if l := len(proto); l == 0 || l > 255 {
+			return nil, errors.New("tlcp: invalid NextProtos value")
+		} else {
+			nextProtosLength += 1 + l
+		}
+	}
+	if nextProtosLength > 0xffff {
+		return nil, errors.New("tlcp: NextProtos values too large")
+	}
 	random := make([]byte, 32)
 	// Per TLCP (like TLS 1.2), the first 4 bytes carry gmt_unix_time.
 	binary.BigEndian.PutUint32(random, uint32(time.Now().Unix()))
@@ -54,6 +70,10 @@ func tlcpMakeClientHello(config *tlcpEngineConfig) (*tlcpClientHelloMsg, error) 
 		serverName:                   config.serverName,
 		supportedCurves:              []tlcpCurveID{tlcpCurveSM2},
 		supportedSignatureAlgorithms: []tlcpSignatureScheme{tlcpSigSM2WithSM3},
+		// ALPN 提议：仅在本端配置了 NextProtos 时非空（wire 行为随之变化）；
+		// 空配置不提议 ALPN 扩展，与历史行为逐字节一致。config.nextProtos
+		// 在 configToNative 已做防御性拷贝且此后只读，直接共享切片头。
+		alpnProtocols: config.nextProtos,
 	}, nil
 }
 
@@ -147,11 +167,12 @@ func (c *tlcpConn) clientHandshakeReal() error {
 		return errors.New("tlcp: server selected non-null compression")
 	}
 	c.serverName = config.serverName
-	// ALPN 信任门:服务端选择的协议必须落在客户端实际提议的列表内
-	// (tlcpMakeClientHello 目前从不提议 ALPN,任何选择都是未协商的——
-	// 恶意服务器此前可让 ConnectionState().NegotiatedProtocol 报告任意
-	// 协议,与 tls13gm 已修的 ALPN 信任族同类)。按提议列表而非"列表
-	// 必空"写,未来接线 ALPN 配置时此门语义不变。
+	// ALPN 信任门：服务端选择的协议必须落在客户端实际提议的列表内
+	// （提议列表由 tlcpMakeClientHello 从 Config.NextProtos 填充）。恶意
+	// 服务器选出的未提议协议会让 ConnectionState().NegotiatedProtocol
+	// 报告任意值（与 tls13gm 已修的 ALPN 信任族同类），此处 fail-closed。
+	// 服务端不回 ALPN 扩展视为未协商，客户端按空协议继续——stdlib TLS 1.2
+	// 语义（TLCP 非 QUIC，不适用 RFC 9001 §8.1 的强制协商）。
 	if serverHello.alpnProtocol != "" {
 		offered := false
 		for _, p := range hello.alpnProtocols {
@@ -268,28 +289,17 @@ func (c *tlcpConn) clientHandshakeReal() error {
 			}
 			intermediates.AddCert(ic)
 		}
-		// Verify the signing certificate chain (used for ServerKeyExchange/
-		// CertificateVerify signatures) against the root pool.
-		if err := polluxsmx509.Verify(signCert, polluxsmx509.VerifyOptions{
+		// Verify the server's dual-certificate pair: both chains (and hence
+		// the CA signatures on the sign cert used for ServerKeyExchange/
+		// CertificateVerify and on the enc cert) against the root pool, plus
+		// the pairing constraints (same CA, same subject, correct key usages).
+		if err := polluxsmx509.VerifyDualCertSignatures(signCert, encCert, polluxsmx509.VerifyOptions{
 			Roots:         roots,
 			Intermediates: intermediates,
 			DNSName:       config.serverName,
 			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		}); err != nil {
-			return fmt.Errorf("tlcp: server certificate verification failed: %w", err)
-		}
-		// Verify the encryption certificate chain as well.
-		if err := polluxsmx509.Verify(encCert, polluxsmx509.VerifyOptions{
-			Roots:         roots,
-			Intermediates: intermediates,
-			DNSName:       config.serverName,
-			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		}); err != nil {
-			return fmt.Errorf("tlcp: server encryption certificate verification failed: %w", err)
-		}
-		// Verify dual-cert pairing constraints (same CA, correct key usages).
-		if err := polluxsmx509.VerifyDualCerts(signCert, encCert); err != nil {
-			return fmt.Errorf("tlcp: dual certificate pair validation failed: %w", err)
+			return fmt.Errorf("tlcp: server dual certificate verification failed: %w", err)
 		}
 	}
 

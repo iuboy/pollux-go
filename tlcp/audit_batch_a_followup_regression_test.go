@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -390,5 +391,160 @@ func TestNilConnReceiverGuards(t *testing.T) {
 	var iconn net.Conn = c
 	if err := iconn.Close(); !errors.Is(err, errNilConn) {
 		t.Errorf("typed-nil 接口的 Close 应报 errNilConn，got %v", err)
+	}
+}
+
+// --- F6 discardSession 跨连接误删（身份守卫）---
+
+// TestRemoveIfSession_IdentityGuard 单元：条件删除只对同源（sessionID 相同）
+// 条目生效——异源条目保留（并行连接的新会话不被误删），同源条目删除。
+func TestRemoveIfSession_IdentityGuard(t *testing.T) {
+	cache := NewLRUSessionCache(8).(*lruSessionCache)
+	a := &SessionState{sessionID: []byte{0xAA}, masterSecret: []byte("secret-a"), createdAt: time.Now()}
+	b := &SessionState{sessionID: []byte{0xBB}, masterSecret: []byte("secret-b"), createdAt: time.Now()}
+	const key = "sni:test.example.com"
+	cache.Put(key, a)
+
+	// 异源（B 的会话已接管同键的形态）：保留。
+	if cache.removeIfSession(key, b) {
+		t.Fatal("removeIfSession removed a foreign session")
+	}
+	if got, ok := cache.Get(key); !ok || !bytes.Equal(got.sessionID, a.sessionID) {
+		t.Fatal("foreign-session removal must leave the entry untouched")
+	}
+	// 同源：删除。
+	if !cache.removeIfSession(key, a) {
+		t.Fatal("removeIfSession did not remove the matching session")
+	}
+	if _, ok := cache.Get(key); ok {
+		t.Fatal("matching session not removed")
+	}
+	// want 为 nil：恒不删除（防御）。
+	cache.Put(key, a)
+	if cache.removeIfSession(key, nil) {
+		t.Fatal("removeIfSession with nil want must be a no-op")
+	}
+}
+
+// TestDiscardSession_DoesNotEvictParallelSession 引擎级：连接 A 的拒绝-resume
+// 清理（修复前的无条件删除）不得误删并行连接 B 刚写入同一 sni 键的新会话。
+func TestDiscardSession_DoesNotEvictParallelSession(t *testing.T) {
+	sharedCache := NewLRUSessionCache(8)
+
+	// B 连接已完成全握手，新会话 S_B 在 sni 键与 sessionId 键下。
+	sb := &SessionState{
+		sessionID:    []byte{0x01, 0x02, 0x03},
+		version:      tlcpVersionTLCP,
+		cipherSuite:  SuiteECC_SM2_SM4_GCM_SM3,
+		masterSecret: []byte("secret-b"),
+		createdAt:    time.Now(),
+	}
+	sniKey := sessionCacheKey("", "test.example.com")
+	sharedCache.Put(sniKey, sb)
+	sharedCache.Put(clientSessionKey(sb.sessionID), sb)
+
+	// A 连接的在途会话是死会话 X（在 B 写入 sni 键之前由 A 读取——
+	// 现在服务端拒绝 A 的 resume，A 执行 discardSession）。
+	xa := &SessionState{
+		sessionID:    []byte{0xDE, 0xAD},
+		version:      tlcpVersionTLCP,
+		cipherSuite:  SuiteECC_SM2_SM4_GCM_SM3,
+		masterSecret: []byte("secret-dead"),
+		createdAt:    time.Now(),
+	}
+	clientConfig := &tlcpEngineConfig{
+		rand:               crand.Reader,
+		cipherSuites:       []uint16{SuiteECC_SM2_SM4_GCM_SM3},
+		serverName:         "test.example.com",
+		insecureSkipVerify: true,
+		sessionCache:       sharedCache,
+	}
+	rawA, peerA := net.Pipe()
+	defer func() { _ = rawA.Close(); _ = peerA.Close() }()
+	connA := newTLCPConn(rawA, clientConfig, true)
+	connA.session = xa
+
+	connA.discardSession()
+
+	// A 的 sessionId 键被清除（唯一归属）。
+	if _, ok := sharedCache.Get(clientSessionKey(xa.sessionID)); ok {
+		t.Fatal("dead session's sessionId key not evicted")
+	}
+	// B 的新会话在 sni 键下完好（修复前被 A 的无条件删除误删）。
+	got, ok := sharedCache.Get(sniKey)
+	if !ok || !bytes.Equal(got.sessionID, sb.sessionID) {
+		t.Fatal("parallel connection's fresh session was evicted from the sni key")
+	}
+	// B 的会话仍可正常 resume（后续连接以它恢复）。
+	if !sessionFresh(got) {
+		t.Fatal("surviving session must remain fresh")
+	}
+	// A 本身的在途引用清空。
+	if connA.session != nil {
+		t.Fatal("discardSession must clear the in-flight session reference")
+	}
+}
+
+// customSessionCache 是自定义 SessionCache 实现（非内置 LRU）——验证
+// discardSession 的 Get 比对 + Put(nil) 回退路径同样具备身份守卫。
+type customSessionCache struct {
+	mu sync.Mutex
+	m  map[string]*SessionState
+}
+
+func newCustomSessionCache() *customSessionCache {
+	return &customSessionCache{m: make(map[string]*SessionState)}
+}
+
+func (c *customSessionCache) Get(k string) (*SessionState, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cs, ok := c.m[k]
+	return cs.clone(), ok
+}
+
+func (c *customSessionCache) Put(k string, cs *SessionState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cs == nil {
+		delete(c.m, k)
+		return
+	}
+	c.m[k] = cs
+}
+
+// TestDiscardSession_CustomCacheFallbackGuard 验证自定义缓存的回退路径：
+// 异源 sni 条目保留、同源删除（比对与删除间的窗口已文档化，此处断言常见
+// 串行交错下的守卫行为）。
+func TestDiscardSession_CustomCacheFallbackGuard(t *testing.T) {
+	cache := newCustomSessionCache()
+	sb := &SessionState{sessionID: []byte{0x01}, masterSecret: []byte("b"), createdAt: time.Now()}
+	xa := &SessionState{sessionID: []byte{0xDE, 0xAD}, masterSecret: []byte("dead"), createdAt: time.Now()}
+	cache.Put(sessionCacheKey("", "test.example.com"), sb)
+
+	clientConfig := &tlcpEngineConfig{
+		rand:               crand.Reader,
+		cipherSuites:       []uint16{SuiteECC_SM2_SM4_GCM_SM3},
+		serverName:         "test.example.com",
+		insecureSkipVerify: true,
+		sessionCache:       cache,
+	}
+	rawA, peerA := net.Pipe()
+	defer func() { _ = rawA.Close(); _ = peerA.Close() }()
+	connA := newTLCPConn(rawA, clientConfig, true)
+	connA.session = xa
+	connA.discardSession()
+
+	got, ok := cache.Get(sessionCacheKey("", "test.example.com"))
+	if !ok || !bytes.Equal(got.sessionID, sb.sessionID) {
+		t.Fatal("custom-cache fallback evicted a foreign session from the sni key")
+	}
+
+	// 同源：回退路径删除。
+	cache.Put(sessionCacheKey("", "test.example.com"), xa)
+	connA.session = xa
+	connA.discardSession()
+	if _, ok := cache.Get(sessionCacheKey("", "test.example.com")); ok {
+		t.Fatal("custom-cache fallback did not evict the matching session")
 	}
 }

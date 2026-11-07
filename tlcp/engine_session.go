@@ -1,6 +1,7 @@
 package tlcp
 
 import (
+	"bytes"
 	"container/list"
 	"encoding/hex"
 	"strings"
@@ -161,6 +162,31 @@ func (c *lruSessionCache) Put(sessionKey string, cs *SessionState) {
 		// Zero the evicted master secret so it does not linger.
 		zeroBytes(oldEntry.cs.masterSecret)
 	}
+}
+
+// removeIfSession 仅当 sessionKey 处缓存的会话与 want 同源（sessionID 相同）
+// 时删除该条目，返回是否实际删除。比较与删除在缓存锁内原子完成——并行连接
+// 共享同一身份键（sni/addr）时，另一连接在「本会话读取之后、删除之前」写入
+// 的新会话不会被误删（loss 仅一次重握手的无守卫版本已废弃）。删除时清零被
+// 移除条目的 masterSecret（与 Put(nil)/淘汰的清理语义一致）。
+func (c *lruSessionCache) removeIfSession(sessionKey string, want *SessionState) bool {
+	if want == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	el, ok := c.m[sessionKey]
+	if !ok || el == nil {
+		return false
+	}
+	cur := el.Value.(*lruEntry).cs
+	if cur == nil || !bytes.Equal(cur.sessionID, want.sessionID) {
+		return false // 键已被其他连接的新会话接管：不动
+	}
+	zeroBytes(cur.masterSecret)
+	c.order.Remove(el)
+	delete(c.m, sessionKey)
+	return true
 }
 
 // tlcpSessionKeyHex returns the hex-encoded base for a sessionId cache key.

@@ -434,10 +434,31 @@ func (c *tlcpConn) discardSession() {
 	if c.config == nil || c.config.sessionCache == nil || c.session == nil {
 		return
 	}
-	key := clientSessionKey(c.session.sessionID)
-	c.config.sessionCache.Put(key, nil)
-	c.config.sessionCache.Put(sessionCacheKey(c.conn.RemoteAddr().String(), c.config.serverName), nil)
+	// sessionId 键唯一归属本会话：无条件删除。
+	c.config.sessionCache.Put(clientSessionKey(c.session.sessionID), nil)
+	// sni/addr 键为同一 serverName 的并行连接共享：仅当仍指向本会话时删除。
+	// 无条件删除会误删其他连接刚写入的新会话（如 A 拒绝-resume 的清理窗口
+	// 内 B 已完成全握手并把新会话写入同键），使 B 的下次连接多跑一轮全握手。
+	c.discardSessionIdentityKey()
 	c.session = nil
+}
+
+// discardSessionIdentityKey 条件删除 sni/addr 身份键。内置 LRU 经
+// removeIfSession 在缓存锁内原子完成比对与删除；自定义 SessionCache（仅有
+// Get/Put 面）以 Get 克隆比对 + Put(nil) 尽力而为——比对与删除之间存在窗口
+// （并行连接可在两步之间覆写同键），最坏结果退化为误删一次新会话（损失一次
+// 重握手），概率与影响面均较无守卫版本大幅收敛。
+func (c *tlcpConn) discardSessionIdentityKey() {
+	idKey := sessionCacheKey(c.conn.RemoteAddr().String(), c.config.serverName)
+	if lc, ok := c.config.sessionCache.(*lruSessionCache); ok {
+		lc.removeIfSession(idKey, c.session)
+		return
+	}
+	got, ok := c.config.sessionCache.Get(idKey)
+	if !ok || got == nil || !bytes.Equal(got.sessionID, c.session.sessionID) {
+		return // 键为空或已被其他连接的新会话接管：不动
+	}
+	c.config.sessionCache.Put(idKey, nil)
 }
 
 // createNewClientSession stores the freshly negotiated session so a subsequent

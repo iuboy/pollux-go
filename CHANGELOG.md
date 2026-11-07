@@ -27,6 +27,12 @@ v0.61.0–v0.64.0（quic-go 跟随）标签已从仓库（本地与 GitHub）移
 
 - quic-go subtree 升级 v0.65.0（fork 分歧全部重放零冲突；详见 PATCHES.md v0.65.0 merge note）。依赖升级：gmsm v0.45.2、x/net v0.62.0。
 
+## [0.1.2-2] - 2026-11-07
+
+### Fixed
+
+- **tlcp discardSession 跨连接误删**：客户端拒绝-resume 的清理对 sni/addr 身份键改为**条件删除**——仅当键仍指向被废弃会话（sessionID 比对）时才移除。并行连接共享同一 serverName 时，A 的清理不再误删 B 刚写入的新会话（此前损失一次重握手）。内置 LRU 在缓存锁内原子完成比对与删除（新增 `removeIfSession`）；自定义 SessionCache 经 Get 比对 + Put(nil) 尽力回退（窗口已文档化）。sessionId 键唯一归属、维持无条件删除。回归：身份守卫单元 + 引擎级跨连接场景 + 自定义缓存回退路径。
+
 ## [0.1.2-1] - 2026-11-07
 
 ### Fixed — 第四轮清单外发现收尾（三批并行 + 手工收尾）

@@ -142,10 +142,35 @@ func NewConfig() *Config {
 	}
 }
 
+// validateNextProtos 校验 ALPN 协议名列表（RFC 7301 编码约束）：协议名以
+// uint8 长度前缀上 wire，空名与超 255 字节的名字无法编码；全部名字加总超
+// 0xffff 则装不进扩展的 uint16 列表长度。客户端与服务端共用同一校验——服务
+// 端此前只在协商期发现非法配置（无交集或 ServerHello marshal 深处失败），
+// 现统一在构造期 fail-fast（对齐 AGENTS.md fail-fast 约定与 stdlib
+// makeClientHello 的校验点前移）。
+func validateNextProtos(protos []string) error {
+	nextProtosLength := 0
+	for _, proto := range protos {
+		l := len(proto)
+		if l == 0 || l > 255 {
+			return errors.New("tlcp: invalid NextProtos value")
+		}
+		nextProtosLength += 1 + l
+	}
+	if nextProtosLength > 0xffff {
+		return errors.New("tlcp: NextProtos values too large")
+	}
+	return nil
+}
+
 // configToNative converts a public Config into the engine's tlcpEngineConfig.
 func configToNative(c *Config, isClient bool) (*tlcpEngineConfig, error) {
 	if c == nil {
 		return nil, errors.New("tlcp: config is nil")
+	}
+	// NextProtos 构造期校验（双端同款，见 validateNextProtos）。
+	if err := validateNextProtos(c.NextProtos); err != nil {
+		return nil, err
 	}
 	// Default the version if unset (callers that construct Config{} directly,
 	// like the http package, may leave Version empty). Use a local — do NOT
@@ -431,8 +456,9 @@ func (c *Config) Validate() error {
 }
 
 // deepCopyTLSCertificate creates a deep copy of a tls.Certificate,
-// copying the Certificate [][]byte and SignedCertificateTimestamps fields
-// to prevent shared mutable state between cloned configs.
+// copying the Certificate [][]byte, SignedCertificateTimestamps,
+// SupportedSignatureAlgorithms and OCSPStaple fields to prevent shared
+// mutable state between cloned configs.
 func deepCopyTLSCertificate(cert *tls.Certificate) *tls.Certificate {
 	if cert == nil {
 		return nil
@@ -454,6 +480,13 @@ func deepCopyTLSCertificate(cert *tls.Certificate) *tls.Certificate {
 			clone.SignedCertificateTimestamps[i] = make([]byte, len(sct))
 			copy(clone.SignedCertificateTimestamps[i], sct)
 		}
+	}
+	// SupportedSignatureAlgorithms 同样深拷贝：切片字段遗漏会让 Clone 前后共享
+	// 底层数组，任一侧并发追加/改写即跨 Config 可见（与 Certificate 深拷贝的
+	// 初衷相悖）。
+	if len(cert.SupportedSignatureAlgorithms) > 0 {
+		clone.SupportedSignatureAlgorithms = make([]tls.SignatureScheme, len(cert.SupportedSignatureAlgorithms))
+		copy(clone.SupportedSignatureAlgorithms, cert.SupportedSignatureAlgorithms)
 	}
 	if len(cert.OCSPStaple) > 0 {
 		clone.OCSPStaple = make([]byte, len(cert.OCSPStaple))

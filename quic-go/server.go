@@ -105,7 +105,7 @@ type baseServer struct {
 		qlogwriter.Trace,
 		utils.Logger,
 		protocol.Version,
-	) *wrappedConn
+	) (*wrappedConn, error)
 
 	closeMx sync.Mutex
 	// errorChan is closed when Close is called. This has two effects:
@@ -829,7 +829,7 @@ func (s *baseServer) handleInitialImpl(p receivedPacket, hdr *wire.Header) error
 		return err
 	}
 	s.logger.Debugf("Changing connection ID to %s.", connID)
-	conn = s.newConn(
+	conn, err = s.newConn(
 		ctx,
 		cancel,
 		newSendConn(s.conn, p.remoteAddr, p.info, s.logger),
@@ -850,6 +850,14 @@ func (s *baseServer) handleInitialImpl(p receivedPacket, hdr *wire.Header) error
 		s.logger,
 		hdr.Version,
 	)
+	if err != nil {
+		// 连接构造失败（GM CryptoSetup 初始化失败等）：按 GetConfigForClient
+		// 失败的既有拒绝路径处理——单连接 CONNECTION_REFUSED，进程存活。
+		cancel(err)
+		s.logger.Debugf("Rejecting new connection: %s", err)
+		s.refuseNewConn(p, hdr)
+		return nil
+	}
 	conn.handlePacket(p)
 	// Adding the connection will fail if the client's chosen Destination Connection ID is already in use.
 	// This is very unlikely: Even if an attacker chooses a connection ID that's already in use,

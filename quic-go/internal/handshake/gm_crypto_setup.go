@@ -61,8 +61,15 @@ type GMCryptoSetup struct {
 	// onClientSessionTicket, when non-nil, is invoked once per freshly received
 	// NewSessionTicket (client side only), delivering the identity, the derived
 	// PSK, ticket_age_add, and the server's transport parameters to the
-	// application.
+	// application. 所有入参均为防御性拷贝（第四轮审计 #3）：回调持有的切片
+	// 不会被 Close() 的 Zero() 或内部字段替换波及。回调在 stateMutex 之外
+	// 执行（第四轮审计 #4），可安全调用本 CryptoSetup 的加锁方法。
 	onClientSessionTicket func(identity, psk []byte, ticketAgeAdd uint32, serverParams []byte)
+
+	// pendingSessionTickets 暂存 NewSessionTicket 的应用层交付快照（一次
+	// HandleMessage 可能携带多条 NST 消息，每条一元素），由 HandleMessage 在
+	// 释放 stateMutex 之后按序逐条投递给回调（见其注释）。stateMutex 保护。
+	pendingSessionTickets []*clientSessionTicketEvent
 
 	// Packet-protection codecs, populated lazily as keys become available.
 	initialSealer   LongHeaderSealer
@@ -94,6 +101,16 @@ type GMCryptoSetup struct {
 }
 
 var _ CryptoSetup = &GMCryptoSetup{}
+
+// clientSessionTicketEvent 是一次 NewSessionTicket 的应用层交付数据快照。
+// 全部切片在快照时即做防御性拷贝：回调可以在任意时机长期持有它们，不被
+// 内部字段的 Zero() / 替换影响（第四轮审计 #3）。
+type clientSessionTicketEvent struct {
+	identity     []byte
+	psk          []byte
+	ticketAgeAdd uint32
+	serverParams []byte
+}
 
 // NewGMCryptoSetupClient builds a client-side GMCryptoSetup. clientCfg supplies
 // the TLS configuration (server name, roots, …); its DCID and TransportParameters
@@ -277,18 +294,35 @@ func (g *GMCryptoSetup) savedParamsValidFor0RTT() bool {
 // The data may carry several concatenated handshake messages; each is split out
 // and dispatched by (perspective, encryption level, message type). Handshake
 // progress produces Events consumed later by the connection layer.
+//
+// GMOnClientSessionTicket 回调必须在 stateMutex 之外执行（第四轮审计 #4）：
+// 此前在锁内调用，回调一旦触碰 ConnectionState/ClientSessionTicket 等加锁
+// 方法即自死锁。此处先在锁内完成全部握手处理并快照回调数据
+// （pendingSessionTickets），释放锁后再投递——回调运行在连接的握手 goroutine
+// 上，阻塞回调会延迟该连接，但不会死锁。
 func (g *GMCryptoSetup) HandleMessage(data []byte, encLevel protocol.EncryptionLevel) error {
 	g.stateMutex.Lock()
-	defer g.stateMutex.Unlock()
 	for len(data) > 0 {
 		msgType, _, n, err := tls13gm.ReadHandshakeMessage(data)
 		if err != nil {
+			g.stateMutex.Unlock()
 			return fmt.Errorf("handshake: GM parse message at %s: %w", encLevel, err)
 		}
 		msg := append([]byte(nil), data[:n]...) // copy: tls13gm may retain slices
 		data = data[n:]
 		if err := g.handleOneMessage(msgType, msg, encLevel); err != nil {
+			g.stateMutex.Unlock()
 			return err
+		}
+	}
+	evs := g.pendingSessionTickets
+	g.pendingSessionTickets = nil
+	g.stateMutex.Unlock()
+	// 每条 NewSessionTicket 独立投递一次回调,与旧(锁内)实现「每 NST 恰好
+	// 一次」的契约保持一致。
+	if g.onClientSessionTicket != nil {
+		for _, ev := range evs {
+			g.onClientSessionTicket(ev.identity, ev.psk, ev.ticketAgeAdd, ev.serverParams)
 		}
 	}
 	return nil
@@ -373,12 +407,19 @@ func (g *GMCryptoSetup) handleOneClient(msgType uint8, msg []byte, encLevel prot
 			if err != nil {
 				return fmt.Errorf("handshake: GM process NewSessionTicket: %w", err)
 			}
-			g.clientSessionIdentity = identity
-			g.clientSessionPSK = psk
+			// 内部字段与回调入参各存一份防御性拷贝（第四轮审计 #3）：tls13gm
+			// 返回的切片可能引用 handshaker 内部状态；回调持有的副本不被
+			// Close() 对 clientSessionPSK 的 Zero() 波及。回调本体由
+			// HandleMessage 在锁外投递（见其注释）。
+			g.clientSessionIdentity = append([]byte(nil), identity...)
+			g.clientSessionPSK = append([]byte(nil), psk...)
 			g.clientTicketAgeAdd = ageAdd
-			if g.onClientSessionTicket != nil {
-				g.onClientSessionTicket(identity, psk, ageAdd, g.peerParamsRaw)
-			}
+			g.pendingSessionTickets = append(g.pendingSessionTickets, &clientSessionTicketEvent{
+				identity:     append([]byte(nil), identity...),
+				psk:          append([]byte(nil), psk...),
+				ticketAgeAdd: ageAdd,
+				serverParams: append([]byte(nil), g.peerParamsRaw...),
+			})
 			return nil
 		default:
 			return fmt.Errorf("handshake: GM unexpected 1-RTT message type %d", msgType)
@@ -808,10 +849,17 @@ func (g *GMCryptoSetup) GetSessionTicket() ([]byte, error) {
 // Feed them back as ClientConfig.ResumptionIdentity / ResumptionPSK /
 // ResumptionObfuscatedTicketAge. Not part of the CryptoSetup interface; cast
 // to *GMCryptoSetup to access.
+//
+// 返回值是内部切片的防御性拷贝（第四轮审计 #3）：调用方可任意缓存、复用或
+// 改写返回的切片，不会读写内部状态；内部状态在 Close() 时被 Zero()，也
+// 不会把调用方已持有的副本一并清零（此前直接返回内部切片，「Feed them
+// back」的文档语义因此并不安全）。
 func (g *GMCryptoSetup) ClientSessionTicket() (identity, psk []byte, ticketAgeAdd uint32) {
 	g.stateMutex.Lock()
 	defer g.stateMutex.Unlock()
-	return g.clientSessionIdentity, g.clientSessionPSK, g.clientTicketAgeAdd
+	identity = append([]byte(nil), g.clientSessionIdentity...)
+	psk = append([]byte(nil), g.clientSessionPSK...)
+	return identity, psk, g.clientTicketAgeAdd
 }
 
 // Close is invoked by quic-go when the connection is torn down. We use it to

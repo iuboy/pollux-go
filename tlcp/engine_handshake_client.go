@@ -39,21 +39,13 @@ func tlcpMakeClientHello(config *tlcpEngineConfig) (*tlcpClientHelloMsg, error) 
 		// 矛盾——直接配置 tlcpEngineConfig 的调用方会静默降级。
 		suites = DefaultCipherSuites()
 	}
-	// NextProtos 校验与 stdlib makeClientHello 对齐：ALPN 协议名以 uint8
-	// 长度前缀上 wire（RFC 7301 §3.1），空名与超 255 字节的名字无法编码；
-	// 全部名字加总超 0xffff 则装不进扩展的 uint16 列表长度。此处报错而非
-	// 等 marshal 深处失败——mustMarshal 对 marshal 错误 panic，校验前移后
-	// 非法配置只会得到显式 error（fail-closed）。
-	nextProtosLength := 0
-	for _, proto := range config.nextProtos {
-		if l := len(proto); l == 0 || l > 255 {
-			return nil, errors.New("tlcp: invalid NextProtos value")
-		} else {
-			nextProtosLength += 1 + l
-		}
-	}
-	if nextProtosLength > 0xffff {
-		return nil, errors.New("tlcp: NextProtos values too large")
+	// NextProtos 校验与 stdlib makeClientHello 对齐（编码约束详见
+	// validateNextProtos）：经 Client()/configToNative 构造的连接已在构造期
+	// 校验过，此处兜底直构 tlcpEngineConfig 的调用方（引擎级测试/内嵌方）——
+	// mustMarshal 对 marshal 错误 panic，校验兜底后非法配置只会得到显式
+	// error（fail-closed）。
+	if err := validateNextProtos(config.nextProtos); err != nil {
+		return nil, err
 	}
 	random := make([]byte, 32)
 	// Per TLCP (like TLS 1.2), the first 4 bytes carry gmt_unix_time.
@@ -435,7 +427,7 @@ func (c *tlcpConn) discardSession() {
 	if c.config == nil || c.config.sessionCache == nil || c.session == nil {
 		return
 	}
-	key := tlcpSessionKeyHex(c.session.sessionID)
+	key := clientSessionKey(c.session.sessionID)
 	c.config.sessionCache.Put(key, nil)
 	c.config.sessionCache.Put(sessionCacheKey(c.conn.RemoteAddr().String(), c.config.serverName), nil)
 	c.session = nil
@@ -460,7 +452,7 @@ func (c *tlcpConn) createNewClientSession(serverHello *tlcpServerHelloMsg, maste
 		peerCertificates: peerCertsCopy,
 		createdAt:        time.Now(),
 	}
-	key := tlcpSessionKeyHex(sess.sessionID)
+	key := clientSessionKey(sess.sessionID)
 	c.config.sessionCache.Put(key, sess)
 	c.config.sessionCache.Put(sessionCacheKey(c.conn.RemoteAddr().String(), c.config.serverName), sess)
 }

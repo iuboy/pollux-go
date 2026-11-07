@@ -168,3 +168,18 @@ func TestPBKDF2_RejectsEmptySalt(t *testing.T) {
 		t.Fatalf("非空盐(RFC 向量的 4 字节盐)应被接受: %v", err)
 	}
 }
+
+// TestPBKDF2_RejectsOversizedSalt 锁定第四轮审查 P3:盐无上限时,来自不可信
+// 输入(PHC 字符串、ASN.1)的超长盐会放大派生的内存足迹。上限 64 KiB
+// (MaxSaltLen):超限报 ErrSaltTooLong;边界值(恰好 64 KiB)仍被接受。
+func TestPBKDF2_RejectsOversizedSalt(t *testing.T) {
+	big := make([]byte, MaxSaltLen+1)
+	if _, err := PBKDF2([]byte("password"), big, 1, 16, sha1.New); err == nil {
+		t.Fatal("超限盐(MaxSaltLen+1)应被拒绝")
+	} else if !errors.Is(err, ErrSaltTooLong) {
+		t.Fatalf("应返回 ErrSaltTooLong, got %v", err)
+	}
+	if _, err := PBKDF2([]byte("password"), make([]byte, MaxSaltLen), 1, 16, sha1.New); err != nil {
+		t.Fatalf("边界盐(恰好 MaxSaltLen)应被接受: %v", err)
+	}
+}

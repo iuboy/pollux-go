@@ -43,11 +43,11 @@ func (c *tlcpConn) establishKeys(suite *tlcpCipherSuite, masterSecret, clientRan
 		if err != nil {
 			return err
 		}
-		c.in.prepareCipherSpec(c.vers, nil, readAEAD, nil, nil)
-		c.out.prepareCipherSpec(c.vers, nil, writeAEAD, nil, nil)
+		c.in.prepareCipherSpec(nil, readAEAD, nil, nil)
+		c.out.prepareCipherSpec(nil, writeAEAD, nil, nil)
 	} else {
-		c.in.prepareCipherSpec(c.vers, readKey, nil, hmacSM3Size{}, readMAC)
-		c.out.prepareCipherSpec(c.vers, writeKey, nil, hmacSM3Size{}, writeMAC)
+		c.in.prepareCipherSpec(readKey, nil, hmacSM3Size{}, readMAC)
+		c.out.prepareCipherSpec(writeKey, nil, hmacSM3Size{}, writeMAC)
 	}
 	return nil
 }
@@ -117,6 +117,12 @@ func (e alertError) Error() string {
 // failures). See decrypt's CBC branch.
 var errDecrypt = errors.New("tlcp: bad record MAC")
 
+// errHalfConnDestroyed 是 halfConn 被 destroy（密钥清零）后的读写失败哨兵：
+// 该状态下不存在可用加密状态，任何记录操作都必须显式失败，而不是回退明文
+// 路径（见 encrypt/decrypt 的 destroyed 检查）。语义对齐 stdlib 的
+// 「use of closed connection」。
+var errHalfConnDestroyed = errors.New("tlcp: use of closed connection")
+
 // Handshake-message size caps, mirroring crypto/tls: a 3-byte length field
 // would otherwise let a malicious peer buffer up to ~16MB per connection.
 // Certificate messages legitimately carry multi-cert chains and get the
@@ -135,8 +141,6 @@ const (
 type tlcpHalfConn struct {
 	mu sync.Mutex
 
-	version uint16
-
 	// Current encryption state. Exactly one of cbcKey/aead is non-nil once keys
 	// are established; both are nil during the initial plaintext phase. For CBC,
 	// the key+IV are re-applied per record (TLCP carries a fresh IV each record).
@@ -152,6 +156,13 @@ type tlcpHalfConn struct {
 	nextAEAD        *tlcpPrefixNonceAEAD
 	nextMAC         tlcpMAC
 	nextMACKeyBytes []byte
+
+	// destroyed marks the halfConn as permanently unusable (destroy zeroed the
+	// key material). encrypt/decrypt refuse to operate once set — without this
+	// gate a post-destroy record (double Close, teardown-timeout paths) would
+	// silently fall through to the PLAINTEXT branch (or worse, CBC-seal with a
+	// zeroed key), emitting unprotected application data on the wire.
+	destroyed bool
 }
 
 // tlcpMAC is the minimal interface for a CBC-suite MAC (a hash.Hash satisfies
@@ -160,9 +171,11 @@ type tlcpMAC interface {
 	Size() int
 }
 
-// destroy zeroes all key material held by this halfConn (connection teardown).
-// The AEAD's expanded GCM subkeys live inside cipher.AEAD and cannot be
-// zeroed — matching crypto/tls, which also only clears what it owns.
+// destroy zeroes all key material held by this halfConn (connection teardown)
+// and marks it destroyed: subsequent encrypt/decrypt calls fail instead of
+// falling through to the plaintext branch. The AEAD's expanded GCM subkeys
+// live inside cipher.AEAD and cannot be zeroed — matching crypto/tls, which
+// also only clears what it owns.
 func (hc *tlcpHalfConn) destroy() {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
@@ -170,12 +183,18 @@ func (hc *tlcpHalfConn) destroy() {
 	zeroBytes(hc.macKeyBytes)
 	zeroBytes(hc.nextCBCKey)
 	zeroBytes(hc.nextMACKeyBytes)
+	hc.destroyed = true
 }
 
 // prepareCipherSpec stages a new cipher/MAC for activation on the next CCS.
 // For CBC suites pass cbcKey + macKeyBytes; for AEAD pass aead (others nil).
-func (hc *tlcpHalfConn) prepareCipherSpec(version uint16, cbcKey []byte, aead *tlcpPrefixNonceAEAD, mac tlcpMAC, macKeyBytes []byte) {
-	hc.version = version
+//
+// 持 hc.mu：establishKeys（握手 goroutine）与 destroy（Close 拆连路径）可并
+// 发到达同一 halfConn，staged 密钥字段与 destroy 清零的是同一批地址，无锁
+// 写与持锁清零构成数据竞争（-race 实测）。
+func (hc *tlcpHalfConn) prepareCipherSpec(cbcKey []byte, aead *tlcpPrefixNonceAEAD, mac tlcpMAC, macKeyBytes []byte) {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
 	hc.nextCBCKey = cbcKey
 	hc.nextAEAD = aead
 	hc.nextMAC = mac
@@ -218,7 +237,16 @@ func (hc *tlcpHalfConn) incSeq() error {
 // encrypt seals a plaintext record payload into the on-wire ciphertext record.
 // `record` is the 5-byte header (length field will be overwritten). Returns the
 // full record (header + ciphertext).
+//
+// destroyed 检查（在明文回退判断之前）：destroy 清零密钥后到达的写请求（双
+// 重 Close、teardown 告警超时等拆连竞态）MUST 报错而非回退明文——回退会把
+// 应用数据裸奔上 wire；CBC 场景更糟，zeroBytes 只清元素不清长度，会以全零
+// 密钥继续加密。调用方 writeRecord 持 out.mu（= hc.mu），与 destroy 的置位
+// 同锁，读取无竞争。
 func (hc *tlcpHalfConn) encrypt(record []byte, payload []byte) ([]byte, error) {
+	if hc.destroyed {
+		return nil, errHalfConnDestroyed
+	}
 	if hc.cbcKey == nil && hc.aead == nil {
 		// Plaintext phase: just append.
 		return append(record, payload...), nil
@@ -277,6 +305,11 @@ func (hc *tlcpHalfConn) encrypt(record []byte, payload []byte) ([]byte, error) {
 
 // decrypt unwraps a received record into its plaintext payload + record type.
 // `record` is the full 5-byte-header + ciphertext.
+//
+// destroyed 检查（在明文回退判断之前）：同 encrypt——destroy 后到达的入站
+// 记录不得按明文解析，否则对端（或线路注入者）在拆连竞态窗口内发送的未加
+// 密记录会被当作合法握手/应用数据消费。调用方 readRecord 持 in.mu（= hc.mu），
+// 与 destroy 的置位同锁，读取无竞争。
 func (hc *tlcpHalfConn) decrypt(record []byte) ([]byte, tlcpRecordType, error) {
 	if len(record) < tlcpRecordHeaderLen {
 		return nil, 0, errors.New("tlcp: record too short")
@@ -284,6 +317,9 @@ func (hc *tlcpHalfConn) decrypt(record []byte) ([]byte, tlcpRecordType, error) {
 	typ := tlcpRecordType(record[0])
 	payload := record[tlcpRecordHeaderLen:]
 
+	if hc.destroyed {
+		return nil, 0, errHalfConnDestroyed
+	}
 	if hc.cbcKey == nil && hc.aead == nil {
 		return payload, typ, nil // plaintext phase
 	}
@@ -386,6 +422,19 @@ type tlcpConn struct {
 	// goroutines to call Read simultaneously (crypto/tls serializes with an
 	// in.Lock around the same surface).
 	readMu sync.Mutex
+
+	// writeMu serializes whole Write calls (and Close's close_notify alert) so
+	// one Write's record sequence cannot be split by a concurrent Write or a
+	// teardown alert — crypto/tls holds its write lock across the ENTIRE Write
+	// call, and this conn matches that contract (see Write's doc). out.mu alone
+	// is insufficient: it is taken per record inside writeRecord, so a 64KB
+	// Write (4 records) could otherwise interleave with another writer between
+	// fragments. Lock order: writeMu → out.mu. Never acquire writeMu while
+	// holding handshakeMutex (the handshake-failure alert path in
+	// HandshakeContext deliberately skips writeMu for this reason — a concurrent
+	// Write blocks inside Handshake() there, so no app-data record can be
+	// mid-flight around that alert).
+	writeMu sync.Mutex
 
 	// Decrypted handshake bytes awaiting parse, and decrypted app data awaiting Read.
 	hand      bytes.Buffer
@@ -506,6 +555,10 @@ func (c *tlcpConn) HandshakeContext(ctx context.Context) (ret error) {
 	// instead of a bare TCP close (crypto/tls alerts on every handshake error
 	// path). The write is bounded by a deadline; errors are ignored — the
 	// handshake has already failed and Close will tear the transport down.
+	// 刻意不取 writeMu：此处已持 handshakeMutex，而并发 Write 持 writeMu 阻塞
+	// 在 Handshake() 内取 handshakeMutex——再取 writeMu 即锁序倒置死锁。该窗口
+	// 内不存在在途应用数据记录（Write 在握手完成前不产生记录），不取锁无损
+	// Write 原子性语义。
 	_ = c.conn.SetWriteDeadline(time.Now().Add(tlcpCloseNotifyTimeout))
 	_ = c.writeRecord(tlcpRecordAlert, []byte{tlcpAlertLevelError, tlcpAlertHandshakeFailure})
 	_ = c.flush()
@@ -590,12 +643,20 @@ func (c *tlcpConn) Read(b []byte) (int, error) {
 }
 
 // Write encrypts and sends application data.
+//
+// 原子性语义（对齐 crypto/tls）：一次 Write 调用的全部记录在 wire 上连续出
+// 现，不会被并发 Write 或 Close 的 close_notify 切开——整个调用期间持
+// writeMu（writeRecord 内部的 out.mu 只保证单条记录的加密+发送原子性，不
+// 够覆盖多记录 Write）。返回值 n 仅在 err == nil 时等于 len(b)；中途失败时
+// n 是已完整发出的字节数，调用方按 TLS 惯例应视连接为损坏并放弃。
 func (c *tlcpConn) Write(b []byte) (int, error) {
 	if atomic.LoadUint32(&c.handshakeStatus) == 0 {
 		if err := c.Handshake(); err != nil {
 			return 0, err
 		}
 	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	// Fragment into max-plaintext records.
 	total := 0
 	for len(b) > 0 {
@@ -622,11 +683,18 @@ const tlcpCloseNotifyTimeout = 5 * time.Second
 // connection, then zeroes the traffic keys held by both half-conns. Both the
 // alert write and Close itself are bounded by tlcpCloseNotifyTimeout even on
 // transports whose Close does not unblock a pending Write.
+//
+// 告警 goroutine 持 writeMu：close_notify 不得切开一次进行中的 Write（Write
+// 原子性语义，见 Write doc）。若 Write 正阻塞在对端不读的 transport 上，本
+// 函数的 conn.Close()（见下）会解除其阻塞、让出 writeMu；最坏情况下告警
+// goroutine 等锁至 tlcpCloseNotifyTimeout 由写截止时间兜底退出。
 func (c *tlcpConn) Close() error {
 	_ = c.conn.SetWriteDeadline(time.Now().Add(tlcpCloseNotifyTimeout))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		c.writeMu.Lock()
+		defer c.writeMu.Unlock()
 		// Errors are ignored: the connection is being torn down and the peer
 		// may already have closed its side.
 		_ = c.writeRecord(tlcpRecordAlert, []byte{tlcpAlertLevelWarning, tlcpAlertCloseNotify})

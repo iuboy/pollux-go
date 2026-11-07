@@ -25,7 +25,7 @@ func TestServerHandshake_DeclinedPSKNoEarlyKeys(t *testing.T) {
 	psk := bytes.Repeat([]byte{0x3C}, sm3.Size)
 	rightTek := bytes.Repeat([]byte{0x9B}, SessionTicketKeyLen)
 	wrongTek := bytes.Repeat([]byte{0x44}, SessionTicketKeyLen)
-	identity, err := EncryptSessionTicket(rightTek, psk, 0)
+	identity, err := EncryptSessionTicket(rightTek, psk, 0, testTicketLifetime)
 	if err != nil {
 		t.Fatalf("EncryptSessionTicket: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestHandleHelloRetryRequest_WithdrawsEarlyData(t *testing.T) {
 	dcid := []byte{0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8}
 	psk := bytes.Repeat([]byte{0x5A}, sm3.Size)
 	tek := bytes.Repeat([]byte{0x6B}, SessionTicketKeyLen)
-	identity, err := EncryptSessionTicket(tek, psk, 0)
+	identity, err := EncryptSessionTicket(tek, psk, 0, testTicketLifetime)
 	if err != nil {
 		t.Fatalf("EncryptSessionTicket: %v", err)
 	}

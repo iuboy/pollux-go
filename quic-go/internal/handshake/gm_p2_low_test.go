@@ -28,7 +28,7 @@ func gmAccepted0RTTServerPair(t *testing.T) (client, server *GMCryptoSetup) {
 	psk := bytes32(0xE2)
 	params := gmRestoreServerParams(t)
 	savedRaw := params.Marshal(protocol.PerspectiveServer)
-	identity, err := tls13gm.EncryptSessionTicketWithData(tek, psk, 0, savedRaw)
+	identity, err := tls13gm.EncryptSessionTicketWithData(tek, psk, 0, 7200, savedRaw)
 	if err != nil {
 		t.Fatalf("EncryptSessionTicketWithData: %v", err)
 	}

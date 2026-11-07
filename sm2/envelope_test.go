@@ -3,6 +3,7 @@ package sm2_test
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"testing"
 
 	"github.com/iuboy/pollux-go/sm2"
@@ -172,6 +173,44 @@ func TestEnvelopeSM4_WrongKey(t *testing.T) {
 	_, err := sm2.EnvelopeDecryptSM4(priv2, encKey, nonce, ct)
 	if err == nil {
 		t.Error("should reject decryption with wrong key")
+	}
+}
+
+// TestEnvelopeSM4_MalformedNonceReturnsErrorNotPanic 是第四轮审计 P1 的回归
+// 守卫:EnvelopeDecryptSM4 旧实现在 aead.Open 前不校验 nonce 长度,而
+// cipher.AEAD.Open 对错误长度的 nonce 是 panic——网络来源的畸形 nonce 构成
+// 远程可触发的进程崩溃。复现路径沿用审计报告:先 EnvelopeEncryptSM4 构造
+// 合法 encryptedKey(绕过 SM2 解包层),再传入截断的 nonce。修复后必须返回
+// 统一不透明错误(与其他解密失败不可区分,不新增 oracle)而非 panic。
+func TestEnvelopeSM4_MalformedNonceReturnsErrorNotPanic(t *testing.T) {
+	priv, err := sm2.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext := []byte("malformed nonce regression")
+	encKey, nonce, ct, err := sm2.EnvelopeEncryptSM4(&priv.PublicKey, plaintext)
+	if err != nil {
+		t.Fatalf("EnvelopeEncryptSM4: %v", err)
+	}
+	if len(nonce) != 12 {
+		t.Fatalf("precondition: GCM nonce length = %d, want 12", len(nonce))
+	}
+
+	for name, bad := range map[string][]byte{
+		"11 bytes": nonce[:11],
+		"13 bytes": append(append([]byte(nil), nonce...), 0xAB),
+		"empty":    {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// panic 在此即为回归。
+			_, err := sm2.EnvelopeDecryptSM4(priv, encKey, bad, ct)
+			if err == nil {
+				t.Errorf("malformed nonce (%s) unexpectedly decrypted", name)
+			}
+			if !errors.Is(err, sm2.ErrDecryptFailed) {
+				t.Errorf("malformed nonce (%s) err = %v, want the single opaque ErrDecryptFailed (no new oracle)", name, err)
+			}
+		})
 	}
 }
 

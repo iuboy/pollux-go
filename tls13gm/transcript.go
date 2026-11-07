@@ -1,6 +1,7 @@
 package tls13gm
 
 import (
+	"errors"
 	"hash"
 
 	"github.com/iuboy/pollux-go/sm3"
@@ -72,12 +73,20 @@ func (t *Transcript) Sum() []byte {
 // normally. clientHello1 is the full ClientHello1 message (4-byte header +
 // body); hrr is the full HelloRetryRequest message (a ServerHello carrying the
 // sentinel random).
-func (t *Transcript) ResetForHelloRetry(clientHello1, hrr []byte) {
+//
+// 第四轮审计 P3:此前对短于 4 字节头的 hrr 静默跳过(转写不含 HRR,两侧
+// transcript 从此 desync 且无任何报告)。导出 API 不得静默 desync——现返回
+// error,且先校验后清空,出错时转写保持原样。调用方(客户端
+// HandleHelloRetryRequest)在解出合法 HRR 消息后才调用本方法,故该路径
+// 实际不可达;防御性返回仅为守住"永不静默 desync"的契约。
+func (t *Transcript) ResetForHelloRetry(clientHello1, hrr []byte) error {
+	if len(hrr) < 4 {
+		return errors.New("tls13gm: transcript: HelloRetryRequest message shorter than the 4-byte handshake header")
+	}
 	hash1 := sm3.Sum(clientHello1)
 	t.buf = t.buf[:0]
 	t.h.Reset()
 	t.AddMessage(HandshakeTypeMessageHash, hash1[:])
-	if len(hrr) >= 4 {
-		t.AddMessage(HandshakeTypeServerHello, hrr[4:])
-	}
+	t.AddMessage(HandshakeTypeServerHello, hrr[4:])
+	return nil
 }

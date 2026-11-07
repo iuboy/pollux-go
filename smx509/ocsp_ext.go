@@ -270,6 +270,11 @@ func ExtractOCSPRequestNonce(reqBytes []byte) []byte {
 // CreateOCSPResponseExt's Nonce field: a client that sent a nonce uses it to
 // bind the response to its request (RFC 6960 §4.4.1: on mismatch the response
 // MUST be rejected as replayed/forged).
+//
+// RFC 8954 §2.3 makes the nonce an exactly-once extension: a response
+// carrying two or more nonce extensions is reported as malformed (mirroring
+// the request-side behavior of ExtractOCSPRequestNonce), rather than
+// silently returning whichever copy the DER order happens to place first.
 func ResponseNonce(respDER []byte) ([]byte, error) {
 	var outer extResponseASN1
 	rest, err := asn1.Unmarshal(respDER, &outer)
@@ -288,22 +293,36 @@ func ResponseNonce(respDER []byte) ([]byte, error) {
 	} else if len(rest2) > 0 {
 		return nil, errors.New("smx509: trailing data in basic OCSP response")
 	}
+	// RFC 8954 §2.3：nonce 扩展必须恰好出现一次。此前命中即 return，第二个
+	// nonce OID 静默丢失，取值取决于 DER 顺序——与请求侧
+	// （ExtractOCSPRequestNonce 的重复即拒）不一致。这里改为遍历全部扩展，
+	// 遇到第二个 nonce OID 即报 malformed，与请求侧对齐。
+	found := false
+	var nonceValue []byte
 	for _, ext := range basic.TBSResponseData.ResponseExtensions {
-		if ext.Id.Equal(oidExtOCSPNonce) {
-			var nonce []byte
-			if _, err := asn1.Unmarshal(ext.Value, &nonce); err != nil {
-				return nil, fmt.Errorf("smx509: malformed OCSP nonce extension: %w", err)
-			}
-			// An empty OCTET STRING decodes to a non-nil zero-length slice,
-			// indistinguishable from "valid nonce" by bytes.Equal at the
-			// caller — report it as malformed instead.
-			if len(nonce) == 0 {
-				return nil, errors.New("smx509: OCSP nonce extension is empty")
-			}
-			return nonce, nil
+		if !ext.Id.Equal(oidExtOCSPNonce) {
+			continue
 		}
+		if found {
+			return nil, errors.New("smx509: duplicate OCSP nonce extension in response (RFC 8954 §2.3 requires exactly once)")
+		}
+		var nonce []byte
+		if _, err := asn1.Unmarshal(ext.Value, &nonce); err != nil {
+			return nil, fmt.Errorf("smx509: malformed OCSP nonce extension: %w", err)
+		}
+		// An empty OCTET STRING decodes to a non-nil zero-length slice,
+		// indistinguishable from "valid nonce" by bytes.Equal at the
+		// caller — report it as malformed instead.
+		if len(nonce) == 0 {
+			return nil, errors.New("smx509: OCSP nonce extension is empty")
+		}
+		found = true
+		nonceValue = nonce
 	}
-	return nil, nil // no nonce present — not an error
+	if !found {
+		return nil, nil // no nonce present — not an error
+	}
+	return nonceValue, nil
 }
 
 // minOCSPNonceLen is the minimum nonce length accepted by both the

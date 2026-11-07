@@ -205,6 +205,7 @@ func (c *tlcpConn) serverHandshakeReal() error {
 	var clientSignPub *ecdsa.PublicKey
 	var clientEncPub *ecdsa.PublicKey
 	var clientSignCert *x509.Certificate
+	var clientEncCert *x509.Certificate
 	if wantClientCert {
 		ccData, err := c.readHandshake(transcript)
 		if err != nil {
@@ -228,7 +229,7 @@ func (c *tlcpConn) serverHandshakeReal() error {
 			clientSignPub = pub
 		}
 		if len(cc.certificates) >= 2 {
-			clientEncCert, err := polluxsmx509.ParseCertificate(cc.certificates[1])
+			clientEncCert, err = polluxsmx509.ParseCertificate(cc.certificates[1])
 			if err != nil {
 				return fmt.Errorf("tlcp: parse client enc cert: %w", err)
 			}
@@ -251,7 +252,7 @@ func (c *tlcpConn) serverHandshakeReal() error {
 		if (config.clientAuth == RequireAnyClientCert || config.clientAuth == RequireAndVerifyClientCert) && clientSignCert == nil {
 			return errors.New("tlcp: client did not provide a certificate")
 		}
-		// 客户端签名证书链校验：防 rogue（不受信 CA 签发的）客户端证书。
+		// 客户端证书链校验：防 rogue（不受信 CA 签发的）客户端证书。
 		// CertificateVerify 只证明私钥持有，不证明 CA 信任链；此处补链校验。
 		// config.clientRoots 仅在 ClientAuth >= VerifyClientCertIfGiven 且配置了
 		// ClientCACertificates 时非 nil。
@@ -267,13 +268,11 @@ func (c *tlcpConn) serverHandshakeReal() error {
 				return errors.New("tlcp: client did not provide a certificate")
 			}
 			// VerifyClientCertIfGiven / RequireAndVerifyClientCert：给了就验。
-			// KeyUsages=ClientAuth：客户端证书应含 ExtKeyUsageClientAuth
-			// （否则 stdlib/gmsm 默认按 ServerAuth 校验会误拒）。
+			// 双证时验双链（VerifyDualCertSignatures 含 enc 证书链 + 配对约束），
+			// 见 verifyClientCertChain——仅验 sign 链会放行 enc 证书由攻击者
+			// CA 签发的客户端（PMS 用 enc 公钥加密，enc 证书不受信即 PMS 泄露面）。
 			if clientSignCert != nil {
-				if err := polluxsmx509.Verify(clientSignCert, polluxsmx509.VerifyOptions{
-					Roots:     config.clientRoots,
-					KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-				}); err != nil {
+				if err := verifyClientCertChain(clientSignCert, clientEncCert, config.clientRoots); err != nil {
 					return fmt.Errorf("tlcp: client certificate verification failed: %w", err)
 				}
 			}
@@ -358,11 +357,18 @@ func (c *tlcpConn) serverHandshakeReal() error {
 // lookupResumedSession checks the session cache for the client's offered
 // sessionId. Returns the cached session if it matches the negotiated version
 // and cipher suite, else nil.
+//
+// mTLS 策略绑定（RequireAndVerifyClientCert + clientRoots）：resume 命中的
+// 会话必须携带缓存 peerCertificates 且对其重跑链验证（abbreviated handshake
+// 无 Certificate/CertificateVerify 消息，客户端身份完全由缓存会话承载）。验证
+// 失败（证书过期/被吊销换链/缓存条目被伪造）→ 放弃 resume 返回 nil，走全握
+// 手重新认证——不报错中断，与 stdlib TLS 1.2 的 resume 语义一致。无 mTLS 要求
+// 时维持原语义（仅 version+suite 匹配）。
 func (c *tlcpConn) lookupResumedSession(clientHello *tlcpClientHelloMsg, suite *tlcpCipherSuite) *SessionState {
 	if c.config == nil || c.config.sessionCache == nil || len(clientHello.sessionID) == 0 {
 		return nil
 	}
-	sess, ok := c.config.sessionCache.Get(tlcpSessionKeyHex(clientHello.sessionID))
+	sess, ok := c.config.sessionCache.Get(serverSessionKey(clientHello.sessionID))
 	if !ok || sess == nil {
 		return nil
 	}
@@ -372,7 +378,47 @@ func (c *tlcpConn) lookupResumedSession(clientHello *tlcpClientHelloMsg, suite *
 	if sess.version != c.vers || sess.cipherSuite != suite.id {
 		return nil
 	}
+	// clientRoots 仅在 ClientAuth >= VerifyClientCertIfGiven 且配置了
+	// ClientCACertificates 时非 nil；此处再限定 RequireAndVerifyClientCert
+	// （强制验链模式），与 Config 路径下二者等价、直构 engine config 时不会
+	// 把可选验链模式误判为强制。
+	if c.config.clientAuth == RequireAndVerifyClientCert && c.config.clientRoots != nil {
+		if len(sess.peerCertificates) == 0 {
+			return nil // 缓存会话未绑定客户端身份：不可 resume
+		}
+		signCert, err := polluxsmx509.ParseCertificate(sess.peerCertificates[0])
+		if err != nil {
+			return nil
+		}
+		var encCert *x509.Certificate
+		if len(sess.peerCertificates) >= 2 {
+			encCert, err = polluxsmx509.ParseCertificate(sess.peerCertificates[1])
+			if err != nil {
+				return nil
+			}
+		}
+		if verifyClientCertChain(signCert, encCert, c.config.clientRoots) != nil {
+			return nil // 链验证失败：放弃 resume，走全握手
+		}
+	}
 	return sess
+}
+
+// verifyClientCertChain 校验客户端证书链（服务端 mTLS，全握手与 resume 共用）。
+// signCert 必须非 nil；encCert 为 nil（客户端只发单证）时退化为仅验 sign 链，
+// 双证时走 VerifyDualCertSignatures——除两条链各自到根的验证外，还强制配对
+// 约束（同 CA、同 subject、正确的 sign/enc KeyUsage）。KeyUsages 恒为
+// ExtKeyUsageClientAuth：客户端证书应含 ClientAuth EKU（默认 ServerAuth 会
+// 误拒）。roots 为服务端配置的客户端 CA 池（config.clientRoots）。
+func verifyClientCertChain(signCert, encCert *x509.Certificate, roots *polluxsmx509.CertPool) error {
+	opts := polluxsmx509.VerifyOptions{
+		Roots:     roots,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	if encCert != nil {
+		return polluxsmx509.VerifyDualCertSignatures(signCert, encCert, opts)
+	}
+	return polluxsmx509.Verify(signCert, opts)
 }
 
 // serverResumeHandshake drives the server-side abbreviated (resume) handshake.
@@ -460,7 +506,7 @@ func (c *tlcpConn) createNewServerSession(serverHello *tlcpServerHelloMsg, maste
 		peerCertificates: peerCertsCopy,
 		createdAt:        time.Now(),
 	}
-	c.config.sessionCache.Put(tlcpSessionKeyHex(sess.sessionID), sess)
+	c.config.sessionCache.Put(serverSessionKey(sess.sessionID), sess)
 }
 
 // readClientCCSAndFinished reads the client's CCS (switching c.in to client

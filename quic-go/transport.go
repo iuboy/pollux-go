@@ -198,6 +198,11 @@ func (t *Transport) createServer(tlsConf *tls.Config, conf *Config, allow0RTT bo
 	if err := validateConfig(conf); err != nil {
 		return nil, err
 	}
+	// GM 配置在 Listen 处 fail-fast：GMSM4GCM 开启但 GMHandshakeConfig.Server
+	// 缺失时构造期报错，而不是等首个入站 Initial 才暴露。
+	if err := validateGMConfig(conf, protocol.PerspectiveServer); err != nil {
+		return nil, err
+	}
 
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
@@ -253,6 +258,11 @@ func (t *Transport) dial(ctx context.Context, addr net.Addr, host string, tlsCon
 	if err := validateConfig(conf); err != nil {
 		return nil, err
 	}
+	// GM 配置在 Dial 处 fail-fast：GMSM4GCM 开启但 GMHandshakeConfig.Client
+	// 缺失时构造期报错。
+	if err := validateGMConfig(conf, protocol.PerspectiveClient); err != nil {
+		return nil, err
+	}
 	conf = populateConfig(conf)
 	tlsConf = tlsConf.Clone()
 	setTLSConfigServerName(tlsConf, addr, host)
@@ -300,7 +310,7 @@ func (t *Transport) doDial(
 	logger := utils.DefaultLogger.WithPrefix("client")
 	logger.Infof("Starting new connection to %s (%s -> %s), source connection ID %s, destination connection ID %s, version %s", tlsConf.ServerName, sendConn.LocalAddr(), sendConn.RemoteAddr(), srcConnID, destConnID, version)
 
-	conn := newClientConnection(
+	conn, err := newClientConnection(
 		context.WithoutCancel(ctx),
 		sendConn,
 		(*packetHandlerMap)(t),
@@ -317,6 +327,11 @@ func (t *Transport) doDial(
 		logger,
 		version,
 	)
+	if err != nil {
+		// GM CryptoSetup 构造失败等：Dial 直接报错（单连接失败，不杀进程）。
+		t.mutex.Unlock()
+		return nil, err
+	}
 	t.handlers[srcConnID] = conn
 	t.mutex.Unlock()
 

@@ -88,6 +88,16 @@ func ParseOCSPResponseWithIssuer(data []byte, issuer *x509.Certificate) (*ocsp.R
 // parsing already-trusted or historical responses where staleness is not
 // meaningful.
 //
+// Delegated responder authorization (RFC 6960 §4.2.2.2): both the SM2 and the
+// non-SM2 path reject an embedded responder certificate whose key differs from
+// the issuer key unless it carries the id-kp-OCSPSigning EKU — x/crypto's
+// ParseResponse only checks that the embedded cert was signed by the issuer,
+// so any leaf certificate the attacker holds (e.g. a TLS cert) could otherwise
+// forge valid responses. issuer-direct responses (responder key == issuer key)
+// need no EKU. issuer nil is rejected at entry (fail-closed, as with the SM2
+// path); the deliberately unverified parse-only entry point is
+// ParseOCSPResponseUnverified, whose result MUST NOT gate trust decisions.
+//
 // SM3 CertIDs: if the response's CertID hashes with SM3 (GM/T 0009-2012),
 // resp.IssuerHash is reported as crypto.SHA256 — x/crypto's ocsp.Response
 // cannot express SM3 (no crypto.Hash constant exists). Do NOT recompute
@@ -104,6 +114,29 @@ func ParseOCSPResponseWithIssuerAt(data []byte, issuer *x509.Certificate, now ti
 	// a time check. Apply the same validity-period policy here for consistency.
 	resp, err := ocsp.ParseResponse(data, issuer)
 	if err != nil {
+		return nil, err
+	}
+	// RFC 6960 §4.2.2.2 委派响应者授权检查，镜像 SM2 路径
+	// （parseSM2OCSPResponse）的同名检查：x/crypto 的 ParseResponse 只验证
+	// 内嵌证书确由 issuer 签发（签名链），不检查 id-kp-OCSPSigning EKU——
+	// 持有 issuer 所签任意叶子证书（如 TLS 证书）私钥的攻击者都能伪造
+	// 「签名链合法」的 OCSP 响应。公钥不等于 issuer 公钥即委派响应者，必须
+	// 携带 OCSPSigning EKU；公钥相同（issuer-direct）无需 EKU。issuer 在本
+	// 入口已保证非 nil（与 SM2 路径同姿态 fail-closed）。
+	if resp.Certificate != nil &&
+		!sameResponderKey(resp.Certificate, issuer) &&
+		!hasOCSPSigningEKU(resp.Certificate) {
+		return nil, errors.New("smx509: embedded responder cert lacks id-kp-OCSPSigning EKU")
+	}
+	// responseExtensions 的 critical 位检查：x/crypto 不解析响应级扩展
+	// （encoding/asn1 静默忽略尾部未知元素），未知 critical 扩展按
+	// RFC 6960 §4.2.1 语义必须拒绝；nonce 视为已知扩展。与 SM2 解析路径
+	// 共用 checkResponseExtensionsCritical 的统一裁决。
+	exts, ok := responseExtensionsFromRaw(data)
+	if !ok {
+		return nil, errors.New("smx509: OCSP response does not decode as a successful BasicOCSPResponse")
+	}
+	if err := checkResponseExtensionsCritical(exts); err != nil {
 		return nil, err
 	}
 	if !now.IsZero() {

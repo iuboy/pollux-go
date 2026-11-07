@@ -29,6 +29,7 @@ import (
 	gmsmSM3 "github.com/emmansun/gmsm/sm3"
 	smx509 "github.com/emmansun/gmsm/smx509"
 	"github.com/iuboy/pollux-go/internal/memsecure"
+	"github.com/iuboy/pollux-go/kdf"
 	polluxSM4 "github.com/iuboy/pollux-go/sm4"
 )
 
@@ -696,6 +697,15 @@ func decryptPKCS8(encryptedDER, password []byte) ([]byte, error) {
 	// package's maxIteration rationale.
 	if kdfParams.IterationCount > 10_000_000 {
 		return nil, fmt.Errorf("PBKDF2 iterations %d above maximum 10000000", kdfParams.IterationCount)
+	}
+	// Upper bound on the attacker-controlled salt length (第四轮审计 P3):the
+	// PBES2 salt comes from the file being decrypted, and an unbounded salt
+	// amplifies the memory footprint of every HMAC pass. 64 KiB mirrors
+	// kdf.MaxSaltLen — the shared bound across all PBKDF2 call sites. Same
+	// plain-error style as the iteration bounds above (caller-input style
+	// parameters, not password-dependent outcomes, so no opaque error here).
+	if len(kdfParams.Salt) > kdf.MaxSaltLen {
+		return nil, fmt.Errorf("PBKDF2 salt length %d above maximum %d", len(kdfParams.Salt), kdf.MaxSaltLen)
 	}
 	prf := newPRF(kdfParams.PRF.Algorithm)
 	if prf == nil {

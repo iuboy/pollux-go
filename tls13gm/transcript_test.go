@@ -159,7 +159,9 @@ func TestResetForHelloRetry(t *testing.T) {
 	tr := NewTranscript()
 	// Seed with an unrelated message to confirm ResetForHelloRetry clears it.
 	tr.AddMessage(HandshakeTypeClientHello, []byte("should-be-discarded"))
-	tr.ResetForHelloRetry(ch1Full, hrrFull)
+	if err := tr.ResetForHelloRetry(ch1Full, hrrFull); err != nil {
+		t.Fatalf("ResetForHelloRetry: %v", err)
+	}
 
 	// Build the expected transcript independently.
 	hash1 := sm3.Sum(ch1Full)
@@ -195,5 +197,41 @@ func TestResetForHelloRetry(t *testing.T) {
 	)
 	if got := tr.Sum(); !bytes.Equal(got, want2) {
 		t.Errorf("post-HRR append mismatch:\n got %x\nwant %x", got, want2)
+	}
+}
+
+// TestResetForHelloRetry_ShortHRRError 是第四轮审计 P3 的回归守卫:导出 API
+// 不得静默 desync。短于 4 字节握手头的 hrr 旧实现会静默跳过(HRR 不进转写,
+// 两侧 transcript 从此分叉且无报告),现必须返回 error。同时断言失败路径
+// 无副作用:转写保持调用前的原样,后续仍可正常累加。
+func TestResetForHelloRetry_ShortHRRError(t *testing.T) {
+	ch1Body := []byte("ClientHello1-body")
+	ch1Full := append([]byte{HandshakeTypeClientHello, 0x00, 0x00, byte(len(ch1Body))}, ch1Body...)
+
+	for _, tc := range []struct {
+		name string
+		hrr  []byte
+	}{
+		{"nil", nil},
+		{"empty", []byte{}},
+		{"3 bytes", []byte{HandshakeTypeServerHello, 0x00, 0x00}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := NewTranscript()
+			seed := []byte("seed-message")
+			tr.AddMessage(HandshakeTypeClientHello, seed)
+			before := tr.Bytes()
+			if err := tr.ResetForHelloRetry(ch1Full, tc.hrr); err == nil {
+				t.Fatal("ResetForHelloRetry accepted a truncated HRR (regression: silent desync)")
+			}
+			if got := tr.Bytes(); !bytes.Equal(got, before) {
+				t.Errorf("failed ResetForHelloRetry mutated the transcript: got %x, want %x", got, before)
+			}
+			// 转写未受污染,继续正常累加。
+			tr.AddMessage(HandshakeTypeServerHello, []byte("SH"))
+			if got := tr.Sum(); len(got) != sm3.Size {
+				t.Errorf("transcript unusable after refused reset (Sum len = %d)", len(got))
+			}
+		})
 	}
 }

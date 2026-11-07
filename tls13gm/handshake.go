@@ -191,8 +191,10 @@ type ClientHandshaker struct {
 
 	// resumptionPSK is the derived PSK keying the binder / early secret;
 	// resumptionIdentity is the opaque pre_shared_key identity (the server's
-	// encrypted ticket); resumptionObfAge is the obfuscated ticket age. Copied
-	// from ClientConfig.
+	// encrypted ticket); resumptionObfAge is the obfuscated ticket age. 真实
+	// 拷贝自 ClientConfig(独立底层数组):Zero() 会清零这两个字段,若与调用
+	// 方 Config 别名共享,擦除 handshaker 会连带破坏调用方仍持有的凭据副本
+	// (第四轮审计 P2 修复,原实现为直接别名)。
 	resumptionPSK      []byte
 	resumptionIdentity []byte
 	resumptionObfAge   uint32
@@ -274,12 +276,15 @@ type ClientConfig struct {
 	// resumption master secret via DeriveResumptionPSK, NOT the opaque ticket
 	// bytes). The client uses it to key the pre_shared_key binder and the 0-RTT
 	// early secret. Pair with ResumptionIdentity and ResumptionObfuscatedTicketAge.
-	// When nil, a full (certificate) handshake is performed.
+	// When nil, a full (certificate) handshake is performed. The handshaker
+	// takes a private copy at construction, so the caller may freely reuse or
+	// zero its own slice afterwards; ClientHandshaker.Zero does not touch it.
 	ResumptionPSK []byte
 	// ResumptionIdentity is the opaque pre_shared_key identity sent in the
 	// ClientHello — the Ticket field from a server NewSessionTicket (an encrypted
 	// stateless ticket under RFC 8446). The server decrypts it to recover the
-	// PSK; the client never uses the identity bytes as a key.
+	// PSK; the client never uses the identity bytes as a key. Copied at
+	// construction, like ResumptionPSK.
 	ResumptionIdentity []byte
 	// ResumptionObfuscatedTicketAge is the obfuscated_ticket_age for the PSK
 	// identity: (ticket_age + ticket_age_add) mod 2^32, computed by the caller
@@ -333,18 +338,22 @@ func NewClientHandshakerWithConfig(cfg ClientConfig) (*ClientHandshaker, error) 
 		return nil, err
 	}
 	return &ClientHandshaker{
-		dcid:                 cfg.DCID,
-		ephemeral:            priv,
-		transcript:           NewTranscript(),
-		insecureSkipVerify:   cfg.InsecureSkipVerify,
-		rootPool:             cfg.Roots,
-		intermediates:        cfg.Intermediates,
-		serverName:           cfg.ServerName,
-		verifyPeerCert:       cfg.VerifyPeerCertificate,
-		secrets:              HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
+		dcid:               cfg.DCID,
+		ephemeral:          priv,
+		transcript:         NewTranscript(),
+		insecureSkipVerify: cfg.InsecureSkipVerify,
+		rootPool:           cfg.Roots,
+		intermediates:      cfg.Intermediates,
+		serverName:         cfg.ServerName,
+		verifyPeerCert:     cfg.VerifyPeerCertificate,
+		secrets:            HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
+		// resumptionPSK/resumptionIdentity 真实拷贝(独立底层数组):Zero()
+		// 会清零 handshaker 内的副本,别名会让这次擦除连带清空调用方 Config
+		// 里仍需复用的 PSK/identity(第四轮审计 P2)。nil 输入经 append 保持
+		// nil,pskMode/EarlyData 判定(len == 0)语义不变。
 		localTransportParams: cfg.TransportParameters,
-		resumptionPSK:        cfg.ResumptionPSK,
-		resumptionIdentity:   cfg.ResumptionIdentity,
+		resumptionPSK:        append([]byte(nil), cfg.ResumptionPSK...),
+		resumptionIdentity:   append([]byte(nil), cfg.ResumptionIdentity...),
 		resumptionObfAge:     cfg.ResumptionObfuscatedTicketAge,
 		offerEarlyData:       cfg.EarlyData,
 		nextProtos:           cfg.NextProtos,
@@ -531,6 +540,13 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 	if err := sh.unmarshalBody(shBody); err != nil {
 		return fmt.Errorf("tls13gm: ServerHello: %w", err)
 	}
+	// legacy_session_id 回显校验(RFC 8446 §4.1.3:echo MUST equal what the
+	// client sent)。行为收紧(第四轮审计 P3):tls13gm 客户端在 buildClientHello
+	// 中从不发送 legacy_session_id(恒为空),因此任何非空回显都是协议违规,
+	// 一律拒绝——此前完全不校验该字段。
+	if len(sh.LegacySessionID) > 0 {
+		return errors.New("tls13gm: ServerHello echoed a non-empty legacy_session_id but the client sent none (RFC 8446 §4.1.3)")
+	}
 	// Verify the server actually negotiated the GM cipher suite. pollux only
 	// implements TLS_SM4_GCM_SM3; a server selecting anything else is a
 	// downgrade attempt we reject (defense in depth; the Finished transcript
@@ -552,7 +568,7 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 	if len(sv) != 2 || uint16(sv[0])<<8|uint16(sv[1]) != uint16(VersionTLS13) {
 		return errors.New("tls13gm: ServerHello did not negotiate TLS 1.3")
 	}
-	if findExtension(sh.Extensions, ExtensionTypePreSharedKey) != nil {
+	if pskSel := findExtension(sh.Extensions, ExtensionTypePreSharedKey); pskSel != nil {
 		// Server selected PSK (psk_dhe_ke). This is only legitimate if the
 		// client actually offered a PSK in its ClientHello (resumptionPSK !=
 		// nil). A server that selects a PSK the client never offered is a
@@ -561,6 +577,18 @@ func (c *ClientHandshaker) HandleServerHello(serverHello []byte) error {
 		// full authentication bypass. Fail closed.
 		if c.resumptionPSK == nil {
 			return errors.New("tls13gm: ServerHello selected pre_shared_key but client offered none")
+		}
+		// selected_identity 语义校验(RFC 8446 §4.2.11):ServerHello 的
+		// pre_shared_key 扩展体是单个 uint16 的 selected_identity,必须落在
+		// 客户端实际提供的身份列表内。tls13gm 客户端恒只提供一个身份(索引
+		// 0),任何非零选择(越界/不一致)都是违规——接受会跳过下方
+		// Certificate/CertificateVerify。行为收紧(第四轮审计 P3):此前不
+		// 解析扩展体,非法索引同样被当作"选中我们的 PSK"。
+		if len(pskSel) != 2 {
+			return fmt.Errorf("tls13gm: ServerHello pre_shared_key selected_identity is %d bytes, want 2", len(pskSel))
+		}
+		if selected := uint16(pskSel[0])<<8 | uint16(pskSel[1]); selected != 0 {
+			return fmt.Errorf("tls13gm: ServerHello selected_identity %d but the client offered exactly one identity (index 0)", selected)
 		}
 		c.pskMode = true
 	}
@@ -667,6 +695,11 @@ func (c *ClientHandshaker) HandleHelloRetryRequest(hrr []byte) ([]byte, error) {
 	if hrrMsg.Random != helloRetryRequestRandom {
 		return nil, errors.New("tls13gm: HandleHelloRetryRequest given a non-HRR ServerHello")
 	}
+	// HRR 同样是 ServerHello,legacy_session_id_echo 的回显约束一致
+	// (RFC 8446 §4.1.4 引用 §4.1.3);客户端恒发空 session id,非空即拒。
+	if len(hrrMsg.LegacySessionID) > 0 {
+		return nil, errors.New("tls13gm: HelloRetryRequest echoed a non-empty legacy_session_id but the client sent none (RFC 8446 §4.1.3)")
+	}
 	var cookie []byte
 	if cookieData := findExtension(hrrMsg.Extensions, ExtensionTypeCookie); cookieData != nil {
 		cookie, err = parseCookieExtension(cookieData)
@@ -675,7 +708,11 @@ func (c *ClientHandshaker) HandleHelloRetryRequest(hrr []byte) ([]byte, error) {
 		}
 	}
 	// RFC 8446 §4.4.1: transcript becomes message_hash(CH1) || HRR.
-	c.transcript.ResetForHelloRetry(c.clientHello1Full, hrr)
+	// hrr 已经成功解出完整 ServerHello 消息,长度守卫在此不可达;防御性
+	// 返回仅守住"转写永不静默 desync"的契约(第四轮审计 P3)。
+	if err := c.transcript.ResetForHelloRetry(c.clientHello1Full, hrr); err != nil {
+		return nil, fmt.Errorf("tls13gm: reset transcript for HelloRetryRequest: %w", err)
+	}
 	// RFC 8446 §4.2.10: "a client MUST NOT offer early data" in ClientHello2.
 	// The CH1-derived early keys cover the CH1 transcript, which was just
 	// replaced by message_hash(CH1) || HRR — they can never match what the
@@ -980,9 +1017,19 @@ func (c *ClientHandshaker) HandleNewSessionTicket(nstBody []byte) (identity, psk
 	if err := msg.unmarshalBody(nstBody); err != nil {
 		return nil, nil, 0, fmt.Errorf("tls13gm: NewSessionTicket: %w", err)
 	}
+	// RFC 8446 §4.6.1:ticket_lifetime MUST NOT exceed 604800 秒(7 天)。
+	// 客户端拒收超限票据(第四轮审计 P3:此前不做任何校验)。
+	if msg.TicketLifetime > maxSessionTicketLifetime {
+		return nil, nil, 0, fmt.Errorf("tls13gm: NewSessionTicket lifetime %d exceeds RFC 8446 §4.6.1 maximum %d", msg.TicketLifetime, maxSessionTicketLifetime)
+	}
 	rms, err := DeriveResumptionMasterSecret(c.masterSecret, c.transcript.Sum())
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("tls13gm: resumption master secret: %w", err)
+	}
+	// 覆盖前擦除旧缓冲:同一连接可能收到多张 NST,直接顶替 resumptionMasterSecret
+	// 会把过期密钥材料留在堆上(第四轮审计杂项加固)。
+	if len(c.resumptionMasterSecret) > 0 {
+		memsecure.ZeroBytes(c.resumptionMasterSecret)
 	}
 	c.resumptionMasterSecret = rms
 	psk, err = DeriveResumptionPSK(rms, msg.TicketNonce)
@@ -1337,6 +1384,10 @@ func (s *ServerHandshaker) verifyPSKBinder(chMsg *ClientHelloMsg, pskExt []byte)
 		// here meant a server that rotated its TEKs could never again accept
 		// a resuming client, even for a full handshake. Only a binder
 		// mismatch after a successful decrypt (below) is a protocol failure.
+		// Expired tickets (validity window inside the ticket plaintext elapsed,
+		// 第四轮审计 P3) land on this same decline path: errTicketExpired wraps
+		// errTicketUndecryptable, so errors.Is(err, errTicketUndecryptable)
+		// stays true for decline-site matching.
 		//
 		//nolint:nilerr // deliberate: error means "decline", not "abort"
 		return nil
@@ -1652,7 +1703,9 @@ func (s *ServerHandshaker) NewSessionTicket(ticketLifetime uint32) ([]byte, erro
 // limits and a resuming server can run the ValidFor0RTT admission check.
 func (s *ServerHandshaker) NewSessionTicketWithData(ticketLifetime uint32, appData []byte) ([]byte, error) {
 	// RFC 8446 §4.6.1: ticket_lifetime MUST NOT exceed 604800 seconds (7 days).
-	const maxSessionTicketLifetime uint32 = 7 * 24 * 60 * 60
+	// (maxSessionTicketLifetime 定义于 session_ticket.go,与票据明文内的有效期
+	// 共用同一上限。)夹取后的值同时写入 NST 消息与票据明文,保证解密侧的
+	// 过期校验对照的正是握手广告的 ticket_lifetime。
 	if ticketLifetime > maxSessionTicketLifetime {
 		ticketLifetime = maxSessionTicketLifetime
 	}
@@ -1684,7 +1737,7 @@ func (s *ServerHandshaker) NewSessionTicketWithData(ticketLifetime uint32, appDa
 	if len(keys) == 0 {
 		return nil, errors.New("tls13gm: session-ticket key list is empty")
 	}
-	ticket, err := EncryptSessionTicketWithData(keys[0], psk, ticketAgeAdd, appData)
+	ticket, err := EncryptSessionTicketWithData(keys[0], psk, ticketAgeAdd, ticketLifetime, appData)
 	if err != nil {
 		memsecure.ZeroBytes(psk) // never linger key material in an error path
 		return nil, fmt.Errorf("tls13gm: encrypt session ticket: %w", err)
@@ -1736,7 +1789,9 @@ func containsCipherSuite(list []uint16, want uint16) bool {
 // supported_groups. A vector whose declared length exceeds the bytes present
 // is rejected (fail-closed): every other parser here enforces strict
 // trailing-byte discipline, and silently clamping the length would accept a
-// truncated body as if it were well-formed.
+// truncated body as if it were well-formed. An ODD list length is likewise
+// rejected rather than silently ignoring the trailing byte (第四轮审计 P3:
+// uint16 向量必为偶数字节,奇数长度是畸形消息,按拒绝处理).
 func containsUint16List(data []byte, lenSize int, want uint16) bool {
 	if len(data) < lenSize {
 		return false
@@ -1748,7 +1803,7 @@ func containsUint16List(data []byte, lenSize int, want uint16) bool {
 		listLen = int(data[0])<<8 | int(data[1])
 	}
 	body := data[lenSize:]
-	if listLen > len(body) {
+	if listLen > len(body) || listLen%2 != 0 {
 		return false
 	}
 	for i := 0; i+1 < listLen; i += 2 {

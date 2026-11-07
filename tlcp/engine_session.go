@@ -163,9 +163,24 @@ func (c *lruSessionCache) Put(sessionKey string, cs *SessionState) {
 	}
 }
 
-// tlcpSessionKeyHex returns the hex-encoded cache key for a sessionId.
+// tlcpSessionKeyHex returns the hex-encoded base for a sessionId cache key.
 func tlcpSessionKeyHex(sessionID []byte) string {
 	return hex.EncodeToString(sessionID)
+}
+
+// clientSessionKey 返回客户端角色的 sessionId 缓存键（"c:"+hex）。角色前缀
+// 隔离客户端/服务端两套 sessionId 命名空间：共享缓存部署（同一 SessionCache
+// 同时挂到 Config.SessionCache 两端）下，客户端按 hex 写入的会话不得被服务端
+// 命中——两端 SessionState 语义相反（peerCertificates 方向、身份绑定不同），
+// 跨角色命中会让一端以对端视角的会话状态恢复连接。
+func clientSessionKey(sessionID []byte) string {
+	return "c:" + tlcpSessionKeyHex(sessionID)
+}
+
+// serverSessionKey 返回服务端角色的 sessionId 缓存键（"s:"+hex），见
+// clientSessionKey。
+func serverSessionKey(sessionID []byte) string {
+	return "s:" + tlcpSessionKeyHex(sessionID)
 }
 
 // sessionCacheKey returns the address-key under which a session is cached for

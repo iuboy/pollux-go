@@ -24,6 +24,22 @@ var ErrInvalidKeyLen = errors.New("kdf: key length must be positive")
 // their own trust boundary.
 var ErrInvalidSalt = errors.New("kdf: salt must not be empty")
 
+// ErrSaltTooLong is returned when the salt exceeds [MaxSaltLen]. It bounds the
+// memory amplification of attacker-controlled salts (e.g. salt fields parsed
+// from untrusted PHC strings or ASN.1) — the salt is hashed internally by
+// HMAC, but it is copied into the hash's inner/outer pads and every
+// intermediate buffer, so an unbounded salt turns one derivation into a
+// memory-exhaustion primitive.
+var ErrSaltTooLong = errors.New("kdf: salt length exceeds limit")
+
+// MaxSaltLen is the upper bound on the salt length accepted by [PBKDF2]:
+// 64 KiB. It is the single shared bound enforced by every PBKDF2 call site in
+// this module (the pwHash decoder clamps decoded PHC salts to it and the
+// smx509 PBES2 decryptor clamps attacker-controlled ASN.1 salts to it), so
+// the three layers agree on one number. It is far above any legitimate salt
+// (16–64 bytes is typical) and far below any allocation worth attacking.
+const MaxSaltLen = 1 << 16
+
 // maxIteration is a sanity upper bound on the iteration count. OWASP-recommended
 // strengths (as of 2023) for PBKDF2-HMAC-SHA-256 are ≤ 1,000,000; we allow a
 // generous margin above that while still rejecting attacker-controlled values
@@ -60,12 +76,22 @@ const maxKeyLen = 1 << 20 // 1 MiB
 //     is slower per iteration.
 //   - salt should be unique per password; 16 random bytes is the typical
 //     minimum.
+//   - SECURITY: password crosses the stdlib boundary via string(password),
+//     which copies it onto the heap in a form Go provides no API to erase —
+//     the copy can outlive this call in GC-unreachable-but-unwiped memory.
+//     High-sensitivity paths (raw key-derivation from passphrase-controlled
+//     secrets where the caller already holds the password in an erasable
+//     []byte) must weigh that residual exposure themselves; this wrapper
+//     deliberately does not add a zero-copy variant to avoid forking the
+//     API surface (第四轮审计 P3 记录项,文档化处置).
 //   - The returned slice is a fresh allocation; the caller may zero it via
 //     memsecure.ZeroBytes when finished.
 //
 // iter and keyLen are bounded above to reject attacker-controlled pathological
 // values (e.g. those parsed from untrusted PHC strings) that would otherwise
-// cause CPU exhaustion. Both bounds are well above any legitimate use.
+// cause CPU exhaustion. The salt is bounded to [MaxSaltLen] (64 KiB) for the
+// same reason — memory amplification instead of CPU. All bounds are well
+// above any legitimate use.
 //
 // FIPS note: under GODEBUG=fips140=only the stdlib rejects non-approved
 // hashes (SM3 among them); the error is propagated rather than silently
@@ -90,11 +116,17 @@ func PBKDF2(password, salt []byte, iter, keyLen int, h func() hash.Hash) ([]byte
 	if len(salt) == 0 {
 		return nil, ErrInvalidSalt
 	}
+	// 第四轮审计 P3:盐无上限时,来自不可信输入(PHC 字符串、ASN.1)的畸形盐
+	// 会放大派生的内存足迹。64 KiB 远高于任何合法盐(典型 16~64 字节)。
+	if len(salt) > MaxSaltLen {
+		return nil, fmt.Errorf("kdf: salt length %d exceeds limit %d: %w", len(salt), MaxSaltLen, ErrSaltTooLong)
+	}
 
 	// stdlib crypto/pbkdf2.Key signature: Key(h, password string, salt, iter,
 	// keyLength) ([]byte, error). The password crosses the boundary as string
 	// (the stdlib convention to discourage retaining attacker data); the
-	// conversion never outlives this call.
+	// conversion does leave an un-erasable heap copy — see the Security notes
+	// in the doc comment above.
 	dk, err := stdpbkdf2.Key(h, string(password), salt, iter, keyLen)
 	if err != nil {
 		return nil, fmt.Errorf("kdf: pbkdf2: %w", err)

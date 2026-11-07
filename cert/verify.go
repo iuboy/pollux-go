@@ -149,7 +149,10 @@ func VerifyDualCertificate(signCert, encCert *x509.Certificate, signOpts, encOpt
 		// TLCP encryption certs are used both for SM2 public-key encryption of the
 		// PMS (KeyEncipherment / DataEncipherment) and, in ECDHE suites, for SM2
 		// MQV key agreement (KeyAgreement). Accept any of the three usages so a
-		// legitimate SM2 enc cert configured for ECDHE is not rejected.
+		// legitimate SM2 enc cert configured for ECDHE is not rejected. Fourth
+		// audit round unified this three-KU acceptance set across both entry
+		// points — smx509.VerifyDualCertSignatures previously accepted only the
+		// first two and rejected KeyAgreement-only enc certs.
 		if encKeyUsage&x509.KeyUsageKeyEncipherment == 0 &&
 			encKeyUsage&x509.KeyUsageDataEncipherment == 0 &&
 			encKeyUsage&x509.KeyUsageKeyAgreement == 0 {

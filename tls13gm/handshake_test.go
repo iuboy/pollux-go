@@ -287,3 +287,201 @@ func TestHandleNewSessionTicket_RequiresClientFinished(t *testing.T) {
 		t.Fatal("HandleNewSessionTicket succeeded with clientFinishedSent=false (regression: RMS would be derived over wrong transcript)")
 	}
 }
+
+// TestHandleNewSessionTicket_RejectsOversizedLifetime 是第四轮审计 P3 的回归
+// 守卫:客户端此前对 NST 的 ticket_lifetime 不做任何校验,超上限(>604800,
+// RFC 8446 §4.6.1)的票据会被照单全收并缓存。修复后必须在派生 RMS 之前拒绝,
+// 且不返回任何凭据。合法上限(604800)以内的路径由 stepwise 复用往返测试
+// (lifetime 7200)覆盖。
+func TestHandleNewSessionTicket_RejectsOversizedLifetime(t *testing.T) {
+	dcid := []byte{0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38}
+	cert, serverKey := generateTestSM2Cert(t)
+	server, err := NewServerHandshakerWithConfig(ServerConfig{
+		DCID:              dcid,
+		Certificate:       cert,
+		PrivateKey:        serverKey,
+		SessionTicketKeys: func() [][]byte { return [][]byte{bytes.Repeat([]byte{0xCD}, SessionTicketKeyLen)} },
+	})
+	if err != nil {
+		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
+	}
+	client, err := NewClientHandshakerWithConfig(ClientConfig{DCID: dcid, InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
+	}
+	ch, err := client.ClientHello()
+	if err != nil {
+		t.Fatalf("ClientHello: %v", err)
+	}
+	if err := server.HandleClientHello(ch); err != nil {
+		t.Fatalf("HandleClientHello: %v", err)
+	}
+	sh, ee, certMsg, cv, fin, err := server.ServerFlight()
+	if err != nil {
+		t.Fatalf("ServerFlight: %v", err)
+	}
+	if err := client.HandleServerFlight(sh, ee, certMsg, cv, fin); err != nil {
+		t.Fatalf("HandleServerFlight: %v", err)
+	}
+	if _, err := client.ClientFinished(); err != nil {
+		t.Fatalf("ClientFinished: %v", err)
+	}
+	// clientFinishedSent 已为 true;直接构造 lifetime 超限的 NST 消息,
+	// 守卫必须在其派生 RMS 之前拒绝。
+	oversized, err := MarshalHandshakeMessage(&NewSessionTicketMsg{
+		TicketLifetime: 604801, // RFC 8446 §4.6.1 上限 604800 + 1
+		TicketAgeAdd:   0x01020304,
+		TicketNonce:    bytes.Repeat([]byte{0x07}, 16),
+		Ticket:         []byte("oversized-lifetime-ticket"),
+	})
+	if err != nil {
+		t.Fatalf("marshal oversized NST: %v", err)
+	}
+	_, ticketBody, _, err := ReadHandshakeMessage(oversized)
+	if err != nil {
+		t.Fatalf("read oversized NST: %v", err)
+	}
+	identity, _, _, err := client.HandleNewSessionTicket(ticketBody)
+	if err == nil {
+		t.Fatal("HandleNewSessionTicket accepted TicketLifetime 604801 (> RFC 8446 §4.6.1 maximum 604800)")
+	}
+	if identity != nil {
+		t.Errorf("rejected NST returned an identity: %x", identity)
+	}
+}
+
+// buildTestServerHello 构造客户端侧校验测试用的 ServerHello 消息(完整握手
+// 消息字节)。pskExtData 为 nil 时不携带 pre_shared_key 扩展。
+func buildTestServerHello(t *testing.T, sessionID []byte, pskExtData []byte) []byte {
+	t.Helper()
+	sh := &ServerHelloMsg{
+		LegacyVersion:   uint16(VersionTLS12),
+		Random:          [32]byte{}, // 非哨兵值,不会被误判为 HRR
+		LegacySessionID: sessionID,
+		CipherSuite:     TLS_SM4_GCM_SM3,
+		Extensions: []Extension{
+			{Type: ExtensionTypeSupportedVersions, Data: []byte{0x03, 0x04}},
+		},
+	}
+	if pskExtData != nil {
+		sh.Extensions = append(sh.Extensions, Extension{Type: ExtensionTypePreSharedKey, Data: pskExtData})
+	}
+	full, err := MarshalHandshakeMessage(sh)
+	if err != nil {
+		t.Fatalf("marshal ServerHello: %v", err)
+	}
+	return full
+}
+
+// TestClientHandleServerHello_RejectsLegacySessionIDEcho 是第四轮审计 P3 的
+// 回归守卫(RFC 8446 §4.1.3):tls13gm 客户端从不发送 legacy_session_id,
+// 服务端回显非空值是协议违规,必须拒绝——此前该字段完全不校验。
+func TestClientHandleServerHello_RejectsLegacySessionIDEcho(t *testing.T) {
+	client, err := NewClientHandshakerWithConfig(ClientConfig{
+		DCID:               []byte{0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8},
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	if _, err := client.ClientHello(); err != nil {
+		t.Fatalf("ClientHello: %v", err)
+	}
+	sh := buildTestServerHello(t, []byte("middlebox-echo"), nil)
+	if err := client.HandleServerHello(sh); err == nil {
+		t.Fatal("HandleServerHello accepted a non-empty legacy_session_id echo (RFC 8446 §4.1.3 violation)")
+	}
+}
+
+// TestClientHandleHelloRetryRequest_RejectsLegacySessionIDEcho 确认 HRR 路径
+// 的同一回显约束(RFC 8446 §4.1.4 的 HRR 同为 ServerHello)。
+func TestClientHandleHelloRetryRequest_RejectsLegacySessionIDEcho(t *testing.T) {
+	client, err := NewClientHandshakerWithConfig(ClientConfig{
+		DCID:               []byte{0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8},
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	if _, err := client.ClientHello(); err != nil {
+		t.Fatalf("ClientHello: %v", err)
+	}
+	hrr := &ServerHelloMsg{
+		LegacyVersion:   uint16(VersionTLS12),
+		Random:          helloRetryRequestRandom,
+		LegacySessionID: []byte("echo"),
+		CipherSuite:     TLS_SM4_GCM_SM3,
+		Extensions:      []Extension{{Type: ExtensionTypeSupportedVersions, Data: []byte{0x03, 0x04}}},
+	}
+	full, err := MarshalHandshakeMessage(hrr)
+	if err != nil {
+		t.Fatalf("marshal HRR: %v", err)
+	}
+	if _, err := client.HandleHelloRetryRequest(full); err == nil {
+		t.Fatal("HandleHelloRetryRequest accepted a non-empty legacy_session_id echo")
+	}
+}
+
+// TestClientHandleServerHello_ValidatesSelectedIdentity 是第四轮审计 P3 的
+// 回归守卫(RFC 8446 §4.2.11):ServerHello 的 pre_shared_key 扩展体是单个
+// uint16 的 selected_identity。客户端恒只提供一个身份(索引 0),此前不解析
+// 扩展体——畸形长度或越界/不一致的索引都会被当作"选中我们的 PSK"接受,
+// 进而跳过 Certificate/CertificateVerify。修复后:
+//  1. 客户端未提供 PSK 而服务端声称选中 → 拒(既有行为,回归锁定);
+//  2. 客户端提供 PSK、扩展体长度 ≠ 2 → 拒;
+//  3. 客户端提供 PSK、selected_identity ≠ 0 → 拒。
+func TestClientHandleServerHello_ValidatesSelectedIdentity(t *testing.T) {
+	cases := []struct {
+		name       string
+		clientPSK  bool
+		pskExtData []byte
+	}{
+		{"no client psk but server selects", false, []byte{0x00, 0x00}},
+		{"malformed selected_identity (1 byte)", true, []byte{0x00}},
+		{"malformed selected_identity (3 bytes)", true, []byte{0x00, 0x00, 0x00}},
+		{"selected_identity out of range", true, []byte{0x00, 0x01}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := ClientConfig{
+				DCID:               []byte{0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8},
+				InsecureSkipVerify: true,
+			}
+			if tc.clientPSK {
+				cfg.ResumptionPSK = bytes.Repeat([]byte{0x5E}, 32)
+				cfg.ResumptionIdentity = []byte("identity")
+			}
+			client, err := NewClientHandshakerWithConfig(cfg)
+			if err != nil {
+				t.Fatalf("client: %v", err)
+			}
+			if _, err := client.ClientHello(); err != nil {
+				t.Fatalf("ClientHello: %v", err)
+			}
+			sh := buildTestServerHello(t, nil, tc.pskExtData)
+			if err := client.HandleServerHello(sh); err == nil {
+				t.Fatal("HandleServerHello accepted an invalid pre_shared_key selection")
+			}
+		})
+	}
+}
+
+// TestContainsUint16List_OddLengthRejected 是第四轮审计 P3 的回归守卫:uint16
+// 向量的声明长度必为偶数字节,奇数长度是畸形消息——旧实现静默忽略末尾
+// 残字节并按内容匹配,现必须整体拒绝。
+func TestContainsUint16List_OddLengthRejected(t *testing.T) {
+	// 声明长度 3(奇数):末尾残字节 0x04 无法构成完整 uint16。
+	odd := []byte{0x00, 0x03, 0x13, 0x01, 0x04}
+	if containsUint16List(odd, 2, 0x1301) {
+		t.Error("odd-length vector accepted (trailing byte silently ignored)")
+	}
+	// 对照:偶数长度且含目标值仍应命中。
+	even := []byte{0x00, 0x04, 0x13, 0x01, 0x20, 0x20}
+	if !containsUint16List(even, 2, 0x1301) {
+		t.Error("even-length vector containing the target not matched")
+	}
+	// 声明长度 1 的单字节 supported_versions 向量同样是奇数畸形。
+	if containsUint16List([]byte{0x01, 0x04}, 1, 0x0400) {
+		t.Error("odd-length supported_versions vector accepted")
+	}
+}

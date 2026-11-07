@@ -167,6 +167,15 @@ func EnvelopeDecryptSM4(priv *PrivateKey, encryptedKey, nonce, ciphertext []byte
 		return nil, errDecryptFailed
 	}
 
+	// cipher.AEAD.Open 对错误长度的 nonce 是 panic(而非返回错误),nonce 来自
+	// 网络对端,畸形长度绝不能演变成远程可触发的进程崩溃。与 smx509/cert.go
+	// decryptBlock 的 GCM nonce 守卫同一写法:先验长度再 Open。错误统一返回
+	// errDecryptFailed,与 SM2 解包失败、GCM 认证失败不可区分,不新增解密
+	// oracle(第四轮审计 P1 修复)。
+	if len(nonce) != aead.NonceSize() {
+		return nil, errDecryptFailed
+	}
+
 	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return nil, errDecryptFailed

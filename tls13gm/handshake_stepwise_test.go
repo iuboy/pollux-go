@@ -409,7 +409,7 @@ func TestServerHandshake_VerifyPSKBinder(t *testing.T) {
 	// under a TEK; the server recovers it by decrypting the identity.
 	tek := bytes.Repeat([]byte{0x9A}, SessionTicketKeyLen)
 	wrongTek := bytes.Repeat([]byte{0x88}, SessionTicketKeyLen)
-	identity, err := EncryptSessionTicket(tek, psk, 0)
+	identity, err := EncryptSessionTicket(tek, psk, 0, testTicketLifetime)
 	if err != nil {
 		t.Fatalf("EncryptSessionTicket: %v", err)
 	}
@@ -610,7 +610,7 @@ func TestHandshake_EarlyTrafficKeys(t *testing.T) {
 	cert, serverKey := generateTestSM2Cert(t)
 	psk := bytes.Repeat([]byte{0xEE}, sm3.Size)
 	tek := bytes.Repeat([]byte{0x5D}, SessionTicketKeyLen)
-	identity, err := EncryptSessionTicket(tek, psk, 0)
+	identity, err := EncryptSessionTicket(tek, psk, 0, testTicketLifetime)
 	if err != nil {
 		t.Fatalf("EncryptSessionTicket: %v", err)
 	}

@@ -21,6 +21,37 @@ v0.61.0–v0.64.0（quic-go 跟随）标签已从仓库（本地与 GitHub）移
 - 同一 patch 内的修正递增 rev（`v0.1.2-0` → `v0.1.2-1`）；新变更发布递增
   patch 并将 rev 复位 0。
 
+## [0.1.1-0] - 2026-11-07
+
+### Changed
+
+- quic-go subtree 升级 v0.65.0（fork 分歧全部重放零冲突；详见 PATCHES.md v0.65.0 merge note）。依赖升级：gmsm v0.45.2、x/net v0.62.0。
+
+## [0.1.2-0] - 2026-11-07
+
+### Breaking — 第四轮安全审计修复（2 P1 / 6 P2 / P3 批，四维度并行审计后执行）
+
+- **[P1] `sm2.EnvelopeDecryptSM4` 畸形 nonce panic**：stdlib GCM `Open` 对 `len(nonce)!=12` panic 而非返回错误——攻击者仅需受害者公钥即可远程崩溃解密端点。已加长度守卫（统一不透明错误，不新增 oracle）。
+- **[P1] 非 SM2 OCSP 委派响应者未强制 id-kp-OCSPSigning EKU**（继承 x/crypto 缺口）：持 CA 签发的任意普通叶子证书即可伪造对任意序列号签名有效的 Good/Revoked。验证路径现强制 EKU（镜像 SM2 路径）；撤销掩盖面封死。
+- **[P2] GM 配置构造期校验 + hook 不再 panic**：`GMSM4GCM=true` 缺 `GMHandshakeConfig` 此前一条未认证 UDP Initial 即 panic 杀进程（服务端 run() 无 recover）。现 `validateGMConfig` 在 Listen/Dial fail-fast；hook 改返回错误，服务端构造失败按 CONNECTION_REFUSED 单连接拒绝（进程存活），客户端 Dial 直接报错。hook 另断言 QUIC v1（GM Initial keys 固定 v1 salt）。
+- **[P2] peerParams 竞争收尾**：`SendDatagram`/`AddPath` 的 peerParams 读纳入 `peerParamsMutex`（0-RTT DialEarly 返回后 app goroutine vs EE 阶段写入）；顺带堵住 `supportsDatagrams` 参数未到达时的 nil-deref。
+- **[P2] `ClientHandshaker.Zero()` 不再擦除调用方 Config 的 PSK**：构造时对 `ResumptionPSK/ResumptionIdentity` 真实拷贝（此前注释声称已拷贝、实为别名——缓存 PSK 复用会在旧连接 Close 后被静默清零，resumption 硬 abort）。`ClientSessionTicket()` 与 `GMOnClientSessionTicket` 入参补防御性拷贝。
+- **[P2] tlcp `prepareCipherSpec` 纳锁**：staged 密钥字段写入与 `Close→destroy` 清零的数据竞争封堵；删除无读者的 version 字段。
+- **[P2] tlcp `Conn.Write` 整调用原子**：并发 Write 不再在记录粒度交错（与 crypto/tls 语义对齐，doc 声明）；close_notify 不再切开在途 Write。
+- **[P2] https `hybridConn.Close` 不被慢握手阻塞**：Close 锁外中断握手（此前阻塞至握手超时，`SetHandshakeTimeout(0)` 时永久阻塞——`http.Server.Close` 可被 Slowloris 挂死）。
+- **ticket 布局 v0x04（破坏性）**：明文加签发时刻+有效期（AAD 认证）；解密侧超期 decline；客户端拒收 lifetime>604800 的 NST。旧 ticket 确定性失效。
+- ** tls13gm**：`Transcript.ResetForHelloRetry` 短输入改返回 error（导出 API 不得静默 desync）；ServerHello 收紧（legacy_session_id 回显校验、selected_identity 越界拒、containsUint16List 奇数长度拒）；NST 顶替前擦除旧 RMS；`NewClientHandshakerWithConfig` 深拷贝（见上）。
+- **sm4**：CBC PKCS7Unpad 常数时间化（消除填充 oracle 级时序）。
+- **PBKDF2**：salt 上限 64 KiB（kdf/pwHash/smx509 三处统一，`kdf.MaxSaltLen`）；password string 副本限制文档化。
+- **OCSP**：responseExtensions 未知 critical 拒（SM2/非 SM2 双路径）；ResponseNonce 重复拒（RFC 8954 exactly-once）。
+- **双证书**：enc 侧 KU 三集统一（KeyEncipherment|DataEncipherment|KeyAgreement，`VerifyDualCertSignatures` 与 `cert.VerifyDualCertificate` 一致）。
+- **tlcp 会话/mTLS**：SessionCache 键加角色前缀（c:/s:，跨角色不命中）；mTLS resume 必须携带缓存证书且重跑链验证（策略收紧绕过面封死）；服务端对客户端 enc 证书补链验证（`VerifyDualCertSignatures`，ClientAuth）——此前仅验 sign 证书；`Config` 双端 NextProtos 构造期校验（空名/超 255B/总量超 0xffff fail-fast）；`Config.Clone` 补拷 `SupportedSignatureAlgorithms`；destroy 后 halfConn 不再明文回退（返回错误）。
+- **https**：`NewTLCPTransport` ctx 无 deadline 时补默认 10s 握手上界；watchdog typed-nil panic 修复。
+
+### Fixed — 第四轮杂项
+
+- quicgm `Conn.SessionTicket` 既有拷贝语义与 #3 的 getter 拷贝对齐；`HandleMessage` 的 NST 回调改锁外投递（每 NST 恰好一次，回调可安全调用加锁方法）；key-update 试开改常驻预构建下一 phase 密钥材料（垃圾包试开零派生，消除 CPU 放大面）；`GMOnClientSessionTicket` doc 更新；GM 模式 `GetConfigForClient` 不支持的语义文档化。
+
 ## [0.1.0-0] - 2026-11-07
 
 ### Breaking — API 面破坏性收口（默认破坏性策略首批执行）

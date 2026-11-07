@@ -321,6 +321,71 @@ func TestPKCS7UnpadRejectsMalformed(t *testing.T) {
 	}
 }
 
+// TestPKCS7Unpad_ConstantTimeBehaviorEquivalent 是第四轮审计 P3 的回归守卫:
+// PKCS7Unpad 常数时间化(恒定扫描末块、范围检查并入掩码、统一返回)后,
+// 正确/错误 padding 的判定行为必须与旧实现完全一致——所有合法 padding 值
+// (1..blockSize)都正确去填充,所有非法家族(pad=0、pad>blockSize、声明值与
+// 实际字节不一致)都仍被拒绝。审计关注点是把实现从"数据相关早退/数据相关
+// 循环"改为常数时间,而不是改变语义。
+func TestPKCS7Unpad_ConstantTimeBehaviorEquivalent(t *testing.T) {
+	// 每个 padding 值(含边界:pad=1、pad=blockSize 整块填充)round-trip 不变。
+	for pad := 1; pad <= sm4.BlockSize; pad++ {
+		block := make([]byte, sm4.BlockSize)
+		for i := sm4.BlockSize - pad; i < sm4.BlockSize; i++ {
+			block[i] = byte(pad)
+		}
+		if pad < sm4.BlockSize {
+			// padding 区之外的字节取任意值不参与校验;pad=blockSize 时整块皆
+			// 为 padding,索引 0 必须保持 pad 值。
+			block[0] = 0xA5
+		}
+		got, err := sm4.PKCS7Unpad(block, sm4.BlockSize)
+		if err != nil {
+			t.Fatalf("pad=%d: valid padding rejected: %v", pad, err)
+		}
+		if len(got) != sm4.BlockSize-pad {
+			t.Fatalf("pad=%d: unpadded length = %d, want %d", pad, len(got), sm4.BlockSize-pad)
+		}
+	}
+	// 多块输入:只有末块参与 padding 判定,前块内容不受影响。
+	tail := make([]byte, sm4.BlockSize)
+	for i := sm4.BlockSize - 5; i < sm4.BlockSize; i++ {
+		tail[i] = 5
+	}
+	two := append(bytes.Repeat([]byte{0x5A}, sm4.BlockSize), tail...)
+	got, err := sm4.PKCS7Unpad(two, sm4.BlockSize)
+	if err != nil || len(got) != 2*sm4.BlockSize-5 {
+		t.Fatalf("two-block unpad: len=%d err=%v", len(got), err)
+	}
+	// 非法家族逐一仍被拒(常数时间扫描不改变判定结果)。
+	for _, tc := range []struct {
+		name  string
+		block []byte
+	}{
+		{"pad 0", make([]byte, sm4.BlockSize)},
+		{"pad > blockSize", func() []byte {
+			b := make([]byte, sm4.BlockSize)
+			b[sm4.BlockSize-1] = byte(sm4.BlockSize + 1)
+			return b
+		}()},
+		{"claim 2 but tail garbage", func() []byte {
+			b := make([]byte, sm4.BlockSize)
+			b[sm4.BlockSize-1] = 2
+			b[sm4.BlockSize-2] = 0xFF // padding 声明 2 字节,倒数第二字节必须为 2
+			return b
+		}()},
+		{"claim 16 not all 16", func() []byte {
+			b := bytes.Repeat([]byte{0x10}, sm4.BlockSize)
+			b[0] = 0x0F
+			return b
+		}()},
+	} {
+		if _, err := sm4.PKCS7Unpad(tc.block, sm4.BlockSize); err == nil {
+			t.Errorf("%s: invalid padding accepted", tc.name)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // NewGCM direct constructor (modes.go line 19, distinct from gcm.go helpers).
 // ---------------------------------------------------------------------------

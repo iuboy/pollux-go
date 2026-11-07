@@ -166,6 +166,14 @@ func (l *HybridListener) Accept() (net.Conn, error) {
 // header → construct the TLCP or TLS server conn → drive the handshake.
 // All later operations delegate to the negotiated conn. Negotiation runs at
 // most once per connection; its result (conn or error) is cached.
+//
+// Locking: hsMu serializes the negotiation itself and is held across the
+// sniff + handshake (up to the handshake timeout); mu is a short critical
+// section guarding the cached result. Close deliberately never takes hsMu —
+// it snapshots sec under mu (held only briefly, never across the handshake)
+// and closes outside the locks, so a slow/stalled handshake can never delay
+// connection shutdown (Slowloris-style http.Server.Close would otherwise
+// block on every connection mid-handshake).
 type hybridConn struct {
 	raw     net.Conn
 	tlcpCfg *tlcp.Config
@@ -173,10 +181,14 @@ type hybridConn struct {
 	mask    ProtocolMask
 	timeout time.Duration
 
+	hsMu sync.Mutex
 	mu   sync.Mutex
 	done bool
 	sec  net.Conn // negotiated *tlcp.Conn or *tls.Conn; nil until done
 	nerr error    // cached negotiation failure
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 var _ net.Conn = (*hybridConn)(nil)
@@ -187,28 +199,53 @@ type handshaker interface {
 	Handshake() error
 }
 
-// ensure negotiates the secure conn on first use (see hybridConn). The
-// handshake deadline applies to the sniff + handshake phase and is cleared
-// on success, so post-handshake I/O is unbounded by this mechanism ( callers
-// set their own deadlines / http.Server timeouts).
+// ensure negotiates the secure conn on first use (see hybridConn). Concurrent
+// first readers/writers are serialized on hsMu: the first drives the
+// handshake, later ones block until the result is cached, then all see the
+// same outcome. The handshake deadline applies to the sniff + handshake phase
+// and is cleared on success, so post-handshake I/O is unbounded by this
+// mechanism (callers set their own deadlines / http.Server timeouts).
+//
+// The result cache (done/sec/nerr) is only touched under mu, in short
+// critical sections — never held across I/O — so Close can always obtain a
+// consistent snapshot without waiting for the handshake.
 func (c *hybridConn) ensure() (net.Conn, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.done {
-		if c.nerr != nil {
-			return nil, c.nerr
-		}
-		return c.sec, nil
-	}
-	c.done = true
+	c.hsMu.Lock()
+	defer c.hsMu.Unlock()
 
+	c.mu.Lock()
+	if c.done {
+		sec, nerr := c.sec, c.nerr
+		c.mu.Unlock()
+		if nerr != nil {
+			return nil, nerr
+		}
+		return sec, nil
+	}
+	c.mu.Unlock()
+
+	sec, nerr := c.negotiate()
+
+	c.mu.Lock()
+	c.done = true
+	c.sec, c.nerr = sec, nerr
+	c.mu.Unlock()
+
+	if nerr != nil {
+		return nil, nerr
+	}
+	return sec, nil
+}
+
+// negotiate performs the actual sniff + handshake, without holding mu so
+// Close can run concurrently (it interrupts this by closing raw).
+func (c *hybridConn) negotiate() (sec net.Conn, nerr error) {
 	if c.timeout > 0 {
 		// Both read+write deadline: a read-only deadline does not protect
 		// against clients that stall reads during the server's handshake
 		// writes (ServerHello, Certificate, etc.).
 		if err := c.raw.SetDeadline(time.Now().Add(c.timeout)); err != nil {
 			_ = c.raw.Close()
-			c.nerr = err
 			return nil, err
 		}
 	}
@@ -220,13 +257,11 @@ func (c *hybridConn) ensure() (net.Conn, error) {
 	header, err := br.Peek(recordHeaderLen)
 	if err != nil {
 		_ = c.raw.Close()
-		c.nerr = err
 		return nil, err
 	}
 	if header[0] != recordHandshake {
 		_ = c.raw.Close()
-		c.nerr = errNotHandshake
-		return nil, c.nerr
+		return nil, errNotHandshake
 	}
 
 	version := binary.BigEndian.Uint16(header[1:3])
@@ -237,16 +272,14 @@ func (c *hybridConn) ensure() (net.Conn, error) {
 	case tlcpVersion11:
 		if !c.mask.AllowTLCP {
 			_ = c.raw.Close()
-			c.nerr = errProtocolNotAllowed
-			return nil, c.nerr
+			return nil, errProtocolNotAllowed
 		}
 		useTLCP = true
 	default:
 		if version >= minTLSVersion && version <= maxTLSVersion {
 			if !c.mask.AllowTLS {
 				_ = c.raw.Close()
-				c.nerr = errProtocolNotAllowed
-				return nil, c.nerr
+				return nil, errProtocolNotAllowed
 			}
 			useTLCP = false
 		} else {
@@ -255,34 +288,31 @@ func (c *hybridConn) ensure() (net.Conn, error) {
 			// ProtocolMask-filtered rejection (operator policy) from a
 			// genuinely unknown version (e.g. 0x0200, SSLv3 0x0300).
 			_ = c.raw.Close()
-			c.nerr = fmt.Errorf("%w: 0x%04x", errUnknownProtocol, version)
-			return nil, c.nerr
+			return nil, fmt.Errorf("%w: 0x%04x", errUnknownProtocol, version)
 		}
 	}
 
 	rconn := &readerConn{Conn: c.raw, reader: br}
-	var sec handshaker
+	var handshakeConn handshaker
 	if useTLCP {
-		sec = tlcp.Server(rconn, c.tlcpCfg)
+		handshakeConn = tlcp.Server(rconn, c.tlcpCfg)
 	} else {
-		sec = tls.Server(rconn, c.tlsCfg)
+		handshakeConn = tls.Server(rconn, c.tlsCfg)
 	}
-	if err := sec.Handshake(); err != nil {
+	if err := handshakeConn.Handshake(); err != nil {
 		// Handshake failures are the connection's error, never the listener's
-		// (see HybridListener doc). raw.Close also aborts any pending I/O.
+		// (see HybridListener doc). raw.Close also aborts any pending I/O —
+		// including the interrupt issued by a concurrent Close.
 		_ = c.raw.Close()
-		c.nerr = err
 		return nil, err
 	}
 	if c.timeout > 0 {
-		if err := sec.SetDeadline(time.Time{}); err != nil {
-			_ = sec.Close()
-			c.nerr = err
+		if err := handshakeConn.SetDeadline(time.Time{}); err != nil {
+			_ = handshakeConn.Close()
 			return nil, err
 		}
 	}
-	c.sec = sec
-	return sec, nil
+	return handshakeConn, nil
 }
 
 func (c *hybridConn) Read(b []byte) (int, error) {
@@ -301,14 +331,30 @@ func (c *hybridConn) Write(b []byte) (int, error) {
 	return sec.Write(b)
 }
 
+// Close closes the connection and never blocks on the handshake: it takes a
+// fast snapshot of sec under mu (held only briefly by ensure/negotiate) and
+// closes outside the locks —
+//
+//   - sec already negotiated: close it (its Close also tears down raw);
+//   - handshake still in progress or not yet started: close raw directly,
+//     which interrupts the pending sniff/Handshake. The interrupted
+//     negotiation then fails on the closed connection and its error is
+//     cached by negotiate as this connection's terminal error.
+//
+// Close is idempotent via sync.Once: later calls return the first result
+// without touching the underlying conn again.
 func (c *hybridConn) Close() error {
-	c.mu.Lock()
-	sec := c.sec
-	c.mu.Unlock()
-	if sec != nil {
-		return sec.Close()
-	}
-	return c.raw.Close()
+	c.closeOnce.Do(func() {
+		c.mu.Lock()
+		sec := c.sec
+		c.mu.Unlock()
+		if sec != nil {
+			c.closeErr = sec.Close()
+			return
+		}
+		c.closeErr = c.raw.Close()
+	})
+	return c.closeErr
 }
 
 func (c *hybridConn) LocalAddr() net.Addr                { return c.raw.LocalAddr() }

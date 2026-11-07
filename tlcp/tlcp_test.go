@@ -421,12 +421,14 @@ func TestClientAuth_ECC(t *testing.T) {
 	encPool.AddCert(stdCertFromSM(t, smEncCert))
 
 	serverConfig := &Config{
-		Version:              Version11,
-		SignCertificate:      signCert,
-		EncCertificate:       encCert,
-		CipherSuites:         []uint16{SuiteECC_SM2_SM4_GCM_SM3},
-		ClientAuth:           RequireAndVerifyClientCert,
-		ClientCACertificates: []*x509.Certificate{stdCertFromSM(t, smSignCert)},
+		Version:         Version11,
+		SignCertificate: signCert,
+		EncCertificate:  encCert,
+		CipherSuites:    []uint16{SuiteECC_SM2_SM4_GCM_SM3},
+		ClientAuth:      RequireAndVerifyClientCert,
+		// 双证都入 CA 池：#8 起服务端对客户端双证走 VerifyDualCertSignatures，
+		// enc 证书链也必须到根（仅入 sign CA 会被正确拒绝）。
+		ClientCACertificates: []*x509.Certificate{stdCertFromSM(t, smSignCert), stdCertFromSM(t, smEncCert)},
 		InsecureSkipVerify:   true,
 	}
 

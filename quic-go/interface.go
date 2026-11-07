@@ -106,6 +106,14 @@ type ConnectionIDGenerator interface {
 type Config struct {
 	// GetConfigForClient is called for incoming connections.
 	// If the error is not nil, the connection attempt is refused.
+	//
+	// GM 模式（GMSM4GCM）不支持 per-client GM 配置（第四轮审计 #7，文档化裁
+	// 决）：GMSM4GCM/GMHandshakeConfig 是连接级静态配置，构造期校验
+	// （validateGMConfig，Listen/Dial 处 fail-fast）只针对传入的这份 Config。
+	// 本回调返回的 Config 若改写 GM 字段，仅由连接构造时的 hook 做兜底校验
+	// ——GM 被开启但配置不完整时，该单个连接被拒绝（CONNECTION_REFUSED），
+	// 不影响进程与其他连接。GM 部署应固定使用 Listener 级配置，不要依赖
+	// per-client 的 GM 配置。
 	GetConfigForClient func(info *ClientInfo) (*Config, error)
 	// The QUIC versions that can be negotiated.
 	// If not set, it uses all versions available.
@@ -205,6 +213,9 @@ type Config struct {
 	// GMSM4GCM is true. Set the Client field for Dial, the Server field for
 	// Listen. The tls13gm DCID field is overwritten by the QUIC transport with
 	// the connection's destination connection ID. Required when GMSM4GCM is true.
+	// GMSM4GCM 为 true 时的构造期校验（fail-fast）：Dial 场景 GMHandshakeConfig
+	// 与其 Client 字段、Listen 场景 GMHandshakeConfig 与其 Server 字段必须非
+	// nil，否则 Listen/Dial 直接报错。
 	GMHandshakeConfig *GMHandshakeConfig
 	// GMOnClientSessionTicket, when non-nil, is invoked on the client exactly
 	// once per NewSessionTicket received post-handshake (1-RTT). identity is the
@@ -216,6 +227,11 @@ type Config struct {
 	// ResumptionPSK / ResumptionObfuscatedTicketAge / ResumptionAppData on a
 	// subsequent DialEarly (the saved parameters are REQUIRED for 0-RTT: they
 	// restore the client's flow-control limits). Servers ignore it.
+	//
+	// 语义（第四轮审计 #3/#4）：全部入参均为防御性拷贝，回调可长期缓存，
+	// 不受连接关闭时内部密钥 Zero() 的影响。回调在 stateMutex 之外、连接的
+	// 握手 goroutine 上执行——可以安全调用本 CryptoSetup/连接的加锁方法，
+	// 但阻塞回调会延迟该连接的后续握手处理。
 	GMOnClientSessionTicket func(identity, psk []byte, ticketAgeAdd uint32, serverParams []byte)
 }
 

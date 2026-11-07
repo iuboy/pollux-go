@@ -95,7 +95,13 @@ func PKCS7Pad(data []byte, blockSize int) ([]byte, error) {
 	return padded, nil
 }
 
-// PKCS7Unpad removes PKCS#7 padding using constant-time comparison.
+// PKCS7Unpad removes PKCS#7 padding in constant time.
+//
+// 第四轮审计 P3:旧实现先按末字节做范围早退、再按 padding 值决定循环次数,
+// 执行时间与明文末块的数据取值相关——在 CBC 等无认证模式下构成经典
+// padding oracle 的时序半边。现改为:恒定扫描末块全部 blockSize 字节,
+// 范围检查(1 ≤ pad ≤ blockSize)与逐字节等值检查统一累积进 valid 掩码,
+// 循环次数与分支走向均与 pad 的实际取值无关,末尾一次性判定、统一返回。
 func PKCS7Unpad(data []byte, blockSize int) ([]byte, error) {
 	if blockSize <= 0 {
 		return nil, errors.New("sm4: invalid block size")
@@ -104,19 +110,25 @@ func PKCS7Unpad(data []byte, blockSize int) ([]byte, error) {
 		return nil, errors.New("sm4: invalid padded data length")
 	}
 	pad := data[len(data)-1]
-	padding := int(pad)
-	if padding == 0 || padding > blockSize {
-		return nil, errors.New("sm4: invalid PKCS7 padding")
-	}
-	// Constant-time validation of all padding bytes.
-	var valid = 1
-	for i := len(data) - padding; i < len(data); i++ {
-		valid &= subtle.ConstantTimeByteEq(data[i], pad)
+	p := int(pad)
+	// 范围检查并入掩码:lowerOK = 1 ⇔ pad ≥ 1;upperOK = 1 ⇔ pad ≤ blockSize。
+	// 两者都以无符号移位提取符号位,不引入数据相关分支。
+	lowerOK := 1 - int(uint64(int64(p)-1)>>63)
+	upperOK := 1 - int(uint64(int64(blockSize)-int64(p))>>63)
+	valid := lowerOK & upperOK
+	// 恒定扫描末块全部字节:last[i] 落在 padding 区(i ≥ blockSize-pad)时,
+	// 其值必须等于 pad;padding 区之外的字节恒视为通过。
+	last := data[len(data)-blockSize:]
+	for i := 0; i < blockSize; i++ {
+		// inPad = 1 ⇔ i ≥ blockSize-pad ⇔ blockSize-pad-i-1 < 0(符号位)。
+		inPad := int(uint64(int64(blockSize)-int64(p)-int64(i)-1) >> 63)
+		eq := subtle.ConstantTimeByteEq(last[i], pad)
+		valid &= 1 - inPad&(eq^1)
 	}
 	if valid == 0 {
 		return nil, errors.New("sm4: invalid PKCS7 padding")
 	}
-	return data[:len(data)-padding], nil
+	return data[:len(data)-p], nil
 }
 
 // Encrypt encrypts plaintext using the specified SM4 mode.

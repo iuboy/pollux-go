@@ -13,7 +13,7 @@ func TestSessionTicket_AppDataRoundTrip(t *testing.T) {
 	psk := bytes.Repeat([]byte{0xA7}, 32)
 	appData := []byte("server-transport-parameters-blob")
 
-	ticket, err := EncryptSessionTicketWithData(tek, psk, 0x11223344, appData)
+	ticket, err := EncryptSessionTicketWithData(tek, psk, 0x11223344, testTicketLifetime, appData)
 	if err != nil {
 		t.Fatalf("EncryptSessionTicketWithData: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestSessionTicket_AppDataRoundTrip(t *testing.T) {
 	}
 
 	// Tickets without appData decrypt with nil data (NewSessionTicket path).
-	plain, err := EncryptSessionTicket(tek, psk, 7)
+	plain, err := EncryptSessionTicket(tek, psk, 7, testTicketLifetime)
 	if err != nil {
 		t.Fatalf("EncryptSessionTicket: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestSessionTicket_AppDataSurvivesTEKRotation(t *testing.T) {
 	psk := bytes.Repeat([]byte{0xB1}, 32)
 	appData := []byte("params-v1")
 
-	ticket, err := EncryptSessionTicketWithData(prev, psk, 1, appData)
+	ticket, err := EncryptSessionTicketWithData(prev, psk, 1, testTicketLifetime, appData)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}

@@ -183,6 +183,11 @@ func verifySM2(cert *x509.Certificate, opts VerifyOptions) error {
 // first, since they need no trust material and their errors are the more
 // specific ones.
 //
+// The TLCP-mandated basic KeyUsage bits are enforced here regardless of
+// opts.KeyUsages: sign cert must carry DigitalSignature; enc cert must carry
+// KeyEncipherment, DataEncipherment, or KeyAgreement (three-KU acceptance set,
+// unified with cert.VerifyDualCertificate).
+//
 // opts applies to BOTH certificates (DNSName, Intermediates, CurrentTime);
 // opts.KeyUsages, when non-nil, applies to both on top of the built-in
 // sign/encrypt usage checks (nil defaults to ExtKeyUsageServerAuth, see
@@ -208,10 +213,15 @@ func VerifyDualCertSignatures(signCert, encCert *x509.Certificate, opts VerifyOp
 		return fmt.Errorf("%w: sign cert missing digitalSignature", errInvalidKeyUsage)
 	}
 
-	// Encrypt cert key usage
+	// Encrypt cert key usage：与 cert.VerifyDualCertificate 统一的三 KU 接受集
+	// （第四轮审计裁决）。TLCP 加密证书既用于 SM2 公钥加密 PMS
+	// （keyEncipherment／dataEncipherment），也用于 ECDHE 套件的 SM2 密钥协商
+	// （keyAgreement）——此前本入口只接受前两者，仅持 keyAgreement 的合法
+	// enc 证书在 tlcp 引擎侧会被拒，而 cert 入口却放行，两个入口不一致。
 	if encCert.KeyUsage&x509.KeyUsageKeyEncipherment == 0 &&
-		encCert.KeyUsage&x509.KeyUsageDataEncipherment == 0 {
-		return fmt.Errorf("%w: encrypt cert missing keyEncipherment or dataEncipherment", errInvalidKeyUsage)
+		encCert.KeyUsage&x509.KeyUsageDataEncipherment == 0 &&
+		encCert.KeyUsage&x509.KeyUsageKeyAgreement == 0 {
+		return fmt.Errorf("%w: encrypt cert missing keyEncipherment, dataEncipherment, or keyAgreement", errInvalidKeyUsage)
 	}
 
 	// Signature/chain verification per certificate, with per-cert context so a

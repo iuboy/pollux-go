@@ -223,13 +223,15 @@ type Conn struct {
 
 	peerParams *wire.TransportParameters
 	// peerParamsMutex guards peerParams for app-goroutine readers (0-RTT
-	// stream creation in newFlowController, ConnectionState) against the
-	// connection goroutine's writes (restoreTransportParameters /
-	// handleTransportParameters). Upstream v0.64.0 accesses the field
-	// unsynchronized — the 0-RTT race is quic-go#4303, still open upstream;
-	// the fork's GM event timing made it deterministic under CI's race
-	// detector. Conn-goroutine-only readers (applyTransportParameters,
-	// maxPacketSize, the ValidForUpdate check) stay lock-free.
+	// stream creation in newFlowController, ConnectionState, SendDatagram,
+	// AddPath) against the connection goroutine's writes
+	// (restoreTransportParameters / handleTransportParameters). Upstream
+	// v0.64.0 accesses the field unsynchronized — the 0-RTT race is
+	// quic-go#4303, still open upstream; the fork's GM event timing made it
+	// deterministic under CI's race detector. Conn-goroutine-only readers
+	// (applyTransportParameters, maxPacketSize, maxMTU, the ValidForUpdate
+	// check) stay lock-free. peerParamsMutex 是叶子锁：持有其他锁（如
+	// connStateMutex）时只允许在其之后获取，绝不允许反序或在持本锁时再取他锁。
 	peerParamsMutex sync.RWMutex
 
 	timer *time.Timer
@@ -286,7 +288,7 @@ var newConnection = func(
 	qlogTrace qlogwriter.Trace,
 	logger utils.Logger,
 	v protocol.Version,
-) *wrappedConn {
+) (*wrappedConn, error) {
 	s := &Conn{
 		ctx:                 ctx,
 		ctxCancel:           ctxCancel,
@@ -373,7 +375,14 @@ var newConnection = func(
 		s.qlogTransportParameters(params, protocol.PerspectiveServer)
 	}
 	var cs handshake.CryptoSetup
-	if gmCS, ok := newGMCryptoSetupServerHook(conf, clientDestConnID, params, logger, s.version); ok {
+	// GM 构造失败（配置缺失 / 非 QUIC v1 / keygen 失败）时返回错误，让连接
+	// 创建失败——服务端按既有拒绝路径回 CONNECTION_REFUSED（单连接失败，不
+	// 杀进程），见 gm_hook.go 的设计裁决注释。
+	gmCS, gmOK, gmErr := newGMCryptoSetupServerHook(conf, clientDestConnID, params, logger, s.version)
+	if gmErr != nil {
+		return nil, gmErr
+	}
+	if gmOK {
 		cs = gmCS
 	} else {
 		cs = handshake.NewCryptoSetupServer(
@@ -393,7 +402,7 @@ var newConnection = func(
 	s.packer = newPacketPacker(srcConnID, s.connIDManager.Get, s.initialStream, s.handshakeStream, s.sentPacketHandler, s.retransmissionQueue, cs, s.framer, &s.receivedPacketHandler, s.datagramQueue, s.perspective, s.qlogger)
 	s.unpacker = newPacketUnpacker(cs, s.srcConnIDLen)
 	s.cryptoStreamManager = newCryptoStreamManager(s.initialStream, s.handshakeStream, s.oneRTTStream)
-	return w
+	return w, nil
 }
 
 // declare this as a variable, such that we can it mock it in the tests
@@ -413,7 +422,7 @@ var newClientConnection = func(
 	qlogTrace qlogwriter.Trace,
 	logger utils.Logger,
 	v protocol.Version,
-) *wrappedConn {
+) (*wrappedConn, error) {
 	s := &Conn{
 		conn:                conn,
 		config:              conf,
@@ -513,7 +522,13 @@ var newClientConnection = func(
 		s.qlogTransportParameters(params, protocol.PerspectiveClient)
 	}
 	var cs handshake.CryptoSetup
-	if gmCS, ok := newGMCryptoSetupClientHook(conf, destConnID, params, logger, s.version); ok {
+	// GM 构造失败时返回错误，让 Dial 直接报错（单连接失败，不杀进程），
+	// 见 gm_hook.go 的设计裁决注释。
+	gmCS, gmOK, gmErr := newGMCryptoSetupClientHook(conf, destConnID, params, logger, s.version)
+	if gmErr != nil {
+		return nil, gmErr
+	}
+	if gmOK {
 		cs = gmCS
 	} else {
 		cs = handshake.NewCryptoSetupClient(
@@ -534,7 +549,7 @@ var newClientConnection = func(
 	if token != nil {
 		s.packer.SetToken(token.data)
 	}
-	return w
+	return w, nil
 }
 
 // r is the pathReceiver for the Transport that the connection was dialed or accepted on.
@@ -788,7 +803,11 @@ func (c *Conn) Context() context.Context {
 }
 
 func (c *Conn) supportsDatagrams() bool {
-	return c.peerParams.MaxDatagramFrameSize > 0
+	// app goroutine 读取（SendDatagram），须持锁并容忍 peerParams 尚未到达
+	// （参数未到 = 数据报未协商）。
+	c.peerParamsMutex.RLock()
+	defer c.peerParamsMutex.RUnlock()
+	return c.peerParams != nil && c.peerParams.MaxDatagramFrameSize > 0
 }
 
 // ConnectionState returns basic details about the QUIC connection.
@@ -3176,11 +3195,18 @@ func (c *Conn) SendDatagram(p []byte) error {
 		return errors.New("datagram support disabled")
 	}
 
+	// peerParams 的读取须纳入 peerParamsMutex（叶子锁，此处未持其他锁）：
+	// app goroutine 与连接 goroutine 的 handleTransportParameters 写入竞争，
+	// 且握手参数到达前 peerParams 可能为 nil。
+	c.peerParamsMutex.RLock()
+	maxDatagramFrameSize := c.peerParams.MaxDatagramFrameSize
+	c.peerParamsMutex.RUnlock()
+
 	f := &wire.DatagramFrame{DataLenPresent: true}
 	// The payload size estimate is conservative.
 	// Under many circumstances we could send a few more bytes.
 	maxDataLen := min(
-		f.MaxDataLen(c.peerParams.MaxDatagramFrameSize, c.version),
+		f.MaxDataLen(maxDatagramFrameSize, c.version),
 		protocol.ByteCount(c.maxPayloadSizeEstimate.Load()),
 	)
 	if protocol.ByteCount(len(p)) > maxDataLen {
@@ -3232,7 +3258,12 @@ func (c *Conn) AddPath(t *Transport) (*Path, error) {
 	if c.perspective == protocol.PerspectiveServer {
 		return nil, errors.New("server cannot initiate connection migration")
 	}
-	if c.peerParams.DisableActiveMigration {
+	// peerParams 的读取须纳入 peerParamsMutex（叶子锁，此处未持其他锁）；
+	// 握手参数到达前 peerParams 为 nil，此时按未禁用迁移处理。
+	c.peerParamsMutex.RLock()
+	disableActiveMigration := c.peerParams != nil && c.peerParams.DisableActiveMigration
+	c.peerParamsMutex.RUnlock()
+	if disableActiveMigration {
 		return nil, errors.New("server disabled connection migration")
 	}
 	if err := t.init(false); err != nil {

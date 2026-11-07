@@ -1,10 +1,13 @@
 package pwhash
 
 import (
+	"bytes"
 	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/iuboy/pollux-go/kdf"
 )
 
 // lightArgon2idParams keeps tests fast (default 64MiB×3 is ~100ms each).
@@ -353,6 +356,50 @@ func TestPBKDF2SM3_VerifyRejectsExcessiveIterations(t *testing.T) {
 		// pass — the upper bound short-circuited the derivation.
 	case <-time.After(2 * time.Second):
 		t.Fatal("Verify stalled >2s on i=1e8 — iteration upper bound missing")
+	}
+}
+
+// TestPBKDF2SM3_VerifyRejectsOversizedSalt 锁定第四轮审查 P3:解码侧夹取盐
+// 上限。攻击者构造的超长盐 PHC 字符串(> kdf.MaxSaltLen 的 64 KiB)必须在
+// 解码层被拒绝——Verify 返回 false 且不触发底层 PBKDF2;NeedsRehash 对解码
+// 失败输入恒为 true。
+func TestPBKDF2SM3_VerifyRejectsOversizedSalt(t *testing.T) {
+	h := mustPBKDF2SM3(t, lightPBKDF2Params())
+	bigSalt := base64.RawStdEncoding.EncodeToString(make([]byte, kdf.MaxSaltLen+1))
+	dk := base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{0x11}, 32))
+	encoded := "$pbkdf2-sm3$i=1000$" + bigSalt + "$" + dk
+
+	done := make(chan struct{})
+	go func() {
+		if h.Verify("any", encoded) {
+			t.Error("Verify accepted an oversized-salt encoded hash")
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+		// pass — the salt cap rejected the hash without deriving.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Verify stalled >2s on an oversized salt — decode-side salt cap missing")
+	}
+	if !h.NeedsRehash(encoded) {
+		t.Error("NeedsRehash should report true for an undecodable (oversized salt) hash")
+	}
+	// 边界:恰好 64 KiB 的盐应通过解码进入派生(此处 digest 不匹配,Verify
+	// 返回 false 属正常,关键是解码不因盐长度失败——不触发任何错误路径断言,
+	// 仅确认耗时受控)。
+	okSalt := base64.RawStdEncoding.EncodeToString(make([]byte, kdf.MaxSaltLen))
+	okEncoded := "$pbkdf2-sm3$i=1000$" + okSalt + "$" + dk
+	done2 := make(chan struct{})
+	go func() {
+		_ = h.Verify("any", okEncoded)
+		close(done2)
+	}()
+	select {
+	case <-done2:
+		// pass
+	case <-time.After(2 * time.Second):
+		t.Fatal("Verify stalled >2s on a boundary (64 KiB) salt — legit salts must still derive")
 	}
 }
 

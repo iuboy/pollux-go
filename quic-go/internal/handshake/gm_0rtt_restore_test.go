@@ -114,7 +114,7 @@ func TestGMCryptoSetup_Server0RTTRejectedOnParamsChange(t *testing.T) {
 	if newParams.ValidFor0RTT(oldParams) {
 		t.Fatal("test setup: lowered InitialMaxData must fail ValidFor0RTT")
 	}
-	identity, err := tls13gm.EncryptSessionTicketWithData(tek, psk, 0, oldParams.Marshal(protocol.PerspectiveServer))
+	identity, err := tls13gm.EncryptSessionTicketWithData(tek, psk, 0, 7200, oldParams.Marshal(protocol.PerspectiveServer))
 	if err != nil {
 		t.Fatalf("EncryptSessionTicketWithData: %v", err)
 	}

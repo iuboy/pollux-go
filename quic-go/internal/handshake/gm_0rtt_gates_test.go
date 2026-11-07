@@ -123,7 +123,7 @@ func TestGMCryptoSetup_Allow0RTTConfigGate(t *testing.T) {
 	for i := range tek {
 		tek[i] = byte(0x70 + i)
 	}
-	identity, err := tls13gm.EncryptSessionTicket(tek, psk, 0)
+	identity, err := tls13gm.EncryptSessionTicket(tek, psk, 0, 7200)
 	if err != nil {
 		t.Fatalf("EncryptSessionTicket: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestGMCryptoSetup_Client0RTTRejectionDiscards(t *testing.T) {
 	for i := range wrongTek {
 		wrongTek[i] = byte(0xB0 + i)
 	}
-	identity, err := tls13gm.EncryptSessionTicket(rightTek, psk, 0)
+	identity, err := tls13gm.EncryptSessionTicket(rightTek, psk, 0, 7200)
 	if err != nil {
 		t.Fatalf("EncryptSessionTicket: %v", err)
 	}

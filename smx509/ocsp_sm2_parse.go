@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/iuboy/pollux-go/sm2"
@@ -128,6 +129,15 @@ func parseSM2OCSPResponse(data []byte, issuer *x509.Certificate, now time.Time) 
 		return nil, errors.New("smx509: OCSP response contains multiple statuses; use a cert-filtering parser")
 	}
 	singleResp := basicResp.TBSResponseData.Responses[0]
+
+	// responseExtensions 的 critical 位检查（RFC 6960 §4.2.1）：未知 critical
+	// 扩展必须拒绝，未知非 critical 扩展忽略；nonce（RFC 8954）视为已知扩展。
+	// 与 ParseOCSPResponseWithIssuerAt 的非 SM2 路径共用同一裁决
+	// （checkResponseExtensionsCritical）；singleResponse 级的 critical 检查
+	// 在下方签名验证之后，保持 x/crypto 的既有顺序。
+	if err := checkResponseExtensionsCritical(basicResp.TBSResponseData.ResponseExtensions); err != nil {
+		return nil, err
+	}
 
 	ret := &ocsp.Response{
 		Raw:                data,
@@ -391,6 +401,54 @@ func IsSM3CertID(resp *ocsp.Response) bool {
 
 // oidExtKeyUsageOCSPSigning is id-kp-OCSPSigning (RFC 6960 §4.2.2.2).
 var oidExtKeyUsageOCSPSigning = asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 9}
+
+// sameResponderKey 报告 a 与 b 是否承载同一把公钥：按完整
+// SubjectPublicKeyInfo DER 逐字节比较，对 RSA、ECDSA、Ed25519 一视同仁。
+// 相比逐类型调用 Equal，同钥异编码的罕见情形会被误判为「不同」——误差
+// 方向落在 fail-closed 一侧（多要求一枚 OCSPSigning EKU），不会放松检查。
+// 用于 OCSP 响应者是否 issuer-direct 的判定：公钥相同视为 issuer 直接
+// 签发（无需 EKU），公钥不同即委派响应者（RFC 6960 §4.2.2.2）。
+func sameResponderKey(a, b *x509.Certificate) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return bytes.Equal(a.RawSubjectPublicKeyInfo, b.RawSubjectPublicKeyInfo)
+}
+
+// checkResponseExtensionsCritical 对 basicOCSPResponse 的 responseExtensions
+// 施加 RFC 6960 §4.2.1 的 critical 位语义：不认识的 critical 扩展必须
+// 拒绝，不认识的非 critical 扩展忽略。nonce（oidExtOCSPNonce，RFC 8954
+// §2.3）是本包已识别并处理的扩展，无论 critical 与否都不因此拒绝。SM2
+// 解析路径与 ParseOCSPResponseWithIssuerAt 的非 SM2 路径共用本裁决。
+func checkResponseExtensionsCritical(exts []pkix.Extension) error {
+	for _, ext := range exts {
+		if !ext.Critical || ext.Id.Equal(oidExtOCSPNonce) {
+			continue
+		}
+		return fmt.Errorf("smx509: unsupported critical extension %v in OCSP responseExtensions", ext.Id)
+	}
+	return nil
+}
+
+// responseExtensionsFromRaw 从 DER 编码的 OCSP 响应中提取
+// basicOCSPResponse 的 responseExtensions，供非 SM2 路径补做 critical 位
+// 检查——x/crypto 的 ParseResponse 不解析响应级扩展（encoding/asn1 静默
+// 忽略尾部未知元素）。结构不完整或不成功的响应返回 ok=false，调用方
+// fail-closed。
+func responseExtensionsFromRaw(data []byte) (exts []pkix.Extension, ok bool) {
+	var outer sm2ResponseASN1
+	if _, err := asn1.Unmarshal(data, &outer); err != nil {
+		return nil, false
+	}
+	if ocsp.ResponseStatus(outer.Status) != ocsp.Success || !outer.Response.ResponseType.Equal(idPKIXOCSPBasic) {
+		return nil, false
+	}
+	var basic parseBasicResponse
+	if _, err := asn1.Unmarshal(outer.Response.Response, &basic); err != nil {
+		return nil, false
+	}
+	return basic.TBSResponseData.ResponseExtensions, true
+}
 
 // hasOCSPSigningEKU reports whether cert is authorized to sign OCSP responses
 // as a delegated responder. RFC 6960 §4.2.2.2 mandates the id-kp-OCSPSigning

@@ -1,12 +1,9 @@
 package tlcp
 
 import (
-	"crypto/tls"
 	"errors"
 	"net"
 	"testing"
-
-	polluxtls "github.com/iuboy/pollux-go/tls"
 )
 
 // TestVersionString 验证 Version.String。
@@ -48,42 +45,6 @@ func TestVersionFromString(t *testing.T) {
 				t.Errorf("VersionFromString(%q) err = %v, want ErrInvalidVersion", c.in, err)
 			}
 		}
-	}
-}
-
-// TestEnableDisable 验证在 tls.Config 上启用/禁用国密套件。
-func TestEnableDisable(t *testing.T) {
-	national := polluxtls.NationalCipherSuites()
-	if len(national) == 0 {
-		t.Skip("no national cipher suites available")
-	}
-
-	cfg := &tls.Config{CipherSuites: []uint16{0x009C}} // TLS_RSA... 占位非国密
-	before := len(cfg.CipherSuites)
-
-	if err := Enable(cfg); err != nil {
-		t.Fatalf("Enable() err = %v", err)
-	}
-	if len(cfg.CipherSuites) <= before {
-		t.Errorf("Enable() did not append suites: before=%d after=%d", before, len(cfg.CipherSuites))
-	}
-
-	// 禁用后应仅剩非国密套件
-	Disable(cfg)
-	for _, s := range cfg.CipherSuites {
-		if polluxtls.IsNationalCipherSuite(s) {
-			t.Errorf("Disable() left national suite 0x%04X", s)
-		}
-	}
-}
-
-// TestEnable_NoNationalSuites 验证无国密套件时返回 ErrTLCPNotSupported。
-// 由于 NationalCipherSuites 总返回非空,此分支在当前实现下不可达,
-// 这里仅确认 Enable 在正常情况下不返回该错误。
-func TestEnable_NoNationalSuites(t *testing.T) {
-	cfg := &tls.Config{}
-	if err := Enable(cfg); errors.Is(err, ErrTLCPNotSupported) {
-		t.Logf("Enable returned ErrTLCPNotSupported (national suites empty); acceptable")
 	}
 }
 

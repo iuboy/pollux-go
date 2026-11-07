@@ -5,15 +5,187 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/quicvarint"
 
 	"golang.org/x/sync/errgroup"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestWriteWithLimitStreamFlowControl(t *testing.T) {
+	testWriteWithLimitFlowControl(t, &quic.Config{
+		InitialStreamReceiveWindow:     100,
+		InitialConnectionReceiveWindow: quicvarint.Max,
+	})
+}
+
+func TestWriteWithLimitConnectionFlowControl(t *testing.T) {
+	testWriteWithLimitFlowControl(t, &quic.Config{
+		InitialStreamReceiveWindow:     quicvarint.Max,
+		InitialConnectionReceiveWindow: 100,
+	})
+}
+
+func testWriteWithLimitFlowControl(t *testing.T, config *quic.Config) {
+	ln, err := quic.Listen(newUDPConnLocalhost(t), getTLSConfig(), getQuicConfig(config))
+	require.NoError(t, err)
+	defer ln.Close()
+
+	deadline := time.Now().Add(time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	client, err := quic.Dial(ctx, newUDPConnLocalhost(t), ln.Addr(), getTLSClientConfig(), getQuicConfig(nil))
+	require.NoError(t, err)
+	defer client.CloseWithError(0, "")
+
+	server, err := ln.Accept(ctx)
+	require.NoError(t, err)
+	str, err := client.OpenUniStreamSync(ctx)
+	require.NoError(t, err)
+	require.NoError(t, str.SetWriteDeadline(deadline))
+
+	data := GeneratePRData(101)
+	n, err := str.WriteWithLimit(data, func(maxBytes int) int {
+		return min(maxBytes, 25)
+	})
+	require.Equal(t, 25, n)
+	require.ErrorIs(t, err, quic.ErrWriteLimitReached)
+
+	receiveStr, err := server.AcceptUniStream(ctx)
+	require.NoError(t, err)
+	require.NoError(t, receiveStr.SetReadDeadline(deadline))
+	received := make([]byte, n)
+	_, err = io.ReadFull(receiveStr, received)
+	require.NoError(t, err)
+	require.Equal(t, data[:n], received)
+
+	written, err := str.WriteWithLimit(data[n:], func(maxBytes int) int { return maxBytes })
+	require.Equal(t, len(data)-n, written)
+	require.NoError(t, err)
+
+	require.NoError(t, str.Close())
+	rest, err := io.ReadAll(receiveStr)
+	require.NoError(t, err)
+	require.Equal(t, data, append(received, rest...))
+}
+
+func TestStreamWriteAfterClose(t *testing.T) {
+	ln, err := quic.Listen(newUDPConnLocalhost(t), getTLSConfig(), getQuicConfig(nil))
+	require.NoError(t, err)
+	defer ln.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	client, err := quic.Dial(ctx, newUDPConnLocalhost(t), ln.Addr(), getTLSClientConfig(), getQuicConfig(nil))
+	require.NoError(t, err)
+	defer client.CloseWithError(0, "")
+
+	server, err := ln.Accept(ctx)
+	require.NoError(t, err)
+	str, err := client.OpenStreamSync(ctx)
+	require.NoError(t, err)
+	_, err = str.Write([]byte("foobar"))
+	require.NoError(t, err)
+	require.NoError(t, str.Close())
+
+	require.ErrorIs(t, context.Cause(str.Context()), quic.ErrStreamClosed)
+	_, err = str.Write([]byte("foo"))
+	require.ErrorIs(t, err, quic.ErrStreamClosed)
+	// closing a stream doesn't close the connection
+	require.NotErrorIs(t, err, net.ErrClosed)
+	require.ErrorIs(t, str.TryWriteAll([]byte("foo")), quic.ErrStreamClosed)
+
+	serverStr, err := server.AcceptStream(ctx)
+	require.NoError(t, err)
+	data, err := io.ReadAll(serverStr)
+	require.NoError(t, err)
+	require.Equal(t, []byte("foobar"), data)
+}
+
+func TestStreamCreditRelease(t *testing.T) {
+	ln, err := quic.Listen(
+		newUDPConnLocalhost(t),
+		getTLSConfig(),
+		getQuicConfig(&quic.Config{
+			MaxIncomingStreams:         1,
+			MaxIncomingUniStreams:      1,
+			RequireStreamCreditRelease: true,
+		}),
+	)
+	require.NoError(t, err)
+	defer ln.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	client, err := quic.Dial(ctx, newUDPConnLocalhost(t), ln.Addr(), getTLSClientConfig(), getQuicConfig(nil))
+	require.NoError(t, err)
+	defer client.CloseWithError(0, "")
+
+	server, err := ln.Accept(ctx)
+	require.NoError(t, err)
+	defer server.CloseWithError(0, "")
+	require.True(t, server.ConnectionState().RequireStreamCreditRelease)
+	require.False(t, client.ConnectionState().RequireStreamCreditRelease)
+
+	t.Run("unidirectional", func(t *testing.T) {
+		str, err := client.OpenUniStream()
+		require.NoError(t, err)
+		_, err = str.Write([]byte("foobar"))
+		require.NoError(t, err)
+		require.NoError(t, str.Close())
+
+		serverStr, err := server.AcceptUniStream(ctx)
+		require.NoError(t, err)
+		data, err := io.ReadAll(serverStr)
+		require.NoError(t, err)
+		require.Equal(t, []byte("foobar"), data)
+
+		// the stream has completed, but its stream credit hasn't been released yet
+		ctx2, cancel2 := context.WithTimeout(ctx, scaleDuration(50*time.Millisecond))
+		defer cancel2()
+		_, err = client.OpenUniStreamSync(ctx2)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+
+		serverStr.ReleaseStreamCredit()
+		_, err = client.OpenUniStreamSync(ctx)
+		require.NoError(t, err)
+	})
+
+	t.Run("bidirectional", func(t *testing.T) {
+		str, err := client.OpenStream()
+		require.NoError(t, err)
+		_, err = str.Write([]byte("foobar"))
+		require.NoError(t, err)
+		require.NoError(t, str.Close())
+
+		serverStr, err := server.AcceptStream(ctx)
+		require.NoError(t, err)
+		data, err := io.ReadAll(serverStr)
+		require.NoError(t, err)
+		require.Equal(t, []byte("foobar"), data)
+		_, err = serverStr.Write([]byte("raboof"))
+		require.NoError(t, err)
+		require.NoError(t, serverStr.Close())
+		data, err = io.ReadAll(str)
+		require.NoError(t, err)
+		require.Equal(t, []byte("raboof"), data)
+
+		// the stream has completed, but its stream credit hasn't been released yet
+		ctx2, cancel2 := context.WithTimeout(ctx, scaleDuration(50*time.Millisecond))
+		defer cancel2()
+		_, err = client.OpenStreamSync(ctx2)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+
+		serverStr.ReleaseStreamCredit()
+		_, err = client.OpenStreamSync(ctx)
+		require.NoError(t, err)
+	})
+}
 
 func TestBidirectionalStreamMultiplexing(t *testing.T) {
 	const numStreams = 75

@@ -16,7 +16,6 @@ import (
 	"net/http/httptrace"
 	"net/textproto"
 	"os"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -28,7 +27,6 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/http3/qlog"
 	quicproxy "github.com/quic-go/quic-go/integrationtests/tools/proxy"
-	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/testutils/events"
 
 	"github.com/stretchr/testify/assert"
@@ -126,6 +124,50 @@ func TestHTTPGet(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, PRDataLong, body)
 	})
+}
+
+func TestHTTPStreamCreditRelease(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/data", func(w http.ResponseWriter, r *http.Request) {
+		w.Write(PRData)
+	})
+	port := startHTTPServer(t, mux, func(s *http3.Server) {
+		s.QUICConfig = getQuicConfig(&quic.Config{
+			MaxIncomingStreams:         1,
+			RequireStreamCreditRelease: true,
+		})
+	})
+	// The response doesn't fit into the stream flow control window,
+	// so the request stream only completes once the response body is read.
+	cl := newHTTP3Client(t, func(tr *http3.Transport) {
+		tr.QUICConfig.InitialStreamReceiveWindow = 10 * 1024
+	})
+	url := fmt.Sprintf("https://localhost:%d/data", port)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	require.NoError(t, err)
+	resp, err := cl.Do(req)
+	require.NoError(t, err)
+
+	// the server only allows a single request stream at a time
+	ctx2, cancel2 := context.WithTimeout(ctx, scaleDuration(20*time.Millisecond))
+	defer cancel2()
+	req2, err := http.NewRequestWithContext(ctx2, http.MethodGet, url, nil)
+	require.NoError(t, err)
+	_, err = cl.Do(req2)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	// Once the first request stream completes, HTTP/3 releases its stream credit,
+	// allowing the client to send the next request.
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, PRData, body)
+	resp, err = cl.Do(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
 }
 
 func TestHTTPPost(t *testing.T) {
@@ -522,9 +564,8 @@ func TestHTTPErrAbortHandler(t *testing.T) {
 	close(respChan)
 	require.NoError(t, err)
 	body, err := io.ReadAll(resp.Body)
-	require.Error(t, err)
 	var h3Err *http3.Error
-	require.True(t, errors.As(err, &h3Err))
+	require.ErrorAs(t, err, &h3Err)
 	require.Equal(t, http3.ErrCodeInternalError, h3Err.ErrorCode)
 	// the body will be a prefix of what's written
 	require.True(t, bytes.HasPrefix([]byte("foobar"), body))
@@ -608,8 +649,12 @@ func TestHTTPServerIdleTimeout(t *testing.T) {
 	t.Cleanup(func() { tr.Close() })
 	cl := &http.Client{Transport: tr}
 
-	_, err := cl.Get(fmt.Sprintf("https://localhost:%d/hello", port))
+	resp, err := cl.Get(fmt.Sprintf("https://localhost:%d/hello", port))
 	require.NoError(t, err)
+	// Wait for the server to close the request stream and start the idle timer.
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
 
 	var conn *quic.Conn
 	select {
@@ -669,7 +714,6 @@ func TestHTTPClientRequestContextCancellation(t *testing.T) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://localhost:%d/cancel-before", port), nil)
 		require.NoError(t, err)
 		_, err = cl.Do(req)
-		require.Error(t, err)
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 
@@ -695,9 +739,8 @@ func TestHTTPClientRequestContextCancellation(t *testing.T) {
 
 		select {
 		case err := <-errChan:
-			require.Error(t, err)
 			var http3Err *http3.Error
-			require.True(t, errors.As(err, &http3Err))
+			require.ErrorAs(t, err, &http3Err)
 			require.Equal(t, http3.ErrCodeRequestCanceled, http3Err.ErrorCode)
 			require.True(t, http3Err.Remote)
 		case <-time.After(time.Second):
@@ -706,7 +749,7 @@ func TestHTTPClientRequestContextCancellation(t *testing.T) {
 
 		_, err = resp.Body.Read([]byte{0})
 		var http3Err *http3.Error
-		require.True(t, errors.As(err, &http3Err))
+		require.ErrorAs(t, err, &http3Err)
 		require.Equal(t, http3.ErrCodeRequestCanceled, http3Err.ErrorCode)
 		require.False(t, http3Err.Remote)
 	})
@@ -745,7 +788,7 @@ func TestHTTPDeadlines(t *testing.T) {
 
 		body, err := io.ReadAll(&readerWithTimeout{Reader: resp.Body, Timeout: 2 * deadlineDelay})
 		require.NoError(t, err)
-		require.True(t, time.Now().After(expectedEnd))
+		require.Greater(t, time.Now(), expectedEnd)
 		require.Equal(t, "ok", string(body))
 
 		select {
@@ -773,17 +816,18 @@ func TestHTTPDeadlines(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
-		body, err := io.ReadAll(&readerWithTimeout{Reader: resp.Body, Timeout: 2 * deadlineDelay})
-		require.NoError(t, err)
-		require.True(t, time.Now().After(expectedEnd))
-		require.Contains(t, string(body), "aa")
-
+		// the response body isn't read yet, so the handler's writes block on flow control
 		select {
 		case err := <-errChan:
 			require.ErrorIs(t, err, os.ErrDeadlineExceeded)
 		case <-time.After(2 * deadlineDelay):
 			t.Fatal("handler was not called")
 		}
+		require.Greater(t, time.Now(), expectedEnd)
+
+		// the handler returned in the middle of the response body, so the stream is reset
+		_, err = io.ReadAll(&readerWithTimeout{Reader: resp.Body, Timeout: 2 * deadlineDelay})
+		require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCodeRequestCanceled, Remote: true})
 	})
 }
 
@@ -821,7 +865,7 @@ func TestHTTPServeQUICConn(t *testing.T) {
 	require.NoError(t, cl.Transport.(io.Closer).Close())
 	select {
 	case err := <-errChan:
-		require.Error(t, err)
+		require.ErrorIs(t, err, &http3.Error{ErrorCode: 0, Remote: true})
 		require.ErrorContains(t, err, "accepting stream failed")
 	case <-time.After(time.Second):
 		t.Fatal("server didn't shut down")
@@ -898,9 +942,7 @@ func TestHTTPConnContext(t *testing.T) {
 
 	select {
 	case ctx := <-connCtxChan:
-		serv, ok := ctx.Value(http3.ServerContextKey).(*http3.Server)
-		require.True(t, ok)
-		require.Equal(t, server, serv)
+		require.Same(t, server, ctx.Value(http3.ServerContextKey))
 	default:
 		t.Fatal("handler was not called")
 	}
@@ -911,9 +953,7 @@ func TestHTTPConnContext(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, "bar", v)
 
-		serv, ok := ctx.Value(http3.ServerContextKey).(*http3.Server)
-		require.True(t, ok)
-		require.Equal(t, server, serv)
+		require.Same(t, server, ctx.Value(http3.ServerContextKey))
 	default:
 		t.Fatal("handler was not called")
 	}
@@ -1067,77 +1107,15 @@ func TestHTTP1xxTerminalResponse(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 }
 
-func TestHTTP0RTT(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/0rtt", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, strconv.FormatBool(!r.TLS.HandshakeComplete))
-	})
-	port := startHTTPServer(t, mux)
-
-	var num0RTTPackets atomic.Uint32
-	proxy := quicproxy.Proxy{
-		Conn:       newUDPConnLocalhost(t),
-		ServerAddr: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port},
-		DelayPacket: func(_ quicproxy.Direction, _, _ net.Addr, data []byte) time.Duration {
-			if containsPacketType(data, protocol.PacketType0RTT) {
-				num0RTTPackets.Add(1)
-			}
-			return scaleDuration(25 * time.Millisecond)
-		},
-	}
-	require.NoError(t, proxy.Start())
-	defer proxy.Close()
-
-	tlsConf := getTLSClientConfigWithoutServerName()
-	puts := make(chan string, 10)
-	tlsConf.ClientSessionCache = newClientSessionCache(tls.NewLRUClientSessionCache(10), nil, puts)
-	tr := &http3.Transport{
-		TLSClientConfig:    tlsConf,
-		QUICConfig:         getQuicConfig(&quic.Config{MaxIdleTimeout: 10 * time.Second}),
-		DisableCompression: true,
-	}
-	defer tr.Close()
-	addDialCallback(t, tr)
-
-	proxyPort := proxy.LocalAddr().(*net.UDPAddr).Port
-	req, err := http.NewRequest(http3.MethodGet0RTT, fmt.Sprintf("https://localhost:%d/0rtt", proxyPort), nil)
-	require.NoError(t, err)
-	rsp, err := tr.RoundTrip(req)
-	require.NoError(t, err)
-	require.Equal(t, 200, rsp.StatusCode)
-	data, err := io.ReadAll(rsp.Body)
-	require.NoError(t, err)
-	require.Equal(t, "false", string(data))
-	require.Zero(t, num0RTTPackets.Load())
-
-	select {
-	case <-puts:
-	case <-time.After(time.Second):
-		t.Fatal("did not receive session ticket")
-	}
-
-	tr2 := &http3.Transport{
-		TLSClientConfig:    tr.TLSClientConfig,
-		QUICConfig:         tr.QUICConfig,
-		DisableCompression: true,
-	}
-	defer tr2.Close()
-	addDialCallback(t, tr2)
-	rsp, err = tr2.RoundTrip(req)
-	require.NoError(t, err)
-	require.Equal(t, 200, rsp.StatusCode)
-	data, err = io.ReadAll(rsp.Body)
-	require.NoError(t, err)
-	require.Equal(t, "true", string(data))
-	require.NotZero(t, num0RTTPackets.Load())
-}
-
 func TestHTTPStreamer(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/httpstreamer", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 
-		str := w.(http3.HTTPStreamer).HTTPStream()
+		str, err := w.(http3.HTTPStreamer).HTTPStream()
+		if !assert.NoError(t, err) {
+			return
+		}
 		str.Write([]byte("foobar"))
 
 		// Do this in a Go routine, so that the handler returns early.

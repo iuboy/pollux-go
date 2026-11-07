@@ -16,11 +16,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func nopControlStrHandler(*quic.ReceiveStream, *frameParser) {}
+
 func TestConnReceiveSettings(t *testing.T) {
 	var eventRecorder events.Recorder
 	clientConn, serverConn := newConnPair(t, withServerRecorder(&eventRecorder))
 
-	conn := newRawConn(serverConn, false, nil, nil, &eventRecorder, nil)
+	conn := newRawConn(serverConn, false, nil, nopControlStrHandler, &eventRecorder, nil)
 	b := quicvarint.Append(nil, streamTypeControlStream)
 	sf := &settingsFrame{
 		MaxFieldSectionSize: 1234,
@@ -63,14 +65,24 @@ func TestConnReceiveSettings(t *testing.T) {
 				Frame: qlog.Frame{
 					Frame: qlog.SettingsFrame{
 						MaxFieldSectionSize: 1234,
-						Datagram:            pointer(true),
-						ExtendedConnect:     pointer(true),
+						Datagram:            1,
+						ExtendedConnect:     1,
 						Other:               map[uint64]uint64{1337: 42},
 					},
 				},
 			},
 		},
 		filterQlogEventsForFrame(eventRecorder.Events(qlog.FrameParsed{}), qlog.SettingsFrame{}),
+	)
+	require.Equal(t,
+		[]qlogwriter.Event{
+			qlog.StreamTypeSet{
+				Initiator:  qlog.InitiatorRemote,
+				StreamID:   controlStr.StreamID(),
+				StreamType: qlog.StreamTypeControl,
+			},
+		},
+		eventRecorder.Events(qlog.StreamTypeSet{}),
 	)
 }
 
@@ -89,7 +101,7 @@ func TestConnRejectDuplicateStreams(t *testing.T) {
 func testConnRejectDuplicateStreams(t *testing.T, typ uint64) {
 	clientConn, serverConn := newConnPair(t)
 
-	conn := newRawConn(serverConn, false, nil, nil, nil, nil)
+	conn := newRawConn(serverConn, false, nil, nopControlStrHandler, nil, nil)
 	b := quicvarint.Append(nil, typ)
 	if typ == streamTypeControlStream {
 		b = (&settingsFrame{}).Append(b)
@@ -140,7 +152,7 @@ func testConnRejectDuplicateStreams(t *testing.T, typ uint64) {
 func TestConnResetUnknownUniStream(t *testing.T) {
 	clientConn, serverConn := newConnPair(t)
 
-	conn := newRawConn(serverConn, false, nil, nil, nil, nil)
+	conn := newRawConn(serverConn, false, nil, nopControlStrHandler, nil, nil)
 	buf := bytes.NewBuffer(quicvarint.Append(nil, 0x1337))
 	str, err := clientConn.OpenUniStream()
 	require.NoError(t, err)
@@ -192,7 +204,7 @@ func TestConnControlStreamFailures(t *testing.T) {
 func testConnControlStreamFailures(t *testing.T, data []byte, readErr error, expectedErr ErrCode) {
 	clientConn, serverConn := newConnPair(t)
 
-	conn := newRawConn(clientConn, false, nil, nil, nil, nil)
+	conn := newRawConn(clientConn, false, nil, nopControlStrHandler, nil, nil)
 	controlStr, err := serverConn.OpenUniStream()
 	require.NoError(t, err)
 	_, err = controlStr.Write(quicvarint.Append(nil, streamTypeControlStream))
@@ -240,19 +252,10 @@ func testConnControlStreamFailures(t *testing.T, data []byte, readErr error, exp
 }
 
 func TestConnControlStreamHandler(t *testing.T) {
-	t.Run("with handler", func(t *testing.T) { testConnControlStreamHandler(t, true) })
-	t.Run("without handler", func(t *testing.T) { testConnControlStreamHandler(t, false) })
-}
-
-func testConnControlStreamHandler(t *testing.T, useHandler bool) {
 	localConn, peerConn := newConnPair(t)
 
 	handlerCalled := make(chan struct{})
-	var controlStrHandler func(*quic.ReceiveStream, *frameParser)
-	if useHandler {
-		controlStrHandler = func(*quic.ReceiveStream, *frameParser) { close(handlerCalled) }
-	}
-	conn := newRawConn(localConn, false, nil, controlStrHandler, nil, nil)
+	conn := newRawConn(localConn, false, nil, func(*quic.ReceiveStream, *frameParser) { close(handlerCalled) }, nil, nil)
 
 	b := quicvarint.Append(nil, streamTypeControlStream)
 	b = (&settingsFrame{}).Append(b)
@@ -266,29 +269,17 @@ func testConnControlStreamHandler(t *testing.T, useHandler bool) {
 	localStr, err := localConn.AcceptUniStream(ctx)
 	require.NoError(t, err)
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		conn.handleUnidirectionalStream(localStr, false)
-	}()
+	go conn.handleUnidirectionalStream(localStr, false)
 
 	select {
 	case <-conn.ReceivedSettings():
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for settings")
 	}
-	if useHandler {
-		select {
-		case <-handlerCalled:
-		case <-time.After(time.Second):
-			t.Fatal("timeout waiting for handler to be called")
-		}
-	} else {
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("timeout waiting for handler to return")
-		}
+	select {
+	case <-handlerCalled:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for handler to be called")
 	}
 }
 
@@ -304,7 +295,7 @@ func TestConnRejectPushStream(t *testing.T) {
 func testConnRejectPushStream(t *testing.T, isServer bool, expectedErr ErrCode) {
 	localConn, peerConn := newConnPair(t)
 
-	conn := newRawConn(localConn, false, nil, nil, nil, nil)
+	conn := newRawConn(localConn, false, nil, nopControlStrHandler, nil, nil)
 	buf := bytes.NewBuffer(quicvarint.Append(nil, streamTypePushStream))
 	str, err := peerConn.OpenUniStream()
 	require.NoError(t, err)
@@ -340,7 +331,7 @@ func testConnRejectPushStream(t *testing.T, isServer bool, expectedErr ErrCode) 
 func TestConnInconsistentDatagramSupport(t *testing.T) {
 	clientConn, serverConn := newConnPair(t)
 
-	conn := newRawConn(clientConn, true, nil, nil, nil, nil)
+	conn := newRawConn(clientConn, true, nil, nopControlStrHandler, nil, nil)
 	b := quicvarint.Append(nil, streamTypeControlStream)
 	b = (&settingsFrame{Datagram: true}).Append(b)
 	controlStr, err := serverConn.OpenUniStream()
@@ -373,7 +364,7 @@ func TestConnSendAndReceiveDatagram(t *testing.T) {
 	var eventRecorder events.Recorder
 	clientConn, serverConn := newConnPair(t, withDatagrams(), withClientRecorder(&eventRecorder))
 
-	conn := newRawConn(clientConn, true, nil, nil, &eventRecorder, nil)
+	conn := newRawConn(clientConn, true, nil, nopControlStrHandler, &eventRecorder, nil)
 	b := quicvarint.Append(nil, streamTypeControlStream)
 	b = (&settingsFrame{Datagram: true}).Append(b)
 	controlStr, err := serverConn.OpenUniStream()
@@ -465,7 +456,7 @@ func TestConnDatagramFailures(t *testing.T) {
 func testConnDatagramFailures(t *testing.T, datagram []byte) {
 	localConn, peerConn := newConnPair(t, withDatagrams())
 
-	conn := newRawConn(localConn, true, nil, nil, nil, nil)
+	conn := newRawConn(localConn, true, nil, nopControlStrHandler, nil, nil)
 
 	b := quicvarint.Append(nil, streamTypeControlStream)
 	b = (&settingsFrame{Datagram: true}).Append(b)
@@ -499,4 +490,42 @@ func testConnDatagramFailures(t *testing.T, datagram []byte) {
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for close")
 	}
+}
+
+type closeTrackingRecorder struct {
+	events.Recorder
+	closed chan struct{}
+}
+
+var _ qlogwriter.Recorder = &closeTrackingRecorder{}
+
+func (r *closeTrackingRecorder) RecordEvent(ev qlogwriter.Event) {
+	select {
+	case <-r.closed:
+		panic("RecordEvent called after Close")
+	default:
+	}
+	r.Recorder.RecordEvent(ev)
+}
+
+func (r *closeTrackingRecorder) Close() error {
+	close(r.closed)
+	return nil
+}
+
+func TestConnQlogProducerAfterClose(t *testing.T) {
+	_, serverConn := newConnPair(t)
+	rec := &closeTrackingRecorder{closed: make(chan struct{})}
+	conn := newRawConn(serverConn, false, nil, nopControlStrHandler, rec, nil)
+
+	serverConn.CloseWithError(0, "")
+	select {
+	case <-rec.closed:
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+
+	// closeTrackingRecorder panics if closed twice
+	_, err := conn.openControlStream(&settingsFrame{})
+	require.Error(t, err)
 }

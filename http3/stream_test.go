@@ -3,11 +3,14 @@ package http3
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -40,11 +43,12 @@ func TestStreamReadDataFrames(t *testing.T) {
 	clientConn, _ := newConnPair(t, withClientRecorder(&eventRecorder))
 	str := newStream(
 		qstr,
-		newRawConn(clientConn, false, nil, nil, &eventRecorder, nil),
+		newRawConn(clientConn, false, nil, nopControlStrHandler, &eventRecorder, nil),
 		nil,
 		func(io.Reader, *headersFrame) error { return nil },
 		&eventRecorder,
 	)
+	require.Same(t, clientConn.QlogTrace(), str.QlogTrace())
 
 	buf.Write(getDataFrame([]byte("foobar")))
 	b := make([]byte, 3)
@@ -108,7 +112,7 @@ func TestStreamInvalidFrame(t *testing.T) {
 
 	str := newStream(
 		qstr,
-		newRawConn(clientConn, false, nil, nil, nil, nil),
+		newRawConn(clientConn, false, nil, nopControlStrHandler, nil, nil),
 		nil,
 		func(io.Reader, *headersFrame) error { return nil },
 		nil,
@@ -134,7 +138,8 @@ func TestStreamWrite(t *testing.T) {
 	qstr.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
 	qstr.EXPECT().Write(gomock.Any()).DoAndReturn(buf.Write).AnyTimes()
 	var eventRecorder events.Recorder
-	str := newStream(qstr, nil, nil, func(io.Reader, *headersFrame) error { return nil }, &eventRecorder)
+	clientConn, _ := newConnPair(t)
+	str := newStream(qstr, newRawConn(clientConn, false, nil, nopControlStrHandler, &eventRecorder, nil), nil, func(io.Reader, *headersFrame) error { return nil }, &eventRecorder)
 	str.Write([]byte("foo"))
 	str.Write([]byte("foobar"))
 
@@ -175,6 +180,100 @@ func TestStreamWrite(t *testing.T) {
 	)
 }
 
+func TestStreamWriteRetry(t *testing.T) {
+	data := []byte("foobar")
+	for cut := range len(getDataFrame(data)) {
+		t.Run(fmt.Sprintf("deadline after %d bytes", cut), func(t *testing.T) {
+			var buf bytes.Buffer
+			deadlineExpired := true
+			mockCtrl := gomock.NewController(t)
+			qstr := NewMockDatagramStream(mockCtrl)
+			qstr.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
+			qstr.EXPECT().Write(gomock.Any()).DoAndReturn(func(b []byte) (int, error) {
+				if deadlineExpired && buf.Len()+len(b) > cut {
+					n, _ := buf.Write(b[:cut-buf.Len()])
+					return n, os.ErrDeadlineExceeded
+				}
+				return buf.Write(b)
+			}).AnyTimes()
+			str := newStream(qstr, nil, nil, nil, nil)
+
+			n, err := str.Write(data)
+			require.ErrorIs(t, err, os.ErrDeadlineExceeded)
+			// retry after extending the write deadline:
+			// the unfinished DATA frame is completed, and a new one is started for the rest
+			deadlineExpired = false
+			_, err = str.Write(slices.Concat(data[n:], []byte("baz")))
+			require.NoError(t, err)
+			require.Equal(t, append(getDataFrame(data), getDataFrame([]byte("baz"))...), buf.Bytes())
+		})
+	}
+}
+
+func TestStreamTryWriteAllAfterPartialWrite(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	qstr := NewMockDatagramStream(mockCtrl)
+	qstr.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
+	qstr.EXPECT().Write((&dataFrame{Length: 6}).Append(nil)).DoAndReturn(io.Discard.Write)
+	qstr.EXPECT().Write([]byte("foobar")).Return(2, os.ErrDeadlineExceeded)
+	str := newStream(qstr, nil, nil, nil, nil)
+	_, err := str.Write([]byte("foobar"))
+	require.ErrorIs(t, err, os.ErrDeadlineExceeded)
+
+	// the unfinished DATA frame is completed, and a new one is started for the rest
+	data := append([]byte("obar"), getDataFrame([]byte("baz"))...)
+	qstr.EXPECT().TryWriteAll(data).Return(quic.ErrWouldBlock)
+	require.ErrorIs(t, str.TryWriteAll([]byte("obarbaz")), quic.ErrWouldBlock)
+	// nothing was queued, so the next call sends the same data
+	qstr.EXPECT().TryWriteAll(data).Return(nil)
+	require.NoError(t, str.TryWriteAll([]byte("obarbaz")))
+}
+
+func TestStreamQlogWriteAfterConnectionClose(t *testing.T) {
+	clientConn, _ := newConnPair(t)
+	rec := &closeTrackingRecorder{closed: make(chan struct{})}
+	conn := newRawConn(clientConn, false, nil, nopControlStrHandler, rec, nil)
+	qstr, err := clientConn.OpenStream()
+	require.NoError(t, err)
+	str := newStream(conn.TrackStream(qstr), conn, nil, nil, rec)
+
+	clientConn.CloseWithError(0, "")
+	select {
+	case <-rec.closed:
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+	// closeTrackingRecorder panics if an event is recorded after Close
+	_, err = str.Write([]byte("foo"))
+	require.Error(t, err)
+}
+
+func TestStreamTryWriteAll(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	qstr := NewMockDatagramStream(mockCtrl)
+	qstr.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
+	qstr.EXPECT().TryWriteAll(getDataFrame([]byte("foobar"))).Return(nil)
+	qstr.EXPECT().TryWriteAll(getDataFrame([]byte("blocked"))).Return(quic.ErrWouldBlock)
+
+	var eventRecorder events.Recorder
+	clientConn, _ := newConnPair(t)
+	str := newStream(qstr, newRawConn(clientConn, false, nil, nopControlStrHandler, &eventRecorder, nil), nil, func(io.Reader, *headersFrame) error { return nil }, &eventRecorder)
+	require.NoError(t, str.TryWriteAll([]byte("foobar")))
+	require.ErrorIs(t, str.TryWriteAll([]byte("blocked")), quic.ErrWouldBlock)
+
+	frameLen, payloadLen := expectedFrameLength(t, &dataFrame{Length: 6})
+	require.Equal(t,
+		[]qlogwriter.Event{
+			qlog.FrameCreated{
+				StreamID: 42,
+				Raw:      qlog.RawInfo{Length: frameLen, PayloadLength: payloadLen},
+				Frame:    qlog.Frame{Frame: qlog.DataFrame{}},
+			},
+		},
+		eventRecorder.Events(qlog.FrameCreated{}),
+	)
+}
+
 func TestRequestStream(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	qstr := NewMockDatagramStream(mockCtrl)
@@ -184,7 +283,7 @@ func TestRequestStream(t *testing.T) {
 	str := newRequestStream(
 		newStream(
 			qstr,
-			newRawConn(clientConn, false, nil, nil, nil, nil),
+			newRawConn(clientConn, false, nil, nopControlStrHandler, nil, nil),
 			&httptrace.ClientTrace{},
 			func(io.Reader, *headersFrame) error { return nil },
 			nil,
@@ -196,11 +295,16 @@ func TestRequestStream(t *testing.T) {
 		math.MaxInt,
 		&http.Response{},
 	)
+	require.Same(t, clientConn.QlogTrace(), str.QlogTrace())
 
 	_, err := str.Read([]byte{0})
 	require.EqualError(t, err, "http3: invalid use of RequestStream.Read before ReadResponse")
 	_, err = str.Write([]byte{0})
 	require.EqualError(t, err, "http3: invalid use of RequestStream.Write before SendRequestHeader")
+	require.EqualError(t,
+		str.TryWriteAll([]byte{0}),
+		"http3: invalid use of RequestStream.TryWriteAll before SendRequestHeader",
+	)
 
 	// calling ReadResponse before SendRequestHeader is not valid
 	_, err = str.ReadResponse()
@@ -218,6 +322,8 @@ func TestRequestStream(t *testing.T) {
 	require.NoError(t, str.SendRequestHeader(req))
 	// duplicate calls are not allowed
 	require.EqualError(t, str.SendRequestHeader(req), "http3: invalid duplicate use of RequestStream.SendRequestHeader")
+	qstr.EXPECT().TryWriteAll(getDataFrame([]byte("request body"))).Return(nil)
+	require.NoError(t, str.TryWriteAll([]byte("request body")))
 
 	buf := bytes.NewBuffer(encodeResponse(t, http.StatusOK))
 	buf.Write((&dataFrame{Length: 6}).Append(nil))

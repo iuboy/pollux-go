@@ -100,10 +100,10 @@ func TestRequestValidation(t *testing.T) {
 			name: "invalid header value",
 			req: func() *http.Request {
 				r := httptest.NewRequest(http.MethodGet, "https://www.example.org/", nil)
-				r.Header.Add("foo", string([]byte{0x7}))
+				r.Header.Add("Authorization", "Bearer secret\x00")
 				return r
 			}(),
-			expectedErrContains: "http3: invalid http header field value",
+			expectedErr: `http3: invalid http header field value for key "Authorization"`,
 		},
 		{
 			name: "invalid method",
@@ -122,8 +122,7 @@ func TestRequestValidation(t *testing.T) {
 				require.EqualError(t, err, tt.expectedErr)
 			}
 			if tt.expectedErrContains != "" {
-				require.Error(t, err)
-				require.Contains(t, err.Error(), tt.expectedErrContains)
+				require.ErrorContains(t, err, tt.expectedErrContains)
 			}
 			require.True(t, tt.req.Body.(*mockBody).closed)
 		})
@@ -238,7 +237,7 @@ func TestTransportConnectionReuse(t *testing.T) {
 	cl.EXPECT().RoundTrip(req1).Return(&http.Response{Request: req1}, nil)
 	rsp, err := tr.RoundTrip(req1)
 	require.NoError(t, err)
-	require.Equal(t, req1, rsp.Request)
+	require.Same(t, req1, rsp.Request)
 	require.Equal(t, 1, dialCount)
 
 	// ... which is then used for the second request
@@ -246,7 +245,7 @@ func TestTransportConnectionReuse(t *testing.T) {
 	cl.EXPECT().RoundTrip(req2).Return(&http.Response{Request: req2}, nil)
 	rsp, err = tr.RoundTrip(req2)
 	require.NoError(t, err)
-	require.Equal(t, req2, rsp.Request)
+	require.Same(t, req2, rsp.Request)
 	require.Equal(t, 1, dialCount)
 }
 
@@ -366,7 +365,7 @@ func TestTransportRequestContextCancellation(t *testing.T) {
 	cl.EXPECT().RoundTrip(req1).Return(&http.Response{Request: req1}, nil)
 	rsp, err := tr.RoundTrip(req1)
 	require.NoError(t, err)
-	require.Equal(t, req1, rsp.Request)
+	require.Same(t, req1, rsp.Request)
 	require.Equal(t, 1, dialCount)
 
 	// the second request reuses the QUIC connection, and runs into the cancelled context
@@ -388,8 +387,40 @@ func TestTransportRequestContextCancellation(t *testing.T) {
 	cl.EXPECT().RoundTrip(req3).Return(&http.Response{Request: req3}, nil)
 	rsp, err = tr.RoundTrip(req3)
 	require.NoError(t, err)
-	require.Equal(t, req3, rsp.Request)
+	require.Same(t, req3, rsp.Request)
 	require.Equal(t, 1, dialCount)
+}
+
+func TestTransportDialSurvivesRequestCancellation(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	cl := NewMockClientConn(mockCtrl)
+	conn, _ := newConnPair(t)
+	unblockDial := make(chan struct{})
+	tr := &Transport{
+		Dial: func(ctx context.Context, _ string, _ *tls.Config, _ *quic.Config) (*quic.Conn, error) {
+			<-unblockDial
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return conn, nil
+		},
+		newClientConn: func(*quic.Conn) clientConn { return cl },
+	}
+
+	// canceling the request doesn't cancel the dial...
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req1 := httptest.NewRequestWithContext(ctx, http.MethodGet, "https://quic-go.net/file1.html", nil)
+	_, err := tr.RoundTrip(req1)
+	require.ErrorIs(t, err, context.Canceled)
+	close(unblockDial)
+
+	// ... so the next request can use the connection
+	req2 := httptest.NewRequest(http.MethodGet, "https://quic-go.net/file2.html", nil)
+	cl.EXPECT().RoundTrip(req2).Return(&http.Response{Request: req2}, nil)
+	rsp, err := tr.RoundTrip(req2)
+	require.NoError(t, err)
+	require.Same(t, req2, rsp.Request)
 }
 
 func TestTransportConnetionRedialHandshakeError(t *testing.T) {
@@ -417,7 +448,7 @@ func TestTransportConnetionRedialHandshakeError(t *testing.T) {
 	cl.EXPECT().RoundTrip(req2).Return(&http.Response{Request: req2}, nil)
 	rsp, err := tr.RoundTrip(req2)
 	require.NoError(t, err)
-	require.Equal(t, req2, rsp.Request)
+	require.Same(t, req2, rsp.Request)
 	require.Equal(t, 2, dialCount)
 }
 

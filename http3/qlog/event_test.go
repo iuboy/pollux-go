@@ -10,6 +10,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/qlogwriter"
+	"github.com/quic-go/quic-go/qlogwriter/jsontext"
 
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +23,7 @@ func nopWriteCloser(w io.Writer) io.WriteCloser {
 	return &nopWriteCloserImpl{Writer: w}
 }
 
-func testEventEncoding(t *testing.T, ev qlogwriter.Event) (string, map[string]any) {
+func testEventEncoding(t *testing.T, ev qlogwriter.Event) (string, string) {
 	t.Helper()
 	var buf bytes.Buffer
 
@@ -31,7 +32,6 @@ func testEventEncoding(t *testing.T, ev qlogwriter.Event) (string, map[string]an
 			nopWriteCloser(&buf),
 			true,
 			quic.ConnectionIDFromBytes([]byte{1, 2, 3, 4}),
-			[]string{"http3"},
 		)
 		go tr.Run()
 		producer := tr.AddProducer()
@@ -46,19 +46,46 @@ func testEventEncoding(t *testing.T, ev qlogwriter.Event) (string, map[string]an
 	return decode(t, buf.String())
 }
 
-func decode(t *testing.T, data string) (string, map[string]any) {
+func decode(t *testing.T, data string) (string, string) {
 	t.Helper()
 
-	var result map[string]any
+	var result struct {
+		Time float64
+		Name string
+		Data json.RawMessage
+	}
 
 	lines := bytes.Split([]byte(data), []byte{'\n'})
 	require.Len(t, lines, 3) // the first line is the trace header, the second line is the event, the third line is empty
+	require.Contains(t, string(lines[0]), EventSchema)
 	require.Empty(t, lines[2])
+	require.NotEmpty(t, lines[1])
 	require.Equal(t, qlogwriter.RecordSeparator, lines[1][0], "expected record separator at start of line")
 	require.NoError(t, json.Unmarshal(lines[1][1:], &result))
-	require.Equal(t, 42*time.Second, time.Duration(result["time"].(float64)*1e6)*time.Nanosecond)
+	require.Equal(t, 42*time.Second, time.Duration(result.Time*1e6)*time.Nanosecond)
 
-	return result["name"].(string), result["data"].(map[string]any)
+	return result.Name, string(result.Data)
+}
+
+func TestRawInfo(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      RawInfo
+		expected string
+	}{
+		{"zero lengths", RawInfo{Length: 0, PayloadLength: 0}, `{"length":0,"payload_length":0}`},
+		{"only zero length", RawInfo{Length: 0, PayloadLength: OmitLength}, `{"length":0}`},
+		{"only zero payload length", RawInfo{Length: OmitLength, PayloadLength: 0}, `{"payload_length":0}`},
+		{"omitted lengths", RawInfo{Length: OmitLength, PayloadLength: OmitLength}, `{}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			require.NoError(t, tt.raw.encode(jsontext.NewEncoder(&buf)))
+			require.JSONEq(t, tt.expected, buf.String())
+			require.Equal(t, tt.expected != `{}`, tt.raw.HasValues())
+		})
+	}
 }
 
 func TestFrameParsedEvent(t *testing.T) {
@@ -68,22 +95,27 @@ func TestFrameParsedEvent(t *testing.T) {
 			Length:        1500,
 			PayloadLength: 100,
 		},
-		Frame: Frame{Frame: &DataFrame{}},
+		Frame: Frame{Frame: DataFrame{}},
 	})
 
 	require.Equal(t, "http3:frame_parsed", name)
-	require.Equal(t, float64(4), ev["stream_id"])
-	require.NotContains(t, ev, "name")
-	require.Contains(t, ev, "frame")
+	require.JSONEq(t, `{
+		"stream_id": 4,
+		"frame": {
+			"raw": {"length": 1500, "payload_length": 100},
+			"frame_type": "data"
+		}
+	}`, ev)
 }
 
 func TestFrameCreatedEvent(t *testing.T) {
 	name, ev := testEventEncoding(t, FrameCreated{
 		StreamID: quic.StreamID(8),
 		Raw: RawInfo{
+			Length:        OmitLength,
 			PayloadLength: 200,
 		},
-		Frame: Frame{Frame: &HeadersFrame{
+		Frame: Frame{Frame: HeadersFrame{
 			HeaderFields: []HeaderField{
 				{Name: ":status", Value: "200"},
 				{Name: "content-type", Value: "text/html"},
@@ -92,7 +124,43 @@ func TestFrameCreatedEvent(t *testing.T) {
 	})
 
 	require.Equal(t, "http3:frame_created", name)
-	require.Equal(t, float64(8), ev["stream_id"])
-	require.NotContains(t, ev, "name")
-	require.Contains(t, ev, "frame")
+	require.JSONEq(t, `{
+		"stream_id": 8,
+		"frame": {
+			"raw": {"payload_length": 200},
+			"frame_type": "headers",
+			"headers": [
+				{"name": ":status", "value": "200"},
+				{"name": "content-type", "value": "text/html"}
+			]
+		}
+	}`, ev)
+}
+
+func TestStreamTypeSetEvent(t *testing.T) {
+	name, ev := testEventEncoding(t, StreamTypeSet{
+		Initiator:  InitiatorLocal,
+		StreamID:   3,
+		StreamType: StreamTypeQPACKEncode,
+	})
+
+	require.Equal(t, "http3:stream_type_set", name)
+	require.JSONEq(t, `{
+		"initiator": "local",
+		"stream_id": 3,
+		"stream_type": "qpack_encode"
+	}`, ev)
+
+	_, ev = testEventEncoding(t, StreamTypeSet{
+		Initiator:       InitiatorRemote,
+		StreamID:        7,
+		StreamType:      StreamTypeUnknown,
+		StreamTypeBytes: 0x21,
+	})
+	require.JSONEq(t, `{
+		"initiator": "remote",
+		"stream_id": 7,
+		"stream_type": "reserved",
+		"stream_type_bytes": 33
+	}`, ev)
 }

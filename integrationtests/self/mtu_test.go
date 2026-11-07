@@ -124,7 +124,6 @@ func TestPathMTUDiscovery(t *testing.T) {
 	defer conn.CloseWithError(0, "")
 
 	err = conn.SendDatagram(make([]byte, 2000))
-	require.Error(t, err)
 	var datagramErr *quic.DatagramTooLargeError
 	require.ErrorAs(t, err, &datagramErr)
 	initialMaxDatagramSize := datagramErr.MaxDatagramPayloadSize
@@ -172,6 +171,14 @@ func TestPathMTUDiscovery(t *testing.T) {
 	for _, ev := range eventRecorder.Events(qlog.MTUUpdated{}) {
 		mtus = append(mtus, ev.(qlog.MTUUpdated).Value)
 	}
+
+	var numProbes int
+	for _, ev := range eventRecorder.Events(qlog.PacketSent{}) {
+		if ev.(qlog.PacketSent).IsMTUProbePacket {
+			numProbes++
+		}
+	}
+	require.NotZero(t, numProbes)
 
 	maxPacketSizeClient := mtus[len(mtus)-1]
 	t.Logf("max client packet size: %d, MTU: %d", maxPacketSizeClient, mtu)

@@ -137,8 +137,6 @@ type qlogTrace struct {
 	recorder qlogwriter.Recorder
 }
 
-func (t *qlogTrace) SupportsSchemas(schema string) bool { return true }
-
 func (t *qlogTrace) AddProducer() qlogwriter.Recorder {
 	return t.recorder
 }
@@ -252,7 +250,6 @@ func expectStreamWriteReset(t *testing.T, str quicSendStream, errCode quic.Strea
 		t.Fatal("timeout")
 	}
 	_, err := str.Write([]byte{0})
-	require.Error(t, err)
 	var strErr *quic.StreamError
 	require.ErrorAs(t, err, &strErr)
 	require.Equal(t, errCode, strErr.ErrorCode)

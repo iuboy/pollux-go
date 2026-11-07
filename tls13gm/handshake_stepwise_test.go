@@ -601,6 +601,146 @@ func TestHandshake_PSKResumption(t *testing.T) {
 	}
 }
 
+// TestServerHello_SelectedIdentityEncoding 是第四轮批 C 后续的回归守卫:服务端
+// ServerFlight 硬编码的 pre_shared_key 扩展体 {0x00,0x00}(selected_identity =
+// 0,单个 big-endian uint16)此前没有任何 wire 级断言锁定。客户端
+// HandleServerHello 已按 RFC 8446 §4.2.11 校验该扩展体(批 C P3),但服务端
+// 编码走的是另一条字面量路径——任何一侧单独改动(字节序、变长向量包装等)
+// 都可能各自单侧测试仍绿、组合握手却断裂。此测试从真实 PSK 恢复握手的
+// ServerFlight wire 产物逐字节锁定:
+//  1. PSK 模式:pre_shared_key 扩展体必须恰好等于 {0x00,0x00};
+//  2. 完整握手(decline PSK):ServerHello 不得携带 pre_shared_key 扩展。
+func TestServerHello_SelectedIdentityEncoding(t *testing.T) {
+	dcid1 := []byte{0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8}
+	dcid2 := []byte{0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8}
+	cert, serverKey := generateTestSM2Cert(t)
+	tek := bytes.Repeat([]byte{0x3D}, SessionTicketKeyLen)
+	tekList := func() [][]byte { return [][]byte{tek} }
+
+	// 1. 初始(完整)握手获取恢复凭据。
+	server1, err := NewServerHandshakerWithConfig(ServerConfig{DCID: dcid1, Certificate: cert, PrivateKey: serverKey, SessionTicketKeys: tekList})
+	if err != nil {
+		t.Fatalf("server1: %v", err)
+	}
+	client1, err := NewClientHandshakerWithConfig(ClientConfig{DCID: dcid1, InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatalf("client1: %v", err)
+	}
+	ch1, err := client1.ClientHello()
+	if err != nil {
+		t.Fatalf("ClientHello1: %v", err)
+	}
+	if err := server1.HandleClientHello(ch1); err != nil {
+		t.Fatalf("server1 HandleClientHello: %v", err)
+	}
+	sh1, ee1, cert1, cv1, fin1, err := server1.ServerFlight()
+	if err != nil {
+		t.Fatalf("server1 ServerFlight: %v", err)
+	}
+	if err := client1.HandleServerFlight(sh1, ee1, cert1, cv1, fin1); err != nil {
+		t.Fatalf("client1 HandleServerFlight: %v", err)
+	}
+	cf1, err := client1.ClientFinished()
+	if err != nil {
+		t.Fatalf("ClientFinished1: %v", err)
+	}
+	if err := server1.HandleClientFinished(cf1); err != nil {
+		t.Fatalf("server1 HandleClientFinished: %v", err)
+	}
+	ticketMsg, err := server1.NewSessionTicket(7200)
+	if err != nil {
+		t.Fatalf("NewSessionTicket: %v", err)
+	}
+	_, ticketBody, _, err := ReadHandshakeMessage(ticketMsg)
+	if err != nil {
+		t.Fatalf("read ticket: %v", err)
+	}
+	identity, psk, ageAdd, err := client1.HandleNewSessionTicket(ticketBody)
+	if err != nil {
+		t.Fatalf("client1 HandleNewSessionTicket: %v", err)
+	}
+
+	// 2. PSK 恢复握手,取服务端 ServerHello wire 字节。
+	client2, err := NewClientHandshakerWithConfig(ClientConfig{
+		DCID:                          dcid2,
+		InsecureSkipVerify:            true,
+		ResumptionPSK:                 psk,
+		ResumptionIdentity:            identity,
+		ResumptionObfuscatedTicketAge: ageAdd,
+	})
+	if err != nil {
+		t.Fatalf("client2: %v", err)
+	}
+	ch2, err := client2.ClientHello()
+	if err != nil {
+		t.Fatalf("ClientHello2: %v", err)
+	}
+	server2, err := NewServerHandshakerWithConfig(ServerConfig{
+		DCID:              dcid2,
+		Certificate:       cert,
+		PrivateKey:        serverKey,
+		SessionTicketKeys: tekList,
+	})
+	if err != nil {
+		t.Fatalf("server2: %v", err)
+	}
+	if err := server2.HandleClientHello(ch2); err != nil {
+		t.Fatalf("server2 HandleClientHello (PSK): %v", err)
+	}
+	if server2.resumptionSelectedPSK == nil {
+		t.Fatal("precondition failed: server2 did not select the offered PSK")
+	}
+	sh2, _, _, _, _, err := server2.ServerFlight()
+	if err != nil {
+		t.Fatalf("server2 ServerFlight (PSK): %v", err)
+	}
+	_, shBody, _, err := ReadHandshakeMessage(sh2)
+	if err != nil {
+		t.Fatalf("read ServerHello: %v", err)
+	}
+	var shMsg ServerHelloMsg
+	if err := shMsg.unmarshalBody(shBody); err != nil {
+		t.Fatalf("unmarshal ServerHello: %v", err)
+	}
+	pskExt := findExtension(shMsg.Extensions, ExtensionTypePreSharedKey)
+	if pskExt == nil {
+		t.Fatal("PSK-mode ServerHello missing pre_shared_key extension")
+	}
+	if !bytes.Equal(pskExt, []byte{0x00, 0x00}) {
+		t.Fatalf("ServerHello pre_shared_key body = %x, want exactly 00 00 (selected_identity = 0 as one big-endian uint16)", pskExt)
+	}
+
+	// 3. 对照:decline PSK 的服务端(TEK 不匹配)走完整握手,ServerHello 不得
+	// 携带 pre_shared_key 扩展——扩展的存在本身即"选中 PSK"的声明。
+	server3, err := NewServerHandshakerWithConfig(ServerConfig{
+		DCID:              dcid2,
+		Certificate:       cert,
+		PrivateKey:        serverKey,
+		SessionTicketKeys: func() [][]byte { return [][]byte{bytes.Repeat([]byte{0x77}, SessionTicketKeyLen)} },
+	})
+	if err != nil {
+		t.Fatalf("server3: %v", err)
+	}
+	if err := server3.HandleClientHello(ch2); err != nil {
+		t.Fatalf("server3 HandleClientHello (declined PSK): %v", err)
+	}
+	sh3, _, _, _, _, err := server3.ServerFlight()
+	if err != nil {
+		t.Fatalf("server3 ServerFlight (declined PSK): %v", err)
+	}
+	_, sh3Body, _, err := ReadHandshakeMessage(sh3)
+	if err != nil {
+		t.Fatalf("read declined ServerHello: %v", err)
+	}
+	var sh3Msg ServerHelloMsg
+	if err := sh3Msg.unmarshalBody(sh3Body); err != nil {
+		t.Fatalf("unmarshal declined ServerHello: %v", err)
+	}
+	if ext := findExtension(sh3Msg.Extensions, ExtensionTypePreSharedKey); ext != nil {
+		t.Fatalf("full-handshake ServerHello carried pre_shared_key extension: %x", ext)
+	}
+}
+
 // TestHandshake_EarlyTrafficKeys verifies the 0-RTT key agreement between a PSK
 // client and server: after the client's ClientHello (which carries early_data)
 // and the server's HandleClientHello, both sides have identical ClientEarlyKeys

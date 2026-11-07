@@ -469,10 +469,10 @@ func TestSessionKeyRolePrefix(t *testing.T) {
 
 // --- #7 / #8 mTLS resume 与双证验链 ---
 
-// mtlsResumeConfigs 构造 mTLS（RequireAndVerifyClientCert）+ 共享会话缓存的
+// mtlsResumeConfigs 构造 mTLS（clientAuth 指定校验级别）+ 共享会话缓存的
 // 双端配置：客户端证书由 trustedCA 签发（含 ClientAuth EKU），服务端证书为
 // 自签名测试对。
-func mtlsResumeConfigs(t *testing.T, sharedCache SessionCache) (serverConfig, clientConfig *Config) {
+func mtlsResumeConfigs(t *testing.T, sharedCache SessionCache, clientAuth ClientAuthType) (serverConfig, clientConfig *Config) {
 	t.Helper()
 	trustedCA, trustedKey := generateSM2CA(t, "mtls-resume-ca")
 	clientSign, clientEnc := generateClientCertPair(t, trustedCA, trustedKey)
@@ -483,7 +483,7 @@ func mtlsResumeConfigs(t *testing.T, sharedCache SessionCache) (serverConfig, cl
 		SignCertificate:      serverSign,
 		EncCertificate:       serverEnc,
 		CipherSuites:         []uint16{SuiteECC_SM2_SM4_GCM_SM3},
-		ClientAuth:           RequireAndVerifyClientCert,
+		ClientAuth:           clientAuth,
 		ClientCACertificates: []*x509.Certificate{stdCertFromSM(t, trustedCA)},
 		InsecureSkipVerify:   true,
 		SessionCache:         sharedCache,
@@ -560,7 +560,7 @@ func mtlsEcho(t *testing.T, conn *Conn, msg []byte) {
 // 链验证通过）。
 func TestResume_mTLS_RequireVerify_ResumesWithVerifiedIdentity(t *testing.T) {
 	sharedCache := NewLRUSessionCache(8)
-	serverConfig, clientConfig := mtlsResumeConfigs(t, sharedCache)
+	serverConfig, clientConfig := mtlsResumeConfigs(t, sharedCache, RequireAndVerifyClientCert)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -600,7 +600,7 @@ func TestResume_mTLS_RequireVerify_ResumesWithVerifiedIdentity(t *testing.T) {
 // 从拦截）。
 func TestResume_mTLS_RogueCachedSessionFallsBackToFullHandshake(t *testing.T) {
 	sharedCache := NewLRUSessionCache(8)
-	serverConfig, clientConfig := mtlsResumeConfigs(t, sharedCache)
+	serverConfig, clientConfig := mtlsResumeConfigs(t, sharedCache, RequireAndVerifyClientCert)
 
 	rogueCA, rogueKey := generateSM2CA(t, "rogue-resume-ca")
 	rogueSign, rogueEnc := generateClientCertPair(t, rogueCA, rogueKey)

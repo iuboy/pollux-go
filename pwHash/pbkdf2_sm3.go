@@ -135,7 +135,7 @@ func decodePBKDF2SM3(encoded string) (PBKDF2Params, []byte, []byte, error) {
 		return PBKDF2Params{}, nil, nil, fmt.Errorf("%w: bad salt b64", ErrMalformedHash)
 	}
 	// 第四轮审计 P3:解码侧夹取盐上限(与 kdf.MaxSaltLen 同一 64 KiB 共享界)。
-	// PBKDF2Params.Validate 只设了下限,一个攻击者构造的超长盐 PHC 字符串
+	// PBKDF2Params.Validate 现已同时设上下限（kdf.MaxSaltLen）,一个攻击者构造的超长盐 PHC 字符串
 	// 会穿透校验直达 PBKDF2 原语,放大派生的内存足迹——在这里先行拒绝。
 	if len(salt) > kdf.MaxSaltLen {
 		return PBKDF2Params{}, nil, nil, fmt.Errorf("%w: salt length %d exceeds limit %d", ErrMalformedHash, len(salt), kdf.MaxSaltLen)

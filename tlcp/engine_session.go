@@ -183,27 +183,21 @@ func serverSessionKey(sessionID []byte) string {
 	return "s:" + tlcpSessionKeyHex(sessionID)
 }
 
-// sessionCacheKey returns the address-key under which a session is cached for
-// resumption by peer identity.
+// sessionCacheKey 返回客户端按对端身份缓存会话所用的键。配置了 ServerName
+// （SNI）时键为 "sni:"+规范化（小写）主机名：TLS resume 刻意不复验对端证书，
+// 缓存键必须编码会话认证时的服务端身份——按 SNI 而非远端地址作键，一个服务
+// 身份下建立的会话不会被复用于共享同 IP 的其他服务，且重连换临时源端口时键
+// 保持稳定。RFC 6066：SNI 大小写不敏感——规范化避免 "Example.com" 与
+// "example.com" 形成两个缓存条目（复用失效 + 缓存碎片）。
 //
-// When a ServerName (SNI) is configured, the key is the SNI alone: the server
-// identity is the security-relevant binding (TLS resumption deliberately does
-// not re-verify the peer certificate, so the cache key must encode the identity
-// the session was authenticated under). Keying on the SNI — rather than the
-// remote address — means a session established with one server identity is NOT
-// reused against a different service, and is stable across reconnections that
-// pick a different ephemeral source port.
-//
-// When serverName is empty the key degrades to the plain remote address,
-// preserving backward compatibility for callers that do not set ServerName.
-// This is inherently less stable (it depends on local port reuse) and less
-// precise (it keys on transport address, not identity); callers that rely on
-// resumption should set ServerName.
+// serverName 为空时退化为 "addr:"+远端地址（调用方未设置 ServerName 的降级
+// 面）：依赖本地端口复用，稳定性与精确度都更差，依赖 resume 的调用方应设置
+// ServerName。"addr:"/"sni:" 前缀与 clientSessionKey/serverSessionKey 的
+// "c:"/"s:" 风格统一，与 sessionId 键隔离命名空间——裸地址作键会与未来按身
+// 份缓存的键共享同一字符串空间，存在跨命名空间碰撞面。
 func sessionCacheKey(remoteAddr, serverName string) string {
 	if serverName == "" {
-		return remoteAddr
+		return "addr:" + remoteAddr
 	}
-	// RFC 6066: SNI 大小写不敏感——规范化避免 "Example.com" 与
-	// "example.com" 形成两个缓存条目(复用失效 + 缓存碎片)。
 	return "sni:" + strings.ToLower(serverName)
 }

@@ -358,12 +358,15 @@ func (c *tlcpConn) serverHandshakeReal() error {
 // sessionId. Returns the cached session if it matches the negotiated version
 // and cipher suite, else nil.
 //
-// mTLS 策略绑定（RequireAndVerifyClientCert + clientRoots）：resume 命中的
-// 会话必须携带缓存 peerCertificates 且对其重跑链验证（abbreviated handshake
-// 无 Certificate/CertificateVerify 消息，客户端身份完全由缓存会话承载）。验证
-// 失败（证书过期/被吊销换链/缓存条目被伪造）→ 放弃 resume 返回 nil，走全握
-// 手重新认证——不报错中断，与 stdlib TLS 1.2 的 resume 语义一致。无 mTLS 要求
-// 时维持原语义（仅 version+suite 匹配）。
+// mTLS 策略绑定（clientRoots 非 nil 的两种验链模式）：resume 命中的会话必须
+// 携带缓存 peerCertificates 且对其重跑链验证（abbreviated handshake 无
+// Certificate/CertificateVerify 消息，客户端身份完全由缓存会话承载）。强制
+// （RequireAndVerifyClientCert）与可选（VerifyClientCertIfGiven）模式统一覆
+// 盖——可选模式全握手语义是「给了就验」，缓存身份存在时同样必须重验，否则
+// rogue 缓存条目可借 resume 绕过验链。验证失败（证书过期/被吊销换链/缓存条
+// 目被伪造）→ 放弃 resume 返回 nil，走全握手重新认证——不报错中断，与
+// stdlib TLS 1.2 的 resume 语义一致。无 mTLS 要求时维持原语义（仅
+// version+suite 匹配）。
 func (c *tlcpConn) lookupResumedSession(clientHello *tlcpClientHelloMsg, suite *tlcpCipherSuite) *SessionState {
 	if c.config == nil || c.config.sessionCache == nil || len(clientHello.sessionID) == 0 {
 		return nil
@@ -379,12 +382,21 @@ func (c *tlcpConn) lookupResumedSession(clientHello *tlcpClientHelloMsg, suite *
 		return nil
 	}
 	// clientRoots 仅在 ClientAuth >= VerifyClientCertIfGiven 且配置了
-	// ClientCACertificates 时非 nil；此处再限定 RequireAndVerifyClientCert
-	// （强制验链模式），与 Config 路径下二者等价、直构 engine config 时不会
-	// 把可选验链模式误判为强制。
-	if c.config.clientAuth == RequireAndVerifyClientCert && c.config.clientRoots != nil {
+	// ClientCACertificates 时非 nil；此处覆盖两种验链模式——强制
+	// （RequireAndVerifyClientCert）与可选（VerifyClientCertIfGiven）。显式
+	// == 枚举（不用 >=，模式排序语义见全握手路径的 NOTE）。可选模式的语义是
+	// 「给了就验」：缓存会话绑定过客户端证书（全握手时给了）就必须重验，
+	// 否则 rogue 缓存条目借 resume 绕过验链——与全握手路径的 verifyClientCert
+	// Chain 门（clientSignCert != nil 即验）对齐。
+	if (c.config.clientAuth == RequireAndVerifyClientCert || c.config.clientAuth == VerifyClientCertIfGiven) && c.config.clientRoots != nil {
 		if len(sess.peerCertificates) == 0 {
-			return nil // 缓存会话未绑定客户端身份：不可 resume
+			// 缓存会话未绑定客户端身份。强制模式：不可 resume（身份 MUST 存在）；
+			// 可选模式：全握手时客户端未给证书，缓存与该语义一致，无可验对象，
+			// 按原样 resume（不因缺证书否定一个本就不要求证书的会话）。
+			if c.config.clientAuth == RequireAndVerifyClientCert {
+				return nil
+			}
+			return sess
 		}
 		signCert, err := polluxsmx509.ParseCertificate(sess.peerCertificates[0])
 		if err != nil {

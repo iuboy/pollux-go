@@ -1,6 +1,11 @@
 package pwhash
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/iuboy/pollux-go/kdf"
+)
 
 // Minimum parameter bounds enforced both at construction (H1) and when parsing
 // untrusted PHC strings (C1). They are the floor below which a password hash
@@ -86,6 +91,8 @@ func (p Argon2idParams) Validate() error {
 		return errors.New("pwhash: argon2id parallelism exceeds safe upper bound (64)")
 	case p.SaltLength < minSaltLength:
 		return errors.New("pwhash: argon2id salt length must be at least 8 bytes")
+	case p.SaltLength > kdf.MaxSaltLen:
+		return fmt.Errorf("pwhash: argon2id salt length %d exceeds limit %d: %w", p.SaltLength, kdf.MaxSaltLen, kdf.ErrSaltTooLong)
 	case p.KeyLength < minKeyLength:
 		return errors.New("pwhash: argon2id key length must be at least 16 bytes")
 	case p.KeyLength > maxKeyLength:
@@ -133,7 +140,9 @@ type PBKDF2Params struct {
 // Validate returns an error if any parameter is outside the safe range. It is
 // enforced at construction (NewPBKDF2SM3). An upper bound on iterations mirrors
 // the one in kdf.PBKDF2 so a misconfigured hasher fails fast rather than
-// stalling on the first Hash/Verify call.
+// stalling on the first Hash/Verify call. 盐长上限引用 kdf.MaxSaltLen/
+// kdf.ErrSaltTooLong，与解码侧 decodePBKDF2SM3 的夹取共享同一 64 KiB 界（第四轮
+// 批 C 后续）：超限 hasher 在构造期 fail-fast，而非拖到首次 Hash 才被 kdf 拒绝。
 func (p PBKDF2Params) Validate() error {
 	switch {
 	case p.Iterations < 1:
@@ -142,6 +151,8 @@ func (p PBKDF2Params) Validate() error {
 		return errors.New("pwhash: pbkdf2 iterations exceed safe upper bound")
 	case p.SaltLength < minSaltLength:
 		return errors.New("pwhash: pbkdf2 salt length must be at least 8 bytes")
+	case p.SaltLength > kdf.MaxSaltLen:
+		return fmt.Errorf("pwhash: pbkdf2 salt length %d exceeds limit %d: %w", p.SaltLength, kdf.MaxSaltLen, kdf.ErrSaltTooLong)
 	case p.KeyLength < minKeyLength:
 		return errors.New("pwhash: pbkdf2 key length must be at least 16 bytes")
 	case p.KeyLength > maxKeyLength:

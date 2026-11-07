@@ -147,6 +147,9 @@ const (
 // transport-agnostic: it produces and consumes raw handshake-message bytes
 // (4-byte header + body), which QUIC carries in CRYPTO frames.
 type ClientHandshaker struct {
+	// dcid 种子 QUIC Initial 包保护密钥（RFC 9001 §5.2）。真实拷贝自
+	// ClientConfig（独立底层数组，第四轮批 C 后续），调用方改写原切片不影响
+	// handshaker。
 	dcid       []byte
 	ephemeral  *sm2.PrivateKey // ECDHE key for this handshake
 	transcript *Transcript
@@ -179,7 +182,9 @@ type ClientHandshaker struct {
 
 	// localTransportParams is the raw QUIC transport parameters advertised in
 	// the ClientHello (RFC 9001 §8). May be nil for a non-QUIC (TCP record layer)
-	// consumer; a QUIC transport always supplies it.
+	// consumer; a QUIC transport always supplies it. 真实拷贝自 ClientConfig
+	// （独立底层数组，第四轮批 C 后续），调用方改写原切片不影响 ClientHello
+	// 的通告内容。
 	localTransportParams []byte
 	// peerTransportParams is the raw QUIC transport parameters received in the
 	// server's EncryptedExtensions. Available after HandleEncryptedExtensions.
@@ -208,7 +213,8 @@ type ClientHandshaker struct {
 	earlyDataAccepted bool
 	// nextProtos is the ALPN offer copied from ClientConfig; negotiatedProto is
 	// the protocol the server selected in EncryptedExtensions (empty until
-	// then, and permanently empty when no ALPN was offered).
+	// then, and permanently empty when no ALPN was offered). 真实拷贝（独立底层
+	// 数组，第四轮批 C 后续）：string 元素不可变，仅拷贝切片本身即可。
 	nextProtos      []string
 	negotiatedProto string
 	// clientFinishedSent records that ClientFinished has appended the client's
@@ -232,6 +238,8 @@ func (c *ClientHandshaker) PeerTransportParams() []byte { return c.peerTransport
 // InsecureSkipVerify is false, Roots MUST be non-empty or the handshake aborts.
 type ClientConfig struct {
 	// DCID seeds the QUIC Initial packet-protection keys (RFC 9001 §5.2). Required.
+	// The handshaker takes a private copy at construction, so the caller may
+	// freely reuse or mutate the slice afterwards.
 	DCID []byte
 
 	// ServerName is the DNS name matched against the server leaf's SAN/CN
@@ -263,13 +271,17 @@ type ClientConfig struct {
 	// NextProtos is the ALPN protocol list offered in the ClientHello
 	// (RFC 7301). RFC 9001 §8.1 requires QUIC endpoints to negotiate ALPN, so
 	// a QUIC caller must set it. When non-empty the handshake fails closed:
-	// the server must select exactly one of the offered protocols.
+	// the server must select exactly one of the offered protocols. The
+	// handshaker copies the slice at construction (string elements are
+	// immutable, so a slice-level copy suffices).
 	NextProtos []string
 
 	// TransportParameters is the raw marshaled QUIC transport parameters to
 	// advertise in the ClientHello (RFC 9001 §8). Optional for a non-QUIC
 	// consumer; a QUIC transport layer supplies it so the peer can configure the
-	// connection. tls13gm carries the bytes verbatim.
+	// connection. tls13gm carries the bytes verbatim. The handshaker takes a
+	// private copy at construction, so the caller may freely reuse or mutate
+	// the slice afterwards.
 	TransportParameters []byte
 
 	// ResumptionPSK is the resumption PSK (derived by this client from the
@@ -296,7 +308,9 @@ type ClientConfig struct {
 	// transport sets it to the server's transport parameters harvested with
 	// the ticket, so 0-RTT data can be sent under the restored limits. A QUIC
 	// caller attempting 0-RTT MUST supply it (the GM transport declines 0-RTT
-	// without it, mirroring crypto/tls).
+	// without it, mirroring crypto/tls). 别名裁决：ClientHandshaker 不持有该
+	// 值——0-RTT 恢复参数由 QUIC 传输层从其自留的 ClientConfig 读取——本包
+	// 构造器因此不拷贝它，持有期由 QUIC 层的契约约束。
 	ResumptionAppData []byte
 	// EarlyData, when true with ResumptionPSK, makes the client offer 0-RTT
 	// (the ClientHello carries early_data; early traffic keys are derived).
@@ -337,8 +351,19 @@ func NewClientHandshakerWithConfig(cfg ClientConfig) (*ClientHandshaker, error) 
 	if err != nil {
 		return nil, err
 	}
+	// 保留切片字段的别名裁决(第四轮批 C 后续,与批 C 的 PSK 拷贝同语义:
+	// handshaker 持有私有副本,调用方构造后可自由复用/改写 Config):
+	//   - dcid/TransportParameters:[]byte 逐字段真实拷贝(独立底层数组);
+	//   - NextProtos:[]string 拷贝切片本身,string 元素不可变,无需逐元素复制;
+	//   - ResumptionAppData:ClientHandshaker 不持有该值(0-RTT 恢复参数由 QUIC
+	//     传输层从其自留的 ClientConfig 读取),本构造器无可拷贝面;
+	//   - ServerName 等字符串与 Roots/Intermediates/VerifyPeerCertificate:不可变
+	//     值或共享指针,别名安全。
+	// nil 输入经 append(nil, ...) 保持 nil:len(nextProtos)==0(不 offer ALPN)与
+	// localTransportParams==nil(不通告)的判定语义不变;resumptionPSK/
+	// resumptionIdentity 同理,pskMode/EarlyData 判定(len == 0)不受影响。
 	return &ClientHandshaker{
-		dcid:               cfg.DCID,
+		dcid:               append([]byte(nil), cfg.DCID...),
 		ephemeral:          priv,
 		transcript:         NewTranscript(),
 		insecureSkipVerify: cfg.InsecureSkipVerify,
@@ -349,14 +374,13 @@ func NewClientHandshakerWithConfig(cfg ClientConfig) (*ClientHandshaker, error) 
 		secrets:            HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
 		// resumptionPSK/resumptionIdentity 真实拷贝(独立底层数组):Zero()
 		// 会清零 handshaker 内的副本,别名会让这次擦除连带清空调用方 Config
-		// 里仍需复用的 PSK/identity(第四轮审计 P2)。nil 输入经 append 保持
-		// nil,pskMode/EarlyData 判定(len == 0)语义不变。
-		localTransportParams: cfg.TransportParameters,
+		// 里仍需复用的 PSK/identity(第四轮审计 P2)。
+		localTransportParams: append([]byte(nil), cfg.TransportParameters...),
 		resumptionPSK:        append([]byte(nil), cfg.ResumptionPSK...),
 		resumptionIdentity:   append([]byte(nil), cfg.ResumptionIdentity...),
 		resumptionObfAge:     cfg.ResumptionObfuscatedTicketAge,
 		offerEarlyData:       cfg.EarlyData,
-		nextProtos:           cfg.NextProtos,
+		nextProtos:           append([]string(nil), cfg.NextProtos...),
 	}, nil
 }
 
@@ -1204,17 +1228,19 @@ func NewServerHandshakerWithConfig(cfg ServerConfig) (*ServerHandshaker, error) 
 		return nil, err
 	}
 	return &ServerHandshaker{
-		dcid:                 cfg.DCID,
+		// 与 NewClientHandshakerWithConfig 同批的深拷贝语义：切断对调用方
+		// Config 底层数组的别名（调用方改写不影响握手）。
+		dcid:                 append([]byte(nil), cfg.DCID...),
 		ephemeral:            priv,
 		serverCert:           cfg.Certificate,
 		serverKey:            cfg.PrivateKey,
 		transcript:           NewTranscript(),
 		secrets:              HandshakeSecrets{ClientInitialKeys: cInit, ServerInitialKeys: sInit},
-		localTransportParams: cfg.TransportParameters,
+		localTransportParams: append([]byte(nil), cfg.TransportParameters...),
 		ticketKeys:           cfg.SessionTicketKeys,
 		allowEarlyData:       cfg.AllowEarlyData,
 		earlyDataAcceptor:    cfg.EarlyDataAcceptor,
-		nextProtos:           cfg.NextProtos,
+		nextProtos:           append([]string(nil), cfg.NextProtos...),
 	}, nil
 }
 

@@ -189,9 +189,13 @@ func (c *tlcpConn) clientHandshakeReal() error {
 		c.didResume = true
 		return nil
 	}
-	// If we offered a session but the server declined (different/empty sessionId),
-	// drop the cached reference — a fresh full handshake follows.
-	c.session = nil
+	// If we offered a session but the server declined (different/empty
+	// sessionId), the offered session is dead: this server will never resume
+	// it. Evict it from the cache (sessionId key + sni/addr key) via
+	// discardSession, not just the in-memory reference — otherwise the dead
+	// session keeps being offered on every reconnection until its 24h lifetime
+	// expires（死会话被持续提议 = 每次 reconnect 都白跑一轮拒绝路径）.
+	c.discardSession()
 
 	// 3. Initialize transcript and feed ClientHello + ServerHello.
 	transcript := newTLCPFinishedHash()
@@ -422,7 +426,10 @@ func (c *tlcpConn) serverResumedSession(serverHello *tlcpServerHelloMsg) bool {
 
 // discardSession removes the offered session from the cache after a failed
 // resume attempt (GB/T 38636-2020 §6.4.5.2.1: a session is invalidated on
-// handshake error).
+// handshake error). Two entry points: the client-side resume handshake failed
+// mid-flight, and the server declined the offered session (fell back to a full
+// handshake)——两者都意味着该会话已死，缓存条目（sessionId 键 + sni/addr 键）
+// 一并删除，避免死会话被后续连接持续提议至 24h 过期。
 func (c *tlcpConn) discardSession() {
 	if c.config == nil || c.config.sessionCache == nil || c.session == nil {
 		return

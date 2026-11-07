@@ -27,6 +27,15 @@ v0.61.0–v0.64.0（quic-go 跟随）标签已从仓库（本地与 GitHub）移
 
 - quic-go subtree 升级 v0.65.0（fork 分歧全部重放零冲突；详见 PATCHES.md v0.65.0 merge note）。依赖升级：gmsm v0.45.2、x/net v0.62.0。
 
+## [0.1.2-1] - 2026-11-07
+
+### Fixed — 第四轮清单外发现收尾（三批并行 + 手工收尾）
+
+- **tlcp**：`changeCipherSpec` 显式 destroyed 检查（错误可归因）；客户端拒绝 resume 后清空 sni/sessionId 双键缓存（死会话不再被提议至 24h 过期）；`VerifyClientCertIfGiven` 模式的 resume 同样重验缓存证书链（与强制模式语义对齐）；sessionCacheKey addr 分支加 `addr:` 前缀（与 sni/c:/s: 命名空间隔离统一）；`Conn` 全部公共方法（含 LocalAddr/RemoteAddr/Set*Deadline/ConnectionState/NetConn）补 nil 接收者守卫（typed-nil 接口陷阱防御收口）。
+- **tls13gm**：`NewServerHandshakerWithConfig` 对 dcid/TransportParameters/NextProtos 深拷贝（与客户端构造器同批语义，切断调用方改写面）；新增 ServerHello `pre_shared_key` 扩展体逐字节 `{0x00,0x00}` 的 wire 锁定测试。
+- **pwHash**：`Argon2idParams.Validate` 与解码侧补盐上限 64 KiB（与 PBKDF2 对齐，`kdf.ErrSaltTooLong` 可判别）；修正解码侧过时注释。
+- **smx509（OCSP 非 SM2 路径与 SM2 对称）**：补内嵌响应者证书有效期窗校验（错误文案与 SM2 逐字一致）；补 ResponderID↔实际签名者绑定校验（byName 用 RawResponderName 对 RawSubject、byKey 按 CertID 哈希重算——比 RFC 6960 严格 SHA-1 收紧的裁决已注释）。构造错误不再 panic。
+
 ## [0.1.2-0] - 2026-11-07
 
 ### Breaking — 第四轮安全审计修复（2 P1 / 6 P2 / P3 批，四维度并行审计后执行）

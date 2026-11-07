@@ -144,7 +144,9 @@ func NewGMCryptoSetupClient(
 		ourParams:             tp,
 		events:                make([]Event, 0, 8),
 		onClientSessionTicket: onClientSessionTicket,
-		restoredParamsRaw:     clientCfg.ResumptionAppData,
+		// 深拷贝切断与调用方 ClientConfig.ResumptionAppData 的别名
+		// （与 tls13gm 构造器的切片拷贝语义一致）。
+		restoredParamsRaw:     append([]byte(nil), clientCfg.ResumptionAppData...),
 	}
 	if err := g.initInitialKeys(hs.Secrets()); err != nil {
 		return nil, err

@@ -3,6 +3,7 @@ package pwhash
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -257,6 +258,7 @@ func TestNewPBKDF2SM3_RejectsInvalidParams(t *testing.T) {
 		{"zero iterations", func(p PBKDF2Params) PBKDF2Params { p.Iterations = 0; return p }},
 		{"excessive iterations", func(p PBKDF2Params) PBKDF2Params { p.Iterations = maxPBKDF2Iteration + 1; return p }},
 		{"salt too short", func(p PBKDF2Params) PBKDF2Params { p.SaltLength = 4; return p }},
+		{"salt too long", func(p PBKDF2Params) PBKDF2Params { p.SaltLength = kdf.MaxSaltLen + 1; return p }},
 		{"key too short", func(p PBKDF2Params) PBKDF2Params { p.KeyLength = 8; return p }},
 	}
 	for _, c := range cases {
@@ -265,6 +267,35 @@ func TestNewPBKDF2SM3_RejectsInvalidParams(t *testing.T) {
 				t.Errorf("NewPBKDF2SM3 accepted %s", c.name)
 			}
 		})
+	}
+}
+
+// TestPBKDF2Params_ValidateSaltUpperBound 是第四轮批 C 后续的回归守卫:构造期
+// Validate 补盐上限——此前只有 8 字节下限,超限(> kdf.MaxSaltLen 的 64 KiB)
+// 参数会穿透构造校验,拖到首次 Hash 才被 kdf.PBKDF2 拒绝(与解码侧
+// decodePBKDF2SM3 的既有夹取共享同一 64 KiB 界,语义一致)。锁定:
+//  1. 超限盐 Validate 报错,且 errors.Is 命中 kdf.ErrSaltTooLong(哨兵可判别);
+//  2. NewPBKDF2SM3 对超限盐构造期 fail-fast(H1);
+//  3. 边界值(恰好 64 KiB)通过 Validate——合法上限不得误拒。
+func TestPBKDF2Params_ValidateSaltUpperBound(t *testing.T) {
+	over := lightPBKDF2Params()
+	over.SaltLength = kdf.MaxSaltLen + 1
+	err := over.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted SaltLength > kdf.MaxSaltLen")
+	}
+	if !errors.Is(err, kdf.ErrSaltTooLong) {
+		t.Fatalf("oversized-salt error should wrap kdf.ErrSaltTooLong, got %v", err)
+	}
+	// 构造期 fail-fast:超限盐 hasher 不得通过 NewPBKDF2SM3。
+	if _, err := NewPBKDF2SM3(over); err == nil {
+		t.Fatal("NewPBKDF2SM3 accepted an oversized SaltLength (want construction-time rejection)")
+	}
+	// 边界:恰好 64 KiB 必须通过 Validate。
+	boundary := lightPBKDF2Params()
+	boundary.SaltLength = kdf.MaxSaltLen
+	if err := boundary.Validate(); err != nil {
+		t.Fatalf("boundary SaltLength == kdf.MaxSaltLen should pass Validate, got %v", err)
 	}
 }
 

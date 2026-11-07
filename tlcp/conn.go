@@ -19,6 +19,13 @@ type Conn struct {
 	initErr  error // stores error from config conversion, deferred to Handshake
 }
 
+// errNilConn 是 nil 接收者上调用 Conn 方法的失败哨兵：(*Conn)(nil) 存入
+// net.Conn 等接口字段后接口值非 nil（typed-nil 陷阱），下游据「接口非 nil」
+// 判定调用 Close/Read/Write 会命中 nil 接收者——无守卫时解引用 c.inner 即
+// panic（https 侧曾因此 panic，触发点已在彼处归一化；此处是引擎侧的最后防
+// 线）。守卫把 panic 转为可归因错误。
+var errNilConn = errors.New("tlcp: use of nil Conn")
+
 // Client returns a TLCP client connection.
 // Follows the pattern of tls.Client(conn, config).
 func Client(conn net.Conn, config *Config) *Conn {
@@ -45,8 +52,12 @@ func Server(conn net.Conn, config *Config) *Conn {
 	return c
 }
 
-// Handshake performs the TLCP handshake.
+// Handshake 执行 TLCP 握手；nil 接收者返回 errNilConn（typed-nil 接口陷阱
+// 防御，见 errNilConn）。
 func (c *Conn) Handshake() error {
+	if c == nil {
+		return errNilConn
+	}
 	return panicsafe.Do(func() error {
 		if c.initErr != nil {
 			return c.initErr
@@ -59,7 +70,12 @@ func (c *Conn) Handshake() error {
 // mirrors crypto/tls.Conn.HandshakeContext: a canceled or deadline-exceeded
 // ctx interrupts an in-flight handshake by closing the underlying conn, and
 // this call returns promptly with the context error.
+//
+// nil 接收者返回 errNilConn（typed-nil 接口陷阱防御，见 errNilConn）。
 func (c *Conn) HandshakeContext(ctx context.Context) error {
+	if c == nil {
+		return errNilConn
+	}
 	return panicsafe.Do(func() error {
 		if c.initErr != nil {
 			return c.initErr
@@ -68,8 +84,12 @@ func (c *Conn) HandshakeContext(ctx context.Context) error {
 	})
 }
 
-// Read reads application data from the connection.
+// Read 读取解密后的应用数据；nil 接收者返回 errNilConn（typed-nil 接口陷阱
+// 防御，见 errNilConn）。
 func (c *Conn) Read(b []byte) (int, error) {
+	if c == nil {
+		return 0, errNilConn
+	}
 	return panicsafe.Do1(func() (int, error) {
 		if c.inner == nil {
 			// net.Conn convention: (0, nil) is ambiguous (could mean EOF).
@@ -86,8 +106,12 @@ func (c *Conn) Read(b []byte) (int, error) {
 	})
 }
 
-// Write writes application data to the connection.
+// Write 写入应用数据；nil 接收者返回 errNilConn（typed-nil 接口陷阱防御，
+// 见 errNilConn）。
 func (c *Conn) Write(b []byte) (int, error) {
+	if c == nil {
+		return 0, errNilConn
+	}
 	return panicsafe.Do1(func() (int, error) {
 		if c.inner == nil {
 			// See Read: never return (0, nil) for an uninitialized connection.
@@ -100,8 +124,14 @@ func (c *Conn) Write(b []byte) (int, error) {
 	})
 }
 
-// Close closes the connection.
+// Close 关闭连接（先尽力发 close_notify 告警再关底层传输，见引擎侧
+// tlcpConn.Close）；nil 接收者返回 errNilConn——typed-nil 接口陷阱下
+// (*Conn)(nil) 流入 net.Conn 字段后接口值非 nil，下游的防御性 Close 必须
+// 报错而非 panic。
 func (c *Conn) Close() error {
+	if c == nil {
+		return errNilConn
+	}
 	if c.inner != nil {
 		return c.inner.Close()
 	}
@@ -117,6 +147,9 @@ func (c *Conn) Close() error {
 
 // LocalAddr returns the local address.
 func (c *Conn) LocalAddr() net.Addr {
+	if c == nil {
+		return nil // typed-nil 接口陷阱防御（见 errNilConn）
+	}
 	if c.inner != nil {
 		return c.inner.LocalAddr()
 	}
@@ -127,6 +160,9 @@ func (c *Conn) LocalAddr() net.Addr {
 
 // RemoteAddr returns the remote address.
 func (c *Conn) RemoteAddr() net.Addr {
+	if c == nil {
+		return nil // typed-nil 接口陷阱防御（见 errNilConn）
+	}
 	if c.inner != nil {
 		return c.inner.RemoteAddr()
 	}
@@ -137,6 +173,9 @@ func (c *Conn) RemoteAddr() net.Addr {
 
 // SetDeadline sets the read/write deadline.
 func (c *Conn) SetDeadline(t time.Time) error {
+	if c == nil {
+		return errNilConn // typed-nil 接口陷阱防御（见 errNilConn）
+	}
 	if c.inner != nil {
 		return c.inner.SetDeadline(t)
 	}
@@ -151,6 +190,9 @@ func (c *Conn) SetDeadline(t time.Time) error {
 
 // SetReadDeadline sets the read deadline.
 func (c *Conn) SetReadDeadline(t time.Time) error {
+	if c == nil {
+		return errNilConn // typed-nil 接口陷阱防御（见 errNilConn）
+	}
 	if c.inner != nil {
 		return c.inner.SetReadDeadline(t)
 	}
@@ -165,6 +207,9 @@ func (c *Conn) SetReadDeadline(t time.Time) error {
 
 // SetWriteDeadline sets the write deadline.
 func (c *Conn) SetWriteDeadline(t time.Time) error {
+	if c == nil {
+		return errNilConn // typed-nil 接口陷阱防御（见 errNilConn）
+	}
 	if c.inner != nil {
 		return c.inner.SetWriteDeadline(t)
 	}
@@ -181,9 +226,10 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 // 命名对齐 tls13gm 的 Handshaker.NegotiatedProtocol，取值与
 // ConnectionState().NegotiatedProtocol 一致。任一侧未配置 NextProtos、
 // 客户端未提议、或服务端未回 ALPN 扩展均视为未协商。连接未初始化
-// （构造期配置错误）时返回空串。
+// （构造期配置错误）或 nil 接收者（typed-nil 接口陷阱防御，见 errNilConn）
+// 时返回空串。
 func (c *Conn) NegotiatedProtocol() string {
-	if c.inner == nil {
+	if c == nil || c.inner == nil {
 		return ""
 	}
 	return c.inner.ConnectionState().NegotiatedProtocol
@@ -191,7 +237,7 @@ func (c *Conn) NegotiatedProtocol() string {
 
 // ConnectionState returns the connection's security parameters.
 func (c *Conn) ConnectionState() ConnectionState {
-	if c.inner == nil {
+	if c == nil || c.inner == nil {
 		return ConnectionState{}
 	}
 	es := c.inner.ConnectionState()
@@ -217,6 +263,9 @@ func (c *Conn) ConnectionState() ConnectionState {
 
 // NetConn returns the underlying connection.
 func (c *Conn) NetConn() net.Conn {
+	if c == nil {
+		return nil // typed-nil 接口陷阱防御（见 errNilConn）
+	}
 	if c.inner != nil {
 		return c.inner.NetConn()
 	}

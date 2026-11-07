@@ -203,7 +203,16 @@ func (hc *tlcpHalfConn) prepareCipherSpec(cbcKey []byte, aead *tlcpPrefixNonceAE
 
 // changeCipherSpec activates the staged cipher/MAC and resets the sequence
 // number. Called when a CCS record is sent (out) or received (in).
+//
+// destroyed 显式前置检查：destroy（Close 拆连路径）清零 staged 密钥后到达的
+// CCS 记录，若只靠下方 staged 空判断会落入 "without prepareCipherSpec" 错误
+// 路径——行为安全（同样拒绝激活）但文案误导（看似握手状态机缺陷，实为拆连
+// 竞态）。返回 errHalfConnDestroyed 哨兵让错误可归因。调用方（readRecord/
+// writeRecord）持 hc.mu，与 destroy 置位同锁，读取无竞争。
 func (hc *tlcpHalfConn) changeCipherSpec() error {
+	if hc.destroyed {
+		return errHalfConnDestroyed
+	}
 	if hc.nextCBCKey == nil && hc.nextAEAD == nil {
 		return errors.New("tlcp: changeCipherSpec without prepareCipherSpec")
 	}

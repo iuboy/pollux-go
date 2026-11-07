@@ -1,8 +1,11 @@
 package smx509
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"errors"
 	"time"
 
@@ -98,6 +101,18 @@ func ParseOCSPResponseWithIssuer(data []byte, issuer *x509.Certificate) (*ocsp.R
 // path); the deliberately unverified parse-only entry point is
 // ParseOCSPResponseUnverified, whose result MUST NOT gate trust decisions.
 //
+// Two further checks mirror the SM2 parser's enforcement on the non-SM2 path:
+//   - ResponderID binding (RFC 6960 §4.2.2.3, matchesStandardResponderID): the
+//     response's ResponderID (byName or byKey) must identify the actual
+//     signer — the embedded responder certificate, or the issuer for
+//     issuer-direct responses. An attacker controlling two authorized
+//     responder certificates could otherwise swap the embedded cert while
+//     keeping the original ResponderID.
+//   - Embedded responder certificate validity window: an expired (or
+//     not-yet-valid) responder certificate is rejected when now is non-zero;
+//     the response-level [ThisUpdate, NextUpdate] window does not cover the
+//     certificate itself.
+//
 // SM3 CertIDs: if the response's CertID hashes with SM3 (GM/T 0009-2012),
 // resp.IssuerHash is reported as crypto.SHA256 — x/crypto's ocsp.Response
 // cannot express SM3 (no crypto.Hash constant exists). Do NOT recompute
@@ -128,6 +143,33 @@ func ParseOCSPResponseWithIssuerAt(data []byte, issuer *x509.Certificate, now ti
 		!hasOCSPSigningEKU(resp.Certificate) {
 		return nil, errors.New("smx509: embedded responder cert lacks id-kp-OCSPSigning EKU")
 	}
+	// ResponderID ↔ 实际签名者绑定检查（RFC 6960 §4.2.2.3），镜像 SM2 路径
+	// （parseSM2OCSPResponse 的 matchesResponderID）的同名检查：ResponderID
+	// 的存在意义正是让依赖方据此定位实际签名者——持有两张授权响应者证书
+	// （或一把失窃密钥加一张合法证书）的攻击者可对调内嵌证书而保留原
+	// ResponderID，令响应冒充他人身份。x/crypto 的 ParseResponse 不做该校验，
+	// 由 matchesStandardResponderID 补齐。无内嵌证书时签名为 issuer 直接
+	// 作出，绑定对象即 issuer（issuer 在本入口已保证非 nil，与 SM2 路径的
+	// issuer-direct 分支同姿态）。
+	if resp.Certificate != nil {
+		if !matchesStandardResponderID(resp, resp.Certificate) {
+			return nil, errors.New("smx509: OCSP ResponderID does not match embedded responder certificate")
+		}
+		// 内嵌响应者证书自身的有效期窗检查，镜像 SM2 路径：过期（或未生效）
+		// 的委派响应者签名不再构成有效背书，下方响应级 [ThisUpdate,
+		// NextUpdate] 时间窗不覆盖证书本身的有效期。now 为零（parse-only
+		// 调用方）时跳过，与 SM2 路径一致。
+		if !now.IsZero() {
+			if now.Add(ocspFreshnessLeeway).Before(resp.Certificate.NotBefore) {
+				return nil, errors.New("smx509: embedded responder certificate is not yet valid")
+			}
+			if now.After(resp.Certificate.NotAfter) {
+				return nil, errors.New("smx509: embedded responder certificate is expired")
+			}
+		}
+	} else if !matchesStandardResponderID(resp, issuer) {
+		return nil, errors.New("smx509: OCSP ResponderID does not match issuer certificate")
+	}
 	// responseExtensions 的 critical 位检查：x/crypto 不解析响应级扩展
 	// （encoding/asn1 静默忽略尾部未知元素），未知 critical 扩展按
 	// RFC 6960 §4.2.1 语义必须拒绝；nonce 视为已知扩展。与 SM2 解析路径
@@ -152,6 +194,51 @@ func ParseOCSPResponseWithIssuerAt(data []byte, issuer *x509.Certificate, now ti
 		}
 	}
 	return resp, nil
+}
+
+// matchesStandardResponderID 报告 resp 的 ResponderID（RFC 6960 §4.2.2.3，
+// byName/byKey 两形态）是否标识 signerCert——即 signerCert 就是该响应的
+// 实际签名者。供 ParseOCSPResponseWithIssuerAt 的非 SM2 路径补检，镜像
+// SM2 路径（parseSM2OCSPResponse 内的 matchesResponderID 闭包）语义：
+//   - byName：证书 RawSubject 与 RawResponderName 逐字节比较（x/crypto 的
+//     RawResponderName 即 responderID.byName 中 Name 的完整 DER，且已由
+//     其解析侧完成 RDNSequence 形态校验）；
+//   - byKey：按 CertID 哈希算法重算 subjectPublicKey（BIT STRING 内容）再
+//     比较。非 SM2 路径的 CertID 哈希算法即 x/crypto 归一出的
+//     resp.IssuerHash（其由 CertID 哈希 OID 映射而来，解析失败即整体报错，
+//     故此处必为已支持算法；仍以 Available 兜底 fail-closed）。
+//
+// 注意 RFC 6960 原文将 byKey 的 KeyHash 固定为 SHA-1；本实现与 SM2 路径
+// 一致改按 CertID 哈希算法重算——响应者按 RFC 严格 SHA-1 计算 KeyHash 而
+// CertID 选用更长哈希的响应会被拒绝（误差方向落在收紧一侧）。
+// ResponderID 两形态字段均缺失、签名者缺失或哈希不可用时返回 false。
+func matchesStandardResponderID(resp *ocsp.Response, signerCert *x509.Certificate) bool {
+	if resp == nil || signerCert == nil {
+		return false
+	}
+	switch {
+	case resp.RawResponderName != nil:
+		// byName：直接比较 Name DER 与证书 RawSubject。
+		return bytes.Equal(signerCert.RawSubject, resp.RawResponderName)
+	case resp.ResponderKeyHash != nil:
+		// byKey：与 CertID 同哈希算法重算公钥 BIT STRING 内容。
+		if !resp.IssuerHash.Available() {
+			return false
+		}
+		var pubKeyInfo struct {
+			Algorithm pkix.AlgorithmIdentifier
+			PublicKey asn1.BitString
+		}
+		if _, err := asn1.Unmarshal(signerCert.RawSubjectPublicKeyInfo, &pubKeyInfo); err != nil {
+			return false
+		}
+		h := resp.IssuerHash.New()
+		h.Write(pubKeyInfo.PublicKey.RightAlign())
+		return bytes.Equal(h.Sum(nil), resp.ResponderKeyHash)
+	default:
+		// 两形态均缺失（x/crypto 保证两者恰置其一，缺省视为异常形态）。
+		return false
+	}
 }
 
 // NewOCSPResponseTemplate creates an OCSP response template for a certificate.

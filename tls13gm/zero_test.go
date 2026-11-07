@@ -2,6 +2,7 @@ package tls13gm
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 )
 
@@ -192,5 +193,89 @@ func TestClientHandshaker_DoesNotAliasConfigPSK(t *testing.T) {
 	}
 	if !bytes.Equal(cfg.ResumptionIdentity, idCopy) {
 		t.Errorf("Zero() wiped the caller's Config.ResumptionIdentity: got %x", cfg.ResumptionIdentity)
+	}
+}
+
+// TestClientHandshaker_DoesNotAliasConfigSlices 是第四轮批 C 后续的回归守卫:
+// 继 DoesNotAliasConfigPSK(ResumptionPSK/ResumptionIdentity)之后,锁定其余被
+// handshaker 保留的切片字段 dcid/localTransportParams/nextProtos 同样真实拷贝
+// (独立底层数组)——调用方改写 Config 原切片不得影响已构造的 handshaker,
+// 反向改写 handshaker 副本也不得波及调用方 Config。ResumptionAppData 不在
+// 断言范围:ClientHandshaker 不持有该字段(0-RTT 恢复参数由 QUIC 传输层从其
+// 自留的 ClientConfig 读取),无别名面可言;ServerName 等字符串不可变,同样
+// 无需断言。
+func TestClientHandshaker_DoesNotAliasConfigSlices(t *testing.T) {
+	cfgDCID := []byte{0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8}
+	cfgTP := []byte("client-transport-params")
+	cfgNext := []string{"mbta/1", "mbta-ntls/1"}
+	cfg := ClientConfig{
+		DCID:                cfgDCID,
+		InsecureSkipVerify:  true,
+		TransportParameters: cfgTP,
+		NextProtos:          cfgNext,
+	}
+	dcidCopy := append([]byte(nil), cfgDCID...)
+	tpCopy := append([]byte(nil), cfgTP...)
+	nextCopy := append([]string(nil), cfgNext...)
+
+	client, err := NewClientHandshakerWithConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
+	}
+
+	// 真实拷贝断言:handshaker 副本与 Config 不共享底层数组。
+	if &client.dcid[0] == &cfg.DCID[0] {
+		t.Fatal("dcid aliases the caller's Config backing array")
+	}
+	if &client.localTransportParams[0] == &cfg.TransportParameters[0] {
+		t.Fatal("localTransportParams aliases the caller's Config backing array")
+	}
+	if &client.nextProtos[0] == &cfg.NextProtos[0] {
+		t.Fatal("nextProtos aliases the caller's Config backing array")
+	}
+
+	// 改写调用方 Config 原切片,handshaker 持有的副本必须纹丝不动。
+	for i := range cfg.DCID {
+		cfg.DCID[i] = 0xAA
+	}
+	for i := range cfg.TransportParameters {
+		cfg.TransportParameters[i] = 0xBB
+	}
+	for i := range cfg.NextProtos {
+		cfg.NextProtos[i] = "mutated"
+	}
+	if !bytes.Equal(client.dcid, dcidCopy) {
+		t.Errorf("mutating Config.DCID altered the handshaker copy: got %x", client.dcid)
+	}
+	if !bytes.Equal(client.localTransportParams, tpCopy) {
+		t.Errorf("mutating Config.TransportParameters altered the handshaker copy: got %x", client.localTransportParams)
+	}
+	if !reflect.DeepEqual(client.nextProtos, nextCopy) {
+		t.Errorf("mutating Config.NextProtos altered the handshaker copy: got %v", client.nextProtos)
+	}
+
+	// 反向:改写 handshaker 侧副本,Config 原切片必须纹丝不动(镜像 PSK 测试)。
+	// 对照基线取上一步改写后的 Config 现状(cfg 与 cfgDCID 等仍共享底层数组,
+	// 上一步的原值基线已随方向 1 的改写失效)。
+	cfgDCIDAfter := append([]byte(nil), cfg.DCID...)
+	cfgTPAfter := append([]byte(nil), cfg.TransportParameters...)
+	cfgNextAfter := append([]string(nil), cfg.NextProtos...)
+	for i := range client.dcid {
+		client.dcid[i] = 0xCC
+	}
+	for i := range client.localTransportParams {
+		client.localTransportParams[i] = 0xDD
+	}
+	for i := range client.nextProtos {
+		client.nextProtos[i] = "reversed"
+	}
+	if !bytes.Equal(cfg.DCID, cfgDCIDAfter) {
+		t.Errorf("mutating the handshaker copy altered Config.DCID: got %x", cfg.DCID)
+	}
+	if !bytes.Equal(cfg.TransportParameters, cfgTPAfter) {
+		t.Errorf("mutating the handshaker copy altered Config.TransportParameters: got %x", cfg.TransportParameters)
+	}
+	if !reflect.DeepEqual(cfg.NextProtos, cfgNextAfter) {
+		t.Errorf("mutating the handshaker copy altered Config.NextProtos: got %v", cfg.NextProtos)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/iuboy/pollux-go/kdf"
 	"strconv"
 	"strings"
 
@@ -189,6 +190,8 @@ func (p Argon2idParams) validateDecoded(saltLen, keyLen int) error {
 		return fmt.Errorf("%w: key length exceeds safe upper bound", ErrMalformedHash)
 	case saltLen < minSaltLength:
 		return fmt.Errorf("%w: salt too short", ErrMalformedHash)
+	case saltLen > kdf.MaxSaltLen:
+		return fmt.Errorf("%w: salt length %d exceeds limit %d", ErrMalformedHash, saltLen, kdf.MaxSaltLen)
 	}
 	return nil
 }

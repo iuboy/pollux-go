@@ -1,13 +1,11 @@
-// gm_hook.go isolates every site where the fork branches on Config.GMSM4GCM.
+// gm_hook.go 隔离 fork 在 Config.GMSM4GCM 上分叉的全部位置。
 //
-// Why this file exists: quic-go upstream has no public CryptoSetup injection
-// point (internal/handshake.CryptoSetup is internal, and crypto/tls's cipher
-// suite enum panics on RFC 8998 IDs), so the fork must branch inside the
-// transport. Centralizing the branches here means every upstream file that the
-// fork touches (connection.go, config.go, interface.go) stays as close to its
-// upstream form as possible — connection.go's two call sites collapse to a
-// single hook call each, so a `git subtree pull` of a new quic-go tag rarely
-// conflicts on the patched files. See quic-go/PATCHES.md.
+// 本文件存在的原因：quic-go 上游没有公开的 CryptoSetup 注入点
+// （internal/handshake.CryptoSetup 为 internal，且 crypto/tls 的套件枚举对
+// RFC 8998 ID 直接 panic），fork 必须在传输层内部分叉。把分叉集中于此使
+// fork 触碰的每个上游文件（connection.go/config.go/interface.go）尽量贴近
+// 上游原形——connection.go 的两个调用点各自收敛为单次 hook 调用， subtree
+// pull 新版本 tag 时被补丁文件极少冲突。See quic-go/PATCHES.md。
 //
 // 每个 hook 返回 (cryptoSetup, ok, err)：ok 为 false 表示 GMSM4GCM 未启用，
 // 调用方回落到上游 crypto/tls 构造器；ok 为 true 表示走 GM 路径，err 非 nil
@@ -22,7 +20,8 @@
 // CONNECTION_REFUSED，进程存活），客户端 Dial 直接报错。正常路径下
 // validateGMConfig 已在 Listen/Dial 构造期拦截同类配置错误，hook 内的 nil
 // 检查是纵深防御——覆盖 GetConfigForClient 每连接回调绕过 validateGMConfig
-// 的入口。See quic-go/PATCHES.md.
+// 的入口。See quic-go/PATCHES.md。
+//
 
 package quic
 

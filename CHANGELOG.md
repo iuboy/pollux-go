@@ -5,13 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## 版本策略（2026-11-07 起）
 
-### Fixed — v0.5.1 发布后:GM 0-RTT 数据竞争修复(上游 quic-go#4303 同源)
+库版本自 **v0.1.0-0 重新起算**（世系重置）：此前的 v0.1.0–v0.5.2 及
+v0.61.0–v0.64.0（quic-go 跟随）标签已从仓库（本地与 GitHub）移除，其变更
+条目保留在本文档末尾仅作历史记录。新世系版本号恒为 `v0.1.<patch>-<rev>`：
+
+- **只有 patch（`0.1.x` 的 x）与 rev（`-0` 的数字）两位会递增**；major/minor
+  （`0.1`）不再演进——包括破坏性变更在内的一切变更都只走 patch/rev 节奏
+  （quic-go 跟随版本改以 PATCHES.md 记录，不再映射进本库版本号）。
+- **默认进行破坏性变更，无兼容要求**：除非维护者在变更指令中显式要求保持
+  兼容，API 的破坏性调整不需升 minor、不需兼容别名、不需迁移期——调用方
+  随版本更新同步修正。破坏性内容仍须在本文档「Breaking / 破坏性」条目
+  逐条列出（知情记录，而非兼容承诺）。
+- 同一 patch 内的修正递增 rev（`v0.1.2-0` → `v0.1.2-1`）；新变更发布递增
+  patch 并将 rev 复位 0。
+
+## [0.1.0-0] - 2026-11-07
+
+### Breaking — API 面破坏性收口（默认破坏性策略首批执行）
+
+- **Deprecated 项删除（零生产调用或替身为超集，经只读评估逐项裁决）**：`smx509.ParseOCSPResponse`（不验签旧名 shim，替身 `ParseOCSPResponseUnverified` 在调用点显式安全取舍）；`tls.TLS_SM2_GCM_SM3`（0x00C6 误名 alias，RFC 8998 为 TLS_SM4_GCM_SM3）；`sm2.SM2SignerOption`（强制 forceGMSign 特例，替身 `NewSM2SignerOption(true, uid)`）；`tls13gm.NewClientHandshaker`（硬编码 InsecureSkipVerify 且参数被忽略的安全陷阱）与 `NewServerHandshaker`（无法携带 QUIC transport params）——替身均为 `New*HandshakerWithConfig`。
+- **sm4 CFB/ECB 整体移除**：`NewCFBEncrypter`/`NewCFBDecrypter`/`ModeCFB`/`ModeECB` 及 `Encrypt`/`Decrypt` 分派分支与文档——无认证/无语义安全的模式不留功能面，`NewGCM` 为推荐路径；ECB 规范 KAT 由既有单块向量用例覆盖，无测试资产损失。
+- **tlcp no-op 启用面删除**：`Enable`/`Disable`/`BuildClientConfig`/`BuildServerConfig`/`ErrTLCPNotSupported`——向 stdlib `crypto/tls.Config.CipherSuites` 追加国密 ID 会被静默丢弃，`Enable` 是保证无效的 no-op 并制造「已启用 TLCP」的安全错觉；Build* 产物同样不能用于 TLCP 且零调用。
+- **`smx509.VerifyDualCerts` 升级为真验签并改名 `VerifyDualCertSignatures(signCert, encCert, VerifyOptions)`**：原名仅做配对结构检查（同 issuer/subject/KU），"Verify" 命名下调用者易把结构检查当验签——签名验证缺失即双证书体系核心防线缺席。现先配对约束检查、再经 `Verify` 对两证分别做链+签名验证；`tlcp.VerifyDualCertPair` 签名随动为 `(pair, smx509.VerifyOptions)` 并委托；`tlcp.ValidateDualCertPair`（纯结构检查）doc 加硬警示。
+- **`smx509.SignatureAlgorithmForPrivateKey` 改为 `(x509.SignatureAlgorithm, error)`**：SM2 返回 `(Unknown, nil)`（交由签名后端默认 SM2WithSM3）与「不支持」（非 nil error，包装 `x509.ErrUnsupportedAlgorithm`）从此可区分。
+- **`tls13gm.handshakeMessage` 接口导出为 `HandshakeMessage`**：`MarshalHandshakeMessage` 的参数类型此前在导出签名里不可命名。
+- **`https.ListenAndServeTLSNat` 改名 `ListenAndServeIntlTLS`**："Nat" 读作 national 的误导（函数用国际 stdlib TLS；国密路径是 `ListenAndServeTLCP`），选错即国密合规场景静默降级。
+- **`jwt.SetAudience` 加入 `Signer`/`SignerVerifier` 导出接口**：此前只存在于未导出具体类型上，经 `NewHS256`/`NewSM2SM3` 返回值不可达——aud 强制校验功能事实上对外缺席。
+
+### Added — TLCP ALPN 协商(RFC 7301)
+
+- **tlcp `Config.NextProtos`**:客户端非空时在 ClientHello 提议 ALPN 扩展,服务端按「客户端提议 ∩ 本地偏好」选择(客户端优先序,对齐 tls13gm 的 client-preference;任一侧未配置或客户端未提议时不选择、不报错——stdlib `negotiateALPN` 对空列表返回 `("", nil)`,服务端未配置时若采纳客户端首个提议会把操作者从未配置的协议"协商"成真,故不采纳;两侧都配置但无交集时服务端中止,错误文本含 no_application_protocol,alert 走引擎通用 handshake_failure(40)——引擎 alert 词表尚无 120 号,新增属协议面变更,注释已裁决)。协议名校验对齐 stdlib `makeClientHello`(空名/超 255 字节 → invalid NextProtos value,总长超 0xffff → values too large,构造 ClientHello 时报错而非 marshal 深处 panic);`Config.Clone` 同步深拷贝;新增 `Conn.NegotiatedProtocol()`(命名对齐 tls13gm Handshaker,取值与 `ConnectionState().NegotiatedProtocol` 一致);客户端 ALPN 信任门语义不变(服务端选择必须落在提议列表内),resume 的 ServerHello 照常回传选中协议(stdlib TLS 1.2 同姿态)。NextProtos 为空时 wire 行为与此前逐字节一致(不提议 ALPN 扩展)。覆盖:提议+选中/无提议/服务端静默不采纳/wire 往返与非法值/resume 回传(`tlcp/alpn_test.go`),信任门"未提议列表"负例保留于 `tlcp/alpn_gate_test.go`
+
+### Fixed — GM 0-RTT 数据竞争修复(上游 quic-go#4303 同源)
 
 v0.5.1 的 main CI(Go 1.26.9 race)暴露真实数据竞争,PR 检查未触发、本地 Go 1.27.2 未触发——GM 事件时序放大了窗口。根因属上游 quic-go v0.64.0(issue #4303,上游至今未修):DialEarly 早返回后 app 开 0-RTT 流,`newFlowController` 读 `peerParams` 与连接 goroutine 处理 EE 写并发;第二处为 `streamsMap.supportsResetStreamAt`(构造闭包读 vs `HandleTransportParameters` 写)。fork 修复:`peerParams` 专用 RWMutex(app 侧读 RLock、连接侧写 Lock,连接内读保持无锁)、`supportsResetStreamAt` 改 `atomic.Bool`;PATCHES.md 已记录为上游核心文件分歧,上游若修将优先采用其实现。验证:Test0RTT* -race 20 次压力全绿 + fork 全量 + CI 复跑。
 
+- **tlcp `HandshakeContext` 支持中途取消（stdlib 同模型）**：此前仅在入口检查一次 ctx、中途不可取消（下游只能以整体 SetDeadline 兜底防 goroutine/fd 泄漏）。现以 `context.AfterFunc` 在实际握手分支注册 conn 关闭（与 crypto/tls 的 handshakeContext 同构），取消即时生效并返回 ctx.Err()；`Handshake()` 语义零变化。`DialContext` 握手阶段改走 `HandshakeContext(ctx)`，「Context 后缀」名实相符——conn deadline 传播保留为数据面兜底。
+
 ## [v0.5.1] - 2026-10-18
+
+> 以下 v0.1.0–v0.5.2 / v0.61.0–v0.64.0 条目属旧世系，仅作历史记录保留——对应标签已移除。
 
 ### Added — 第三轮安全审查遗留项收尾(5 项功能/加固)
 

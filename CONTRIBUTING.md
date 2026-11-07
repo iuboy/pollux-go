@@ -94,14 +94,25 @@ main 稳定后打 tag 触发自动 release：
 ```bash
 git checkout main
 git pull
-git tag -a v0.X.Y -m "v0.X.Y: 简要说明"
-git push origin v0.X.Y
+git tag -a v0.1.X-<rev> -m "v0.1.X-<rev>: 简要说明"
+git push origin v0.1.X-<rev>
 ```
 
-push tag 会触发 `release.yml` workflow，GitHub 自动用 `--generate-notes`
-从合并的 PR 创建 Release。
+push tag 会触发 `release.yml` workflow（`v*` 通配，`v0.1.0-0` 格式匹配），
+GitHub 自动用 `--generate-notes` 从合并的 PR 创建 Release。
 
-版本号遵循 [semver](https://semver.org/)：`v0.X.Y`（0.x 阶段，breaking change 走 minor）。
+### 版本与破坏性策略
+
+自 2026-11-07 世系重置起，库版本自 `v0.1.0-0` 重新起算（旧世系
+v0.1.0–v0.5.2 / v0.61.0–v0.64.0 标签已移除，CHANGELOG 保留历史条目）：
+
+- 版本号恒为 `v0.1.<patch>-<rev>`，只有 patch 与 rev 递增；quic-go 跟随
+  版本记 PATCHES.md，不映射进本库版本号。
+- **默认进行破坏性变更，无兼容要求**：除非维护者明确要求保持兼容，API
+  破坏性调整不做兼容别名、不做迁移期、不升 minor——调用方随版本更新
+  同步修正。
+- 发版流程：CHANGELOG 定版（patch 递增、rev 复位 0；同 patch 热修递增
+  rev）→ 打 `v0.1.x-<rev>` 标签推送 → release.yml 出 Release。
 
 ## 已知待办
 

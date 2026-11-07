@@ -125,7 +125,7 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 		if h.qlogger != nil {
 			h.qlogger.RecordEvent(qlog.DatagramDropped{
 				Direction: qlog.DirectionReceiving,
-				Raw:       qlog.RawInfo{Length: len(f.Data)},
+				Raw:       qlog.RawInfo{Length: len(f.Data), PayloadLength: qlog.OmitLength},
 				Trigger:   "buffer_full",
 			})
 		}
@@ -134,6 +134,9 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 
 // Receive gets a received DATAGRAM frame.
 func (h *datagramQueue) Receive(ctx context.Context) ([]byte, error) {
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
 	for {
 		h.rcvMx.Lock()
 		if len(h.rcvQueue) > 0 {
@@ -149,7 +152,7 @@ func (h *datagramQueue) Receive(ctx context.Context) ([]byte, error) {
 		case <-h.closed:
 			return nil, h.closeErr
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, context.Cause(ctx)
 		}
 	}
 }

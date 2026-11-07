@@ -143,18 +143,21 @@ func (k *LocalKMC) GenerateEncryptionKeyPair(_ context.Context, subject pkix.Nam
 	// requested as the default extension. Extended key usage is deliberately
 	// NOT requested — usage policy is the issuing CA's call.
 	//
-	// Signature algorithm: SignatureAlgorithmForPrivateKey returns
-	// UnknownSignatureAlgorithm (the zero value) for SM2 keys because stdlib
-	// x509 has no SM2WithSM3 constant; gmsm's CreateCertificateRequest then
-	// defaults SM2 keys to SM2WithSM3, so the CSR is signed SM2-with-SM3
+	// Signature algorithm: for SM2 keys SignatureAlgorithmForPrivateKey
+	// returns (UnknownSignatureAlgorithm, nil) — leaving the field at the
+	// zero value makes gmsm's CreateCertificateRequest default to SM2WithSM3
 	// (locked by TestLocalKMC_GenerateEncryptionKeyPair).
 	keyUsageExt, err := keyUsageExtension(x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment)
 	if err != nil {
 		return fail(err)
 	}
+	sigAlgo, err := smx509.SignatureAlgorithmForPrivateKey(priv)
+	if err != nil {
+		return fail(fmt.Errorf("kmc: select CSR signature algorithm: %w", err))
+	}
 	csrTemplate := &x509.CertificateRequest{
 		Subject:            subject,
-		SignatureAlgorithm: smx509.SignatureAlgorithmForPrivateKey(priv),
+		SignatureAlgorithm: sigAlgo,
 		ExtraExtensions:    []pkix.Extension{keyUsageExt},
 	}
 	csrDER, err := smx509.CreateCertificateRequest(csrTemplate, priv)

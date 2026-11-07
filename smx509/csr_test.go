@@ -176,14 +176,14 @@ func TestVerify_NilCert(t *testing.T) {
 	}
 }
 
-func TestVerifyDualCerts_NilArgs(t *testing.T) {
-	err := VerifyDualCerts(nil, nil)
+func TestVerifyDualCertSignatures_NilArgs(t *testing.T) {
+	err := VerifyDualCertSignatures(nil, nil, VerifyOptions{})
 	if err == nil {
 		t.Error("should reject nil certificates")
 	}
 }
 
-func TestVerifyDualCerts_MismatchedCA(t *testing.T) {
+func TestVerifyDualCertSignatures_MismatchedCA(t *testing.T) {
 	// 两个不同 CA 签发的证书
 	priv1, _ := ecdsa.GenerateKey(sm2.P256(), rand.Reader)
 	sm2Priv1 := new(sm2.PrivateKey)
@@ -215,13 +215,13 @@ func TestVerifyDualCerts_MismatchedCA(t *testing.T) {
 	encDER, _ := CreateCertificate(encTmpl, encTmpl, &priv2.PublicKey, sm2Priv2)
 	encCert, _ := x509.ParseCertificate(encDER)
 
-	err := VerifyDualCerts(signCert, encCert)
+	err := VerifyDualCertSignatures(signCert, encCert, VerifyOptions{})
 	if err == nil {
 		t.Error("should reject mismatched CA certificates")
 	}
 }
 
-func TestVerifyDualCerts_InvalidKeyUsage(t *testing.T) {
+func TestVerifyDualCertSignatures_InvalidKeyUsage(t *testing.T) {
 	priv, _ := ecdsa.GenerateKey(sm2.P256(), rand.Reader)
 	sm2Priv := new(sm2.PrivateKey)
 	_, _ = sm2Priv.FromECPrivateKey(priv)
@@ -239,9 +239,78 @@ func TestVerifyDualCerts_InvalidKeyUsage(t *testing.T) {
 	der, _ := CreateCertificate(tmpl, tmpl, &priv.PublicKey, sm2Priv)
 	cert, _ := x509.ParseCertificate(der)
 
-	err := VerifyDualCerts(cert, cert)
+	err := VerifyDualCertSignatures(cert, cert, VerifyOptions{})
 	if err == nil {
 		t.Error("should reject certs with invalid key usage")
+	}
+}
+
+// TestVerifyDualCertSignatures_SignatureVerification 锁定升级后的契约：
+// 配对约束通过后，签名/证书链验证真实发生——正确信任锚下合法双证书对
+// 返回 nil，无信任锚时必然失败（证明该函数验签名，而非只做结构检查）。
+func TestVerifyDualCertSignatures_SignatureVerification(t *testing.T) {
+	// 自签名 CA
+	caPriv, _ := ecdsa.GenerateKey(sm2.P256(), rand.Reader)
+	caSM2Priv := new(sm2.PrivateKey)
+	_, _ = caSM2Priv.FromECPrivateKey(caPriv)
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "dual-sig-test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := CreateCertificate(caTmpl, caTmpl, &caPriv.PublicKey, caSM2Priv)
+	if err != nil {
+		t.Fatalf("create CA: %v", err)
+	}
+	caCert, err := ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("parse CA: %v", err)
+	}
+
+	// 双证书对：同 subject、同 issuer、key usage 正确，均由 CA 签名
+	priv, _ := ecdsa.GenerateKey(sm2.P256(), rand.Reader)
+	sm2Priv := new(sm2.PrivateKey)
+	_, _ = sm2Priv.FromECPrivateKey(priv)
+	tmpl := func(serial int64, ku x509.KeyUsage) *x509.Certificate {
+		return &x509.Certificate{
+			SerialNumber: big.NewInt(serial),
+			Subject:      pkix.Name{CommonName: "dual-sig-leaf"},
+			NotBefore:    time.Now().Add(-time.Hour),
+			NotAfter:     time.Now().Add(time.Hour),
+			KeyUsage:     ku,
+		}
+	}
+	signDER, err := CreateCertificate(tmpl(2, x509.KeyUsageDigitalSignature), caCert, &priv.PublicKey, caSM2Priv)
+	if err != nil {
+		t.Fatalf("create sign cert: %v", err)
+	}
+	signCert, err := ParseCertificate(signDER)
+	if err != nil {
+		t.Fatalf("parse sign cert: %v", err)
+	}
+	encDER, err := CreateCertificate(tmpl(3, x509.KeyUsageKeyEncipherment|x509.KeyUsageDataEncipherment), caCert, &priv.PublicKey, caSM2Priv)
+	if err != nil {
+		t.Fatalf("create enc cert: %v", err)
+	}
+	encCert, err := ParseCertificate(encDER)
+	if err != nil {
+		t.Fatalf("parse enc cert: %v", err)
+	}
+
+	// 正确信任锚：签名链验证通过 → nil
+	roots := NewCertPool()
+	roots.AddCert(caCert)
+	if err := VerifyDualCertSignatures(signCert, encCert, VerifyOptions{Roots: roots}); err != nil {
+		t.Errorf("VerifyDualCertSignatures(valid pair, correct roots) = %v, want nil", err)
+	}
+
+	// 无信任锚：签名链无法建立 → 必须失败
+	if err := VerifyDualCertSignatures(signCert, encCert, VerifyOptions{}); err == nil {
+		t.Error("VerifyDualCertSignatures(valid pair, no roots) = nil, want error")
 	}
 }
 

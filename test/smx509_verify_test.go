@@ -3,6 +3,7 @@ package test
 import (
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"math/big"
 	"testing"
 	"time"
@@ -129,14 +130,17 @@ func TestBlackBox_SMX509_Verify_WrongRoot(t *testing.T) {
 	}
 }
 
-func TestBlackBox_SMX509_VerifyDualCerts_ValidPair(t *testing.T) {
+func TestBlackBox_SMX509_VerifyDualCertSignatures_ValidPair(t *testing.T) {
 	caPriv, err := polluxSM2.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	// CA 与双证书都用真实非空 Subject：空的 leaf Subject 会与（同样为空的）
+	// issuer DN 相等，触发 Verify 的 SM2 self-signed-leaf 防线（errSelfSignedLeaf）。
 	caTmpl := &smx509.Certificate{
 		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "dual-verify-ca"},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
 		KeyUsage:              smx509.KeyUsageCertSign,
@@ -154,6 +158,7 @@ func TestBlackBox_SMX509_VerifyDualCerts_ValidPair(t *testing.T) {
 	signPriv, _ := polluxSM2.GenerateKey(rand.Reader)
 	signTmpl := &smx509.Certificate{
 		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "dual-verify-leaf"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     smx509.KeyUsageDigitalSignature,
@@ -166,6 +171,7 @@ func TestBlackBox_SMX509_VerifyDualCerts_ValidPair(t *testing.T) {
 	encPriv, _ := polluxSM2.GenerateKey(rand.Reader)
 	encTmpl := &smx509.Certificate{
 		SerialNumber: big.NewInt(3),
+		Subject:      pkix.Name{CommonName: "dual-verify-leaf"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     smx509.KeyUsageKeyEncipherment,
@@ -174,17 +180,23 @@ func TestBlackBox_SMX509_VerifyDualCerts_ValidPair(t *testing.T) {
 	encSMCert, _ := smx509.ParseCertificate(encDER)
 	encCert := stdCertFromSM(t, encSMCert)
 
-	rootPool := x509.NewCertPool()
+	rootPool := polluxSmx509.NewCertPool()
 	rootPool.AddCert(caCert)
 
-	err = polluxSmx509.VerifyDualCerts(signCert, encCert)
+	// 升级后的契约：签名链验证真实发生——正确信任锚下合法双证书对返回 nil。
+	err = polluxSmx509.VerifyDualCertSignatures(signCert, encCert, polluxSmx509.VerifyOptions{Roots: rootPool})
 	if err != nil {
-		t.Errorf("VerifyDualCerts valid pair: %v", err)
+		t.Errorf("VerifyDualCertSignatures valid pair: %v", err)
+	}
+
+	// 无信任锚：签名链无法建立，必须失败（防退化为纯配对结构检查）。
+	if err := polluxSmx509.VerifyDualCertSignatures(signCert, encCert, polluxSmx509.VerifyOptions{}); err == nil {
+		t.Error("VerifyDualCertSignatures without roots should fail")
 	}
 }
 
-func TestBlackBox_SMX509_VerifyDualCerts_NilArgs(t *testing.T) {
-	err := polluxSmx509.VerifyDualCerts(nil, nil)
+func TestBlackBox_SMX509_VerifyDualCertSignatures_NilArgs(t *testing.T) {
+	err := polluxSmx509.VerifyDualCertSignatures(nil, nil, polluxSmx509.VerifyOptions{})
 	if err == nil {
 		t.Error("nil args should return error")
 	}

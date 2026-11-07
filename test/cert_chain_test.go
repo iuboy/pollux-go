@@ -406,10 +406,12 @@ func TestBlackBox_DualCerts(t *testing.T) {
 		t.Error("sign and enc cert issuers should match")
 	}
 
-	// VerifyDualCerts
-	err = polluxSmx509.VerifyDualCerts(signCert, encCert)
+	// VerifyDualCertSignatures
+	rootPool := polluxSmx509.NewCertPool()
+	rootPool.AddCert(caCert)
+	err = polluxSmx509.VerifyDualCertSignatures(signCert, encCert, polluxSmx509.VerifyOptions{Roots: rootPool})
 	if err != nil {
-		t.Logf("VerifyDualCerts: %v", err)
+		t.Logf("VerifyDualCertSignatures: %v", err)
 	}
 }
 
@@ -454,9 +456,9 @@ func TestBlackBox_DualCerts_MismatchedCA(t *testing.T) {
 	rootPool := polluxSmx509.NewCertPool()
 	rootPool.AddCert(ca1)
 
-	err := polluxSmx509.VerifyDualCerts(signCert, encCert)
+	err := polluxSmx509.VerifyDualCertSignatures(signCert, encCert, polluxSmx509.VerifyOptions{Roots: rootPool})
 	if err == nil {
-		t.Error("VerifyDualCerts with mismatched signing keys should fail")
+		t.Error("VerifyDualCertSignatures with mismatched signing keys should fail")
 	}
 }
 
@@ -498,9 +500,9 @@ func TestBlackBox_DualCerts_InvalidKeyUsage(t *testing.T) {
 	rootPool := polluxSmx509.NewCertPool()
 	rootPool.AddCert(caCert)
 
-	err := polluxSmx509.VerifyDualCerts(badSignCert, encCert)
+	err := polluxSmx509.VerifyDualCertSignatures(badSignCert, encCert, polluxSmx509.VerifyOptions{Roots: rootPool})
 	if err == nil {
-		t.Error("VerifyDualCerts with wrong key usage should fail")
+		t.Error("VerifyDualCertSignatures with wrong key usage should fail")
 	}
 }
 

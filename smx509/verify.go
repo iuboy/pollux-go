@@ -176,11 +176,19 @@ func verifySM2(cert *x509.Certificate, opts VerifyOptions) error {
 	return nil
 }
 
-// VerifyDualCerts verifies a TLCP dual certificate pair (sign + encrypt).
-// It checks pairing constraints: same issuer, same subject, correct key usage.
-// Chain verification is the caller's responsibility (each cert verified against
-// its own root pool separately).
-func VerifyDualCerts(signCert, encCert *x509.Certificate) error {
+// VerifyDualCertSignatures verifies the signature material of a TLCP dual
+// certificate pair (sign + encrypt): each certificate's chain — and hence its
+// issuer's signature — is verified against opts via [Verify], and the pairing
+// constraints (same issuer, same subject, correct key usage) are checked
+// first, since they need no trust material and their errors are the more
+// specific ones.
+//
+// opts applies to BOTH certificates (DNSName, Intermediates, CurrentTime);
+// opts.KeyUsages, when non-nil, applies to both on top of the built-in
+// sign/encrypt usage checks (nil defaults to ExtKeyUsageServerAuth, see
+// [VerifyOptions]). A nil error therefore guarantees both certificates carry
+// valid CA signatures and form a properly paired dual-certificate set.
+func VerifyDualCertSignatures(signCert, encCert *x509.Certificate, opts VerifyOptions) error {
 	if signCert == nil || encCert == nil {
 		return errMissingEncryptCert
 	}
@@ -204,6 +212,15 @@ func VerifyDualCerts(signCert, encCert *x509.Certificate) error {
 	if encCert.KeyUsage&x509.KeyUsageKeyEncipherment == 0 &&
 		encCert.KeyUsage&x509.KeyUsageDataEncipherment == 0 {
 		return fmt.Errorf("%w: encrypt cert missing keyEncipherment or dataEncipherment", errInvalidKeyUsage)
+	}
+
+	// Signature/chain verification per certificate, with per-cert context so a
+	// failure names which half of the pair rejected the chain.
+	if err := Verify(signCert, opts); err != nil {
+		return fmt.Errorf("smx509: sign certificate: %w", err)
+	}
+	if err := Verify(encCert, opts); err != nil {
+		return fmt.Errorf("smx509: encrypt certificate: %w", err)
 	}
 
 	return nil

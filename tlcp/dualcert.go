@@ -100,7 +100,10 @@ func LoadDualCertPairFromPEM(signCertPEM, signKeyPEM, encCertPEM, encKeyPEM []by
 	return pair, nil
 }
 
-// ValidateDualCertPair validates the dual certificate pair.
+// ValidateDualCertPair 不验证签名——仅做结构检查（证书类型、密钥用途、
+// issuer 一致性）；签名验证见 smx509.VerifyDualCertSignatures /
+// 本包 VerifyDualCertPair。
+//
 // Checks: certificate type, key usage, issuer consistency.
 // (Validity-period checking is deliberately NOT done here: the handshake
 // verifies peer certificates against the clock, and local key material may
@@ -184,10 +187,15 @@ func ValidateTLCPCertificate(cert *x509.Certificate, isSignCert bool) error {
 	return nil
 }
 
-// VerifyDualCertPair verifies pairing of dual certificates (same issuer, key usage).
-// Chain verification should be performed by the caller for each certificate separately.
-func VerifyDualCertPair(pair *DualCertPair) error {
-	return polluxSmx509.VerifyDualCerts(pair.SignCert, pair.EncCert)
+// VerifyDualCertPair verifies the signature material of a dual certificate
+// pair: both certificates' chains (and hence their CA signatures) are
+// verified against opts via [smx509.VerifyDualCertSignatures], on top of the
+// pairing constraints (same issuer, same subject, correct key usage).
+func VerifyDualCertPair(pair *DualCertPair, opts polluxSmx509.VerifyOptions) error {
+	if pair == nil {
+		return errors.New("tlcp: dual cert pair is nil")
+	}
+	return polluxSmx509.VerifyDualCertSignatures(pair.SignCert, pair.EncCert, opts)
 }
 
 // ToTLSCertificates converts dual certificate pair to tls.Certificate.

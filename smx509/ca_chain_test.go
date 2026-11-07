@@ -346,15 +346,15 @@ func TestCertChain_CSRFlow(t *testing.T) {
 // ========== TLCP 双证书链验证 ==========
 
 func TestCertChain_DualCerts_SameCA(t *testing.T) {
-	signCert, encCert, _, _ := buildDualCertChain(t)
+	signCert, encCert, _, rootPool := buildDualCertChain(t)
 
 	if signCert.Issuer.CommonName != encCert.Issuer.CommonName {
 		t.Errorf("sign issuer %q != enc issuer %q", signCert.Issuer.CommonName, encCert.Issuer.CommonName)
 	}
 
-	err := VerifyDualCerts(smToStdCert(t, signCert), smToStdCert(t, encCert))
+	err := VerifyDualCertSignatures(smToStdCert(t, signCert), smToStdCert(t, encCert), VerifyOptions{Roots: rootPool})
 	if err != nil {
-		t.Logf("VerifyDualCerts: %v", err)
+		t.Logf("VerifyDualCertSignatures: %v", err)
 	}
 }
 

@@ -287,8 +287,8 @@ func TestParseCertificatePEM_BadInput(t *testing.T) {
 	}
 }
 
-// TestVerifyDualCertPair 覆盖 VerifyDualCertPair 委托调用。
-// 不断言验证结果(VerifyDualCerts 可能因缺少根池而返回错误),仅验证可达且不 panic。
+// TestVerifyDualCertPair 覆盖 VerifyDualCertPair 委托调用：测试 CA 签发的
+// 合法双证书对在正确信任锚下应通过（签名链 + 配对约束均验证）。
 func TestVerifyDualCertPair(t *testing.T) {
 	ca := selfSignCA(t, "dual-test-ca")
 	signCert, _ := makeCert(t, certSpec{
@@ -299,8 +299,11 @@ func TestVerifyDualCertPair(t *testing.T) {
 		issuer:   ca.cert, signer: ca.key,
 	})
 	pair := &DualCertPair{SignCert: signCert, EncCert: encCert}
-	// 仅验证委托路径被覆盖;VerifyDualCerts 内部签名链校验结果不在此断言
-	_ = VerifyDualCertPair(pair)
+	roots := polluxSmx509.NewCertPool()
+	roots.AddCert(ca.cert)
+	if err := VerifyDualCertPair(pair, polluxSmx509.VerifyOptions{Roots: roots}); err != nil {
+		t.Errorf("VerifyDualCertPair(valid pair signed by test CA) = %v, want nil", err)
+	}
 }
 
 // TestLoadSM2PrivateKey 覆盖从文件加载 SM2 私钥(成功/失败)。

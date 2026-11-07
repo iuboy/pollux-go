@@ -379,34 +379,45 @@ func ParseCertificateRequest(der []byte) (*x509.CertificateRequest, error) {
 	return nil, fmt.Errorf("smx509: failed to parse certificate request: %w", errors.Join(smErr, stdErr))
 }
 
-// SignatureAlgorithmForPrivateKey returns the appropriate signature algorithm
-// for the given private key type.
-func SignatureAlgorithmForPrivateKey(key any) x509.SignatureAlgorithm {
+// SignatureAlgorithmForPrivateKey returns the signature algorithm to request
+// for the given private key, and reports unsupported key types via error.
+//
+// SM2 keys (*sm2.PrivateKey, and *ecdsa.PrivateKey on the SM2 P-256 curve)
+// return (x509.UnknownSignatureAlgorithm, nil): stdlib x509 has no SM2-with-SM3
+// SignatureAlgorithm constant, so callers must leave the SignatureAlgorithm
+// field at the zero value and let the signing backend pick its default (gmsm
+// smx509 signs SM2 keys with SM2WithSM3). The nil error is what distinguishes
+// this "defer to the backend" case from an unsupported key, which also carries
+// the zero algorithm but a non-nil error (wrapping x509.ErrUnsupportedAlgorithm).
+func SignatureAlgorithmForPrivateKey(key any) (x509.SignatureAlgorithm, error) {
 	switch k := key.(type) {
 	case *rsa.PrivateKey:
 		bits := k.N.BitLen()
 		if bits >= 4096 {
-			return x509.SHA512WithRSA
+			return x509.SHA512WithRSA, nil
 		}
 		if bits >= 3072 {
-			return x509.SHA384WithRSA
+			return x509.SHA384WithRSA, nil
 		}
-		return x509.SHA256WithRSA
+		return x509.SHA256WithRSA, nil
 	case *ecdsa.PrivateKey:
+		if k.Curve == nil {
+			return x509.UnknownSignatureAlgorithm, fmt.Errorf("%w: ECDSA private key has nil curve", x509.ErrUnsupportedAlgorithm)
+		}
 		if k.Curve == sm2.P256() {
-			return x509.UnknownSignatureAlgorithm
+			return x509.UnknownSignatureAlgorithm, nil
 		}
 		bits := k.Curve.Params().BitSize
 		if bits >= 384 {
-			return x509.ECDSAWithSHA384
+			return x509.ECDSAWithSHA384, nil
 		}
-		return x509.ECDSAWithSHA256
+		return x509.ECDSAWithSHA256, nil
 	case *sm2.PrivateKey:
-		return x509.UnknownSignatureAlgorithm
+		return x509.UnknownSignatureAlgorithm, nil
 	case ed25519.PrivateKey:
-		return x509.PureEd25519
+		return x509.PureEd25519, nil
 	default:
-		return x509.UnknownSignatureAlgorithm
+		return x509.UnknownSignatureAlgorithm, fmt.Errorf("%w: no signature algorithm mapping for key type %T", x509.ErrUnsupportedAlgorithm, key)
 	}
 }
 

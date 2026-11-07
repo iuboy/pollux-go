@@ -152,18 +152,32 @@ func TestExtractPublicKey(t *testing.T) {
 
 func TestSignatureAlgorithmForPrivateKey(t *testing.T) {
 	_, sm2Priv := generateSM2Cert(t)
-	if algo := SignatureAlgorithmForPrivateKey(sm2Priv); algo != x509.UnknownSignatureAlgorithm {
+	algo, err := SignatureAlgorithmForPrivateKey(sm2Priv)
+	if err != nil {
+		t.Fatalf("SM2 err = %v, want nil (defer-to-backend case)", err)
+	}
+	if algo != x509.UnknownSignatureAlgorithm {
 		t.Errorf("SM2 should return UnknownSignatureAlgorithm, got %v", algo)
 	}
 
 	rsaPriv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	if algo := SignatureAlgorithmForPrivateKey(rsaPriv); algo != x509.SHA256WithRSA {
-		t.Errorf("RSA 2048 should return SHA256WithRSA, got %v", algo)
+	if algo, err := SignatureAlgorithmForPrivateKey(rsaPriv); err != nil || algo != x509.SHA256WithRSA {
+		t.Errorf("RSA 2048 = (%v, %v), want (SHA256WithRSA, nil)", algo, err)
 	}
 
 	ecdsaPriv, _ := ecdsa.GenerateKey(sm2.P256(), rand.Reader)
-	if algo := SignatureAlgorithmForPrivateKey(ecdsaPriv); algo != x509.UnknownSignatureAlgorithm {
+	algo, err = SignatureAlgorithmForPrivateKey(ecdsaPriv)
+	if err != nil {
+		t.Fatalf("SM2-curve ECDSA err = %v, want nil (defer-to-backend case)", err)
+	}
+	if algo != x509.UnknownSignatureAlgorithm {
 		t.Errorf("SM2 curve ECDSA should return UnknownSignatureAlgorithm, got %v", algo)
+	}
+
+	// 不支持的密钥类型：(Unknown, 非 nil error)——与 SM2 的「交由后端默认」
+	// (Unknown, nil) 区分开，这正是双返回值契约的意义。
+	if algo, err := SignatureAlgorithmForPrivateKey("not a key"); err == nil || algo != x509.UnknownSignatureAlgorithm {
+		t.Errorf("unsupported key type = (%v, %v), want (UnknownSignatureAlgorithm, error)", algo, err)
 	}
 }
 

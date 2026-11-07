@@ -27,13 +27,6 @@ const (
 	ECDHE_SM2_WITH_SM4_CBC_SM3 = 0xE011
 	ECC_SM2_WITH_SM4_GCM_SM3   = 0xE053
 	ECC_SM2_WITH_SM4_CBC_SM3   = 0xE013
-
-	// TLS_SM2_GCM_SM3 was a misnomer for 0x00C6 — RFC 8998 §3 names it
-	// TLS_SM4_GCM_SM3 (SM4 is the GCM bulk cipher). Kept as an alias for one release
-	// to avoid breaking external callers.
-	//
-	// Deprecated: use TLS_SM4_GCM_SM3.
-	TLS_SM2_GCM_SM3 = TLS_SM4_GCM_SM3
 )
 
 // CipherSuites returns cipher suites for the given mode.

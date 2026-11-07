@@ -622,31 +622,6 @@ func TestInteropSM4_CTR_CrossVerify(t *testing.T) {
 	}
 }
 
-func TestInteropSM4_CFB_CrossVerify(t *testing.T) {
-	key := make([]byte, 16)
-	iv := make([]byte, 16)
-	_, _ = rand.Read(key)
-	_, _ = rand.Read(iv)
-	plaintext := []byte("SM4 CFB mode interop test data")
-
-	// pollux CFB 加密 → gmsm CFB 解密
-	ciphertext, err := polluxSM4.Encrypt(key, plaintext, polluxSM4.ModeCFB, iv)
-	if err != nil {
-		t.Fatalf("pollux CFB Encrypt: %v", err)
-	}
-
-	gmsmBlock, err := gmsmSM4.NewCipher(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stream := cipher.NewCFBDecrypter(gmsmBlock, iv)
-	decrypted := make([]byte, len(ciphertext))
-	stream.XORKeyStream(decrypted, ciphertext)
-	if !bytes.Equal(decrypted, plaintext) {
-		t.Errorf("CFB decrypt mismatch: got %q, want %q", decrypted, plaintext)
-	}
-}
-
 func TestInteropSM4_HighLevelAPI_vs_Raw(t *testing.T) {
 	key, err := polluxSM4.GenerateKey()
 	if err != nil {
@@ -862,12 +837,12 @@ func TestInteropStdlib_SM2_CryptoSigner(t *testing.T) {
 		t.Error("VerifyASN1 failed for crypto.Signer-produced signature")
 	}
 
-	// Sign with SM2SignerOption
+	// Sign with NewSM2SignerOption (GM mode, matching the deleted SM2SignerOption shim).
 	uid := []byte("1234567812345678")
-	opts := polluxSM2.SM2SignerOption(uid)
+	opts := polluxSM2.NewSM2SignerOption(true, uid)
 	sigSM2, err := signer.Sign(rand.Reader, digest, opts)
 	if err != nil {
-		t.Fatalf("Sign with SM2SignerOption: %v", err)
+		t.Fatalf("Sign with NewSM2SignerOption: %v", err)
 	}
 	if !polluxSM2.VerifyWithSM2(ecdsaPub, uid, digest, sigSM2) {
 		t.Error("VerifyWithSM2 failed for crypto.Signer SM2 signature")

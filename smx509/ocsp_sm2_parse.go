@@ -18,10 +18,10 @@ import (
 // sm2HashOIDs maps CertID hash algorithm OIDs to crypto.Hash, mirroring the
 // private hashOIDs table in golang.org/x/crypto/ocsp.
 var sm2HashOIDs = map[crypto.Hash]asn1.ObjectIdentifier{
-	crypto.SHA1:   asn1.ObjectIdentifier{1, 3, 14, 3, 2, 26},
-	crypto.SHA256: asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1},
-	crypto.SHA384: asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 2},
-	crypto.SHA512: asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 3},
+	crypto.SHA1:   {1, 3, 14, 3, 2, 26},
+	crypto.SHA256: {2, 16, 840, 1, 101, 3, 4, 2, 1},
+	crypto.SHA384: {2, 16, 840, 1, 101, 3, 4, 2, 2},
+	crypto.SHA512: {2, 16, 840, 1, 101, 3, 4, 2, 3},
 }
 
 // sm3HashOID is the SM3 hash algorithm OID (GM/T 0009-2012).

@@ -31,7 +31,7 @@ func GenerateKey(r io.Reader) (*PrivateKey, error) {
 }
 
 // SignASN1 signs a hash using SM2 and returns the signature in ASN.1 format.
-// opts may be nil for default behavior, or SM2SignerOption(uid) for GM/T 0009.
+// opts may be nil for default behavior, or NewSM2SignerOption(true, uid) for GM/T 0009.
 func SignASN1(r io.Reader, priv *PrivateKey, hash []byte, opts crypto.SignerOpts) ([]byte, error) {
 	return gmsmSM2.SignASN1(r, priv, hash, opts)
 }
@@ -52,8 +52,8 @@ func VerifyASN1(pub *PublicKey, hash, sig []byte) bool {
 // crypto.SignerOpts.HashFunc. Passing a pre-hashed digest to SignWithSM2 would
 // hash the hash again, producing a different signature than intended.
 //
-// Callers integrating with crypto.Signer should use (*PrivateKey).Sign with an
-// SM2SignerOption instead; SignWithSM2 is a convenience wrapper for callers
+// Callers integrating with crypto.Signer should use (*PrivateKey).Sign with
+// NewSM2SignerOption instead; SignWithSM2 is a convenience wrapper for callers
 // that want the raw-message path directly.
 func SignWithSM2(r io.Reader, priv *PrivateKey, uid, data []byte) ([]byte, error) {
 	opts := gmsmSM2.NewSM2SignerOption(true, uid)
@@ -139,14 +139,6 @@ func DecryptWithOpts(priv *PrivateKey, ciphertext []byte, opts *DecrypterOpts) (
 // P256 returns the SM2 elliptic curve.
 func P256() elliptic.Curve {
 	return gmsmSM2.P256()
-}
-
-// SM2SignerOption returns crypto.SignerOpts for SM2 signing with a user ID.
-//
-// Deprecated: use NewSM2SignerOption(true, uid) instead for explicit control
-// over the forceGMSign parameter.
-func SM2SignerOption(uid []byte) crypto.SignerOpts {
-	return gmsmSM2.NewSM2SignerOption(true, uid)
 }
 
 // Compile-time interface check: PrivateKey implements crypto.Signer.

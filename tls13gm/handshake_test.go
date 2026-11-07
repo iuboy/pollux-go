@@ -53,13 +53,13 @@ func TestHandshake_RoundTrip(t *testing.T) {
 	dcid := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
 	cert, serverKey := generateTestSM2Cert(t)
 
-	server, err := NewServerHandshaker(dcid, cert, serverKey)
+	server, err := NewServerHandshakerWithConfig(ServerConfig{DCID: dcid, Certificate: cert, PrivateKey: serverKey})
 	if err != nil {
-		t.Fatalf("NewServerHandshaker: %v", err)
+		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
 	}
-	client, err := NewClientHandshaker(dcid, cert)
+	client, err := NewClientHandshakerWithConfig(ClientConfig{DCID: dcid, InsecureSkipVerify: true})
 	if err != nil {
-		t.Fatalf("NewClientHandshaker: %v", err)
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
 	}
 
 	// Initial keys are derived from the DCID, so both sides must agree.
@@ -135,11 +135,11 @@ func TestHandshake_RoundTrip(t *testing.T) {
 func TestHandshake_RejectsTamperedServerFinished(t *testing.T) {
 	dcid := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	cert, serverKey := generateTestSM2Cert(t)
-	server, err := NewServerHandshaker(dcid, cert, serverKey)
+	server, err := NewServerHandshakerWithConfig(ServerConfig{DCID: dcid, Certificate: cert, PrivateKey: serverKey})
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := NewClientHandshaker(dcid, cert)
+	client, err := NewClientHandshakerWithConfig(ClientConfig{DCID: dcid, InsecureSkipVerify: true})
 	if err != nil {
 		t.Fatal(err)
 	}

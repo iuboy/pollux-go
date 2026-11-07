@@ -14,7 +14,7 @@
 //
 // # Security: nonce and IV reuse
 //
-// Reusing a nonce (GCM) or IV (CBC, CTR, CFB) with the same key is catastrophic:
+// Reusing a nonce (GCM) or IV (CBC, CTR) with the same key is catastrophic:
 //
 //   - GCM: nonce reuse allows recovery of the GHASH authentication subkey H,
 //     enabling message forgery, and produces a two-time pad on the CTR-mode
@@ -27,10 +27,6 @@
 // each encryption. The package provides SealRandomNonce (which binds nonce
 // generation to the encrypt call) and GenerateNonce for callers that reuse a
 // cipher.AEAD across many messages. See gcm.go.
-//
-// ECB mode (via Encrypt/Decrypt with ModeECB) is provided for compatibility
-// only and should not be used in new protocols — it does not provide semantic
-// security.
 //
 // Status: wrapper around gmsm/sm4
 package sm4

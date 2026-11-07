@@ -351,18 +351,6 @@ func NewClientHandshakerWithConfig(cfg ClientConfig) (*ClientHandshaker, error) 
 	}, nil
 }
 
-// NewClientHandshaker prepares a client handshaker. dcid seeds the Initial keys.
-//
-// Deprecated: this constructor skips PKI verification. The serverCert parameter
-// is ignored — the peer leaf is always taken from the Certificate message. Use
-// NewClientHandshakerWithConfig with explicit Roots for production callers.
-func NewClientHandshaker(dcid []byte, _ *x509.Certificate) (*ClientHandshaker, error) {
-	return NewClientHandshakerWithConfig(ClientConfig{
-		DCID:               dcid,
-		InsecureSkipVerify: true,
-	})
-}
-
 // Secrets returns the packet-protection keys derived so far.
 func (c *ClientHandshaker) Secrets() HandshakeSecrets { return c.secrets }
 
@@ -1181,18 +1169,6 @@ func NewServerHandshakerWithConfig(cfg ServerConfig) (*ServerHandshaker, error) 
 		earlyDataAcceptor:    cfg.EarlyDataAcceptor,
 		nextProtos:           cfg.NextProtos,
 	}, nil
-}
-
-// NewServerHandshaker prepares a server handshaker. dcid seeds the Initial keys.
-//
-// Deprecated: this constructor cannot carry QUIC transport parameters. QUIC
-// callers should use NewServerHandshakerWithConfig.
-func NewServerHandshaker(dcid []byte, serverCert *x509.Certificate, serverKey *sm2.PrivateKey) (*ServerHandshaker, error) {
-	return NewServerHandshakerWithConfig(ServerConfig{
-		DCID:        dcid,
-		Certificate: serverCert,
-		PrivateKey:  serverKey,
-	})
 }
 
 // Secrets returns the packet-protection keys derived so far.

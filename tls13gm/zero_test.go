@@ -13,13 +13,13 @@ func TestClientHandshakerZero(t *testing.T) {
 	dcid := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 	cert, serverKey := generateTestSM2Cert(t)
 
-	server, err := NewServerHandshaker(dcid, cert, serverKey)
+	server, err := NewServerHandshakerWithConfig(ServerConfig{DCID: dcid, Certificate: cert, PrivateKey: serverKey})
 	if err != nil {
-		t.Fatalf("NewServerHandshaker: %v", err)
+		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
 	}
-	client, err := NewClientHandshaker(dcid, cert)
+	client, err := NewClientHandshakerWithConfig(ClientConfig{DCID: dcid, InsecureSkipVerify: true})
 	if err != nil {
-		t.Fatalf("NewClientHandshaker: %v", err)
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
 	}
 
 	ch, err := client.ClientHello()
@@ -74,13 +74,13 @@ func TestServerHandshakerZero(t *testing.T) {
 	dcid := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 	cert, serverKey := generateTestSM2Cert(t)
 
-	server, err := NewServerHandshaker(dcid, cert, serverKey)
+	server, err := NewServerHandshakerWithConfig(ServerConfig{DCID: dcid, Certificate: cert, PrivateKey: serverKey})
 	if err != nil {
-		t.Fatalf("NewServerHandshaker: %v", err)
+		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
 	}
-	client, err := NewClientHandshaker(dcid, cert)
+	client, err := NewClientHandshakerWithConfig(ClientConfig{DCID: dcid, InsecureSkipVerify: true})
 	if err != nil {
-		t.Fatalf("NewClientHandshaker: %v", err)
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
 	}
 
 	ch, err := client.ClientHello()

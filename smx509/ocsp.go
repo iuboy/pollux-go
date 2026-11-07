@@ -48,18 +48,6 @@ func ParseOCSPRequest(data []byte) (*ocsp.Request, error) {
 	return ocsp.ParseRequest(data)
 }
 
-// ParseOCSPResponse parses a DER-encoded OCSP response WITHOUT signature verification.
-//
-// Deprecated: this function does not verify the OCSP response signature,
-// allowing an attacker to forge a "Good" status. Use ParseOCSPResponseWithIssuer
-// instead, which validates the signature against the issuer certificate.
-// For legitimate parse-only use cases (logging, debugging, already-verified
-// responses), use ParseOCSPResponseUnverified, whose name makes the security
-// trade-off explicit at the call site.
-func ParseOCSPResponse(data []byte) (*ocsp.Response, error) {
-	return ParseOCSPResponseUnverified(data)
-}
-
 // ParseOCSPResponseUnverified parses a DER-encoded OCSP response WITHOUT
 // signature verification. The returned Response MUST NOT be trusted for
 // security decisions — without verification, an attacker can forge an

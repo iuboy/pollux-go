@@ -190,33 +190,6 @@ func TestBlackBox_SM4_CTR_RoundTrip(t *testing.T) {
 	}
 }
 
-// ========== CFB 流模式 ==========
-
-func TestBlackBox_SM4_CFB_RoundTrip(t *testing.T) {
-	key, _ := polluxSM4.GenerateKey()
-	iv := make([]byte, 16)
-	_, _ = rand.Read(iv)
-	plaintext := []byte("SM4-CFB mode streaming test")
-
-	enc, err := polluxSM4.NewCFBEncrypter(key, iv)
-	if err != nil {
-		t.Fatalf("NewCFBEncrypter: %v", err)
-	}
-	ciphertext := make([]byte, len(plaintext))
-	enc.XORKeyStream(ciphertext, plaintext)
-
-	dec, err := polluxSM4.NewCFBDecrypter(key, iv)
-	if err != nil {
-		t.Fatalf("NewCFBDecrypter: %v", err)
-	}
-	decrypted := make([]byte, len(ciphertext))
-	dec.XORKeyStream(decrypted, ciphertext)
-
-	if !bytes.Equal(decrypted, plaintext) {
-		t.Error("CFB roundtrip mismatch")
-	}
-}
-
 // ========== KDF ==========
 
 func TestBlackBox_SM4_KDF(t *testing.T) {
@@ -371,29 +344,6 @@ func TestBlackBox_SM4_GCM(t *testing.T) {
 	}
 }
 
-// ========== ECB 模式 ==========
-
-func TestBlackBox_SM4_ECB_RoundTrip(t *testing.T) {
-	key, _ := polluxSM4.GenerateKey()
-	plaintext := []byte("SM4-ECB mode test!!") // 18 bytes
-
-	ct, err := polluxSM4.Encrypt(key, plaintext, polluxSM4.ModeECB, nil)
-	if err != nil {
-		t.Fatalf("ECB Encrypt: %v", err)
-	}
-	if len(ct)%16 != 0 {
-		t.Errorf("ECB ciphertext not block-aligned: %d", len(ct))
-	}
-
-	dec, err := polluxSM4.Decrypt(key, ct, polluxSM4.ModeECB, nil)
-	if err != nil {
-		t.Fatalf("ECB Decrypt: %v", err)
-	}
-	if !bytes.Equal(dec, plaintext) {
-		t.Error("ECB roundtrip mismatch")
-	}
-}
-
 // ========== 高级 Encrypt/Decrypt API ==========
 
 func TestBlackBox_SM4_EncryptDecrypt_CBC(t *testing.T) {
@@ -430,25 +380,6 @@ func TestBlackBox_SM4_EncryptDecrypt_CTR(t *testing.T) {
 	}
 	if !bytes.Equal(dec, plaintext) {
 		t.Error("high-level CTR roundtrip mismatch")
-	}
-}
-
-func TestBlackBox_SM4_EncryptDecrypt_CFB(t *testing.T) {
-	key, _ := polluxSM4.GenerateKey()
-	iv := make([]byte, 16)
-	_, _ = rand.Read(iv)
-	plaintext := []byte("high-level CFB test")
-
-	ct, err := polluxSM4.Encrypt(key, plaintext, polluxSM4.ModeCFB, iv)
-	if err != nil {
-		t.Fatalf("Encrypt CFB: %v", err)
-	}
-	dec, err := polluxSM4.Decrypt(key, ct, polluxSM4.ModeCFB, iv)
-	if err != nil {
-		t.Fatalf("Decrypt CFB: %v", err)
-	}
-	if !bytes.Equal(dec, plaintext) {
-		t.Error("high-level CFB roundtrip mismatch")
 	}
 }
 

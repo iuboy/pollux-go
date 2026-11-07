@@ -45,7 +45,7 @@ func BenchmarkFullHandshake(b *testing.B) {
 	cert, serverKey := benchSM2Cert(b)
 	b.ResetTimer()
 	for range b.N {
-		server, err := NewServerHandshaker(dcid, cert, serverKey)
+		server, err := NewServerHandshakerWithConfig(ServerConfig{DCID: dcid, Certificate: cert, PrivateKey: serverKey})
 		if err != nil {
 			b.Fatal(err)
 		}

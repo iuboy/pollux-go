@@ -3,98 +3,19 @@ package sm4_test
 import (
 	"bytes"
 	"encoding/hex"
-	"errors"
 	"testing"
 
 	"github.com/iuboy/pollux-go/sm4"
 )
 
 // Standard SM4 test key and plaintext from GM/T 0002-2012 Section 4 Example 1.
-// ECB ciphertext block 1 produced with this key is the canonical SM4 vector
-// 681edf34d206965e86b3e94f536e4246, so it cross-checks the hand-rolled ECB
-// block iteration against the verified single-block primitive.
+// The single-block encryption of this plaintext under this key is the canonical
+// SM4 vector 681edf34d206965e86b3e94f536e4246 (asserted in sm4_vectors_test.go).
 var (
 	modesKey     = func() []byte { b, _ := hex.DecodeString("0123456789abcdeffedcba9876543210"); return b }()
 	modesPlain16 = func() []byte { b, _ := hex.DecodeString("0123456789abcdeffedcba9876543210"); return b }()
 	modesIV      = func() []byte { b, _ := hex.DecodeString("000102030405060708090a0b0c0d0e0f"); return b }()
 )
-
-// ---------------------------------------------------------------------------
-// ECB — the only mode with a hand-rolled block iteration (not a crypto/cipher
-// wrapper). Tested most thoroughly: known-answer for the single-block case,
-// PKCS7 padding boundaries, and round-trip for multi-block input.
-// ---------------------------------------------------------------------------
-
-func TestECBKnownAnswerSingleBlock(t *testing.T) {
-	// ECB(key, 16B plaintext) → PKCS7 pads to 32B → two ciphertext blocks.
-	// Block 1 must equal the canonical SM4 single-block vector.
-	ct, err := sm4.Encrypt(modesKey, modesPlain16, sm4.ModeECB, nil)
-	if err != nil {
-		t.Fatalf("Encrypt ECB: %v", err)
-	}
-	if len(ct) != 2*sm4.BlockSize {
-		t.Fatalf("ECB ciphertext len = %d, want %d", len(ct), 2*sm4.BlockSize)
-	}
-	wantBlock1 := "681edf34d206965e86b3e94f536e4246"
-	if got := hex.EncodeToString(ct[:sm4.BlockSize]); got != wantBlock1 {
-		t.Errorf("ECB block 1 = %s, want %s (canonical SM4 vector)", got, wantBlock1)
-	}
-}
-
-func TestECBEmptyPlaintextPadding(t *testing.T) {
-	// Empty plaintext → PKCS7 pads to a full 0x10 block → 16B ciphertext.
-	ct, err := sm4.Encrypt(modesKey, []byte{}, sm4.ModeECB, nil)
-	if err != nil {
-		t.Fatalf("Encrypt ECB empty: %v", err)
-	}
-	if len(ct) != sm4.BlockSize {
-		t.Fatalf("ECB empty ciphertext len = %d, want %d", len(ct), sm4.BlockSize)
-	}
-	// Round-trip back to empty.
-	pt, err := sm4.Decrypt(modesKey, ct, sm4.ModeECB, nil)
-	if err != nil {
-		t.Fatalf("Decrypt ECB empty: %v", err)
-	}
-	if len(pt) != 0 {
-		t.Errorf("ECB empty round-trip len = %d, want 0", len(pt))
-	}
-}
-
-func TestECBPaddingBoundary(t *testing.T) {
-	// Plaintext lengths around the block boundary exercise every PKCS7 pad
-	// value (0x10 down to 0x01). Round-trip must recover the original.
-	for plainLen := 0; plainLen <= sm4.BlockSize+1; plainLen++ {
-		plain := bytes.Repeat([]byte{0xAB}, plainLen)
-		ct, err := sm4.Encrypt(modesKey, plain, sm4.ModeECB, nil)
-		if err != nil {
-			t.Fatalf("Encrypt len=%d: %v", plainLen, err)
-		}
-		// Ciphertext is always a multiple of BlockSize.
-		if len(ct)%sm4.BlockSize != 0 {
-			t.Errorf("ECB len=%d: ciphertext not block-aligned", plainLen)
-		}
-		// Ciphertext is strictly larger than plaintext (PKCS7 always adds ≥1 byte).
-		if len(ct) <= plainLen {
-			t.Errorf("ECB len=%d: ciphertext %d not larger than plaintext", plainLen, len(ct))
-		}
-		pt, err := sm4.Decrypt(modesKey, ct, sm4.ModeECB, nil)
-		if err != nil {
-			t.Fatalf("Decrypt len=%d: %v", plainLen, err)
-		}
-		if !bytes.Equal(pt, plain) {
-			t.Errorf("ECB len=%d round-trip mismatch:\ngot  %x\nwant %x", plainLen, pt, plain)
-		}
-	}
-}
-
-func TestECBDecryptRejectsUnalignedCiphertext(t *testing.T) {
-	// Ciphertext not a multiple of BlockSize must error before any decrypt.
-	short := make([]byte, sm4.BlockSize-1)
-	_, err := sm4.Decrypt(modesKey, short, sm4.ModeECB, nil)
-	if err == nil {
-		t.Error("ECB Decrypt should reject unaligned ciphertext")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // CBC — thin wrapper over crypto/cipher.NewCBCEncrypter/Decrypter.
@@ -208,63 +129,6 @@ func TestNewCTRConstructor(t *testing.T) {
 	}
 	if _, err := sm4.NewCTR(modesKey, make([]byte, sm4.BlockSize-1)); err == nil {
 		t.Error("NewCTR should reject short IV")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// CFB — stream cipher variant.
-// ---------------------------------------------------------------------------
-
-func TestCFBRoundTrip(t *testing.T) {
-	for _, plainLen := range []int{0, 1, 15, 16, 17, 100} {
-		plain := bytes.Repeat([]byte{0xCD}, plainLen)
-		ct, err := sm4.Encrypt(modesKey, plain, sm4.ModeCFB, modesIV)
-		if err != nil {
-			t.Fatalf("CFB Encrypt len=%d: %v", plainLen, err)
-		}
-		if len(ct) != plainLen {
-			t.Errorf("CFB len=%d: ciphertext len %d != plaintext len", plainLen, len(ct))
-		}
-		pt, err := sm4.Decrypt(modesKey, ct, sm4.ModeCFB, modesIV)
-		if err != nil {
-			t.Fatalf("CFB Decrypt len=%d: %v", plainLen, err)
-		}
-		if !bytes.Equal(pt, plain) {
-			t.Errorf("CFB len=%d round-trip mismatch", plainLen)
-		}
-	}
-}
-
-func TestCFBRejectsWrongIVLength(t *testing.T) {
-	badIV := make([]byte, sm4.BlockSize-1)
-	if _, err := sm4.Encrypt(modesKey, modesPlain16, sm4.ModeCFB, badIV); err == nil {
-		t.Error("CFB Encrypt should reject short IV")
-	}
-	if _, err := sm4.Decrypt(modesKey, modesPlain16, sm4.ModeCFB, badIV); err == nil {
-		t.Error("CFB Decrypt should reject short IV")
-	}
-}
-
-func TestNewCFBConstructors(t *testing.T) {
-	enc, err := sm4.NewCFBEncrypter(modesKey, modesIV)
-	if err != nil {
-		t.Fatalf("NewCFBEncrypter: %v", err)
-	}
-	if enc == nil {
-		t.Fatal("NewCFBEncrypter returned nil")
-	}
-	dec, err := sm4.NewCFBDecrypter(modesKey, modesIV)
-	if err != nil {
-		t.Fatalf("NewCFBDecrypter: %v", err)
-	}
-	if dec == nil {
-		t.Fatal("NewCFBDecrypter returned nil")
-	}
-	if _, err := sm4.NewCFBEncrypter(modesKey, make([]byte, sm4.BlockSize-1)); err == nil {
-		t.Error("NewCFBEncrypter should reject short IV")
-	}
-	if _, err := sm4.NewCFBDecrypter(modesKey, make([]byte, sm4.BlockSize-1)); err == nil {
-		t.Error("NewCFBDecrypter should reject short IV")
 	}
 }
 
@@ -476,8 +340,3 @@ func TestNewGCMModesConstructor(t *testing.T) {
 		t.Error("NewGCM should reject short key")
 	}
 }
-
-// Ensures the errors package is used (the dispatcher default branch returns
-// errors.New values; reference errors to avoid an unused-import failure if
-// the file is edited later).
-var _ = errors.New

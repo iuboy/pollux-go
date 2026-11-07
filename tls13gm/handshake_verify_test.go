@@ -23,9 +23,9 @@ func runServerFlight(t *testing.T, dcid []byte, cert *x509.Certificate, serverKe
 	if err != nil {
 		t.Fatalf("client ClientHello: %v", err)
 	}
-	server, err := NewServerHandshaker(dcid, cert, serverKey)
+	server, err := NewServerHandshakerWithConfig(ServerConfig{DCID: dcid, Certificate: cert, PrivateKey: serverKey})
 	if err != nil {
-		t.Fatalf("NewServerHandshaker: %v", err)
+		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
 	}
 	if err := server.HandleClientHello(ch); err != nil {
 		t.Fatalf("server HandleClientHello: %v", err)

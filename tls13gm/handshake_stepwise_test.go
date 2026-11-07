@@ -17,13 +17,13 @@ func driveFullHandshake(t *testing.T, dcid []byte, processStepwise bool) (client
 	t.Helper()
 	cert, serverKey := generateTestSM2Cert(t)
 
-	server, err := NewServerHandshaker(dcid, cert, serverKey)
+	server, err := NewServerHandshakerWithConfig(ServerConfig{DCID: dcid, Certificate: cert, PrivateKey: serverKey})
 	if err != nil {
-		t.Fatalf("NewServerHandshaker: %v", err)
+		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
 	}
-	client, err := NewClientHandshaker(dcid, cert)
+	client, err := NewClientHandshakerWithConfig(ClientConfig{DCID: dcid, InsecureSkipVerify: true})
 	if err != nil {
-		t.Fatalf("NewClientHandshaker: %v", err)
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
 	}
 
 	ch, err := client.ClientHello()
@@ -115,13 +115,13 @@ func TestHandshake_StepwisePhaseGuard(t *testing.T) {
 	dcid := []byte{0xaa, 0xbb, 0xcc, 0xdd}
 	cert, serverKey := generateTestSM2Cert(t)
 
-	server, err := NewServerHandshaker(dcid, cert, serverKey)
+	server, err := NewServerHandshakerWithConfig(ServerConfig{DCID: dcid, Certificate: cert, PrivateKey: serverKey})
 	if err != nil {
-		t.Fatalf("NewServerHandshaker: %v", err)
+		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
 	}
-	client, err := NewClientHandshaker(dcid, cert)
+	client, err := NewClientHandshakerWithConfig(ClientConfig{DCID: dcid, InsecureSkipVerify: true})
 	if err != nil {
-		t.Fatalf("NewClientHandshaker: %v", err)
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
 	}
 	ch, err := client.ClientHello()
 	if err != nil {
@@ -694,13 +694,13 @@ func TestZero_DoesNotClearTransportTrafficSecrets(t *testing.T) {
 	// then inspect. driveFullHandshake is not used here because it returns only
 	// the final HandshakeSecrets snapshot, not the live handshaker.
 	cert, serverKey := generateTestSM2Cert(t)
-	server, err := NewServerHandshaker(dcid, cert, serverKey)
+	server, err := NewServerHandshakerWithConfig(ServerConfig{DCID: dcid, Certificate: cert, PrivateKey: serverKey})
 	if err != nil {
-		t.Fatalf("NewServerHandshaker: %v", err)
+		t.Fatalf("NewServerHandshakerWithConfig: %v", err)
 	}
-	client, err := NewClientHandshaker(dcid, cert)
+	client, err := NewClientHandshakerWithConfig(ClientConfig{DCID: dcid, InsecureSkipVerify: true})
 	if err != nil {
-		t.Fatalf("NewClientHandshaker: %v", err)
+		t.Fatalf("NewClientHandshakerWithConfig: %v", err)
 	}
 	ch, _ := client.ClientHello()
 	if err := server.HandleClientHello(ch); err != nil {

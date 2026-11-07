@@ -60,34 +60,6 @@ func NewCTR(key, iv []byte) (cipher.Stream, error) {
 	return cipher.NewCTR(block, iv), nil
 }
 
-// NewCFBEncrypter creates an SM4-CFB encryptor.
-//
-// Deprecated: CFB mode does not provide authentication; use NewGCM instead.
-func NewCFBEncrypter(key, iv []byte) (cipher.Stream, error) {
-	if len(iv) != BlockSize {
-		return nil, errInvalidIVLen
-	}
-	block, err := NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewCFBEncrypter(block, iv), nil
-}
-
-// NewCFBDecrypter creates an SM4-CFB decryptor.
-//
-// Deprecated: CFB mode does not provide authentication; use NewGCM instead.
-func NewCFBDecrypter(key, iv []byte) (cipher.Stream, error) {
-	if len(iv) != BlockSize {
-		return nil, errInvalidIVLen
-	}
-	block, err := NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewCFBDecrypter(block, iv), nil
-}
-
 // GenerateIV generates a random IV of the same size as the block.
 func GenerateIV() ([]byte, error) {
 	iv := make([]byte, BlockSize)
@@ -101,17 +73,12 @@ func GenerateIV() ([]byte, error) {
 type Mode string
 
 const (
-	// ModeECB is Electronic Codebook mode. Deprecated: ECB does not provide
-	// semantic security; use ModeGCM for new protocols.
-	ModeECB Mode = "ECB"
 	// ModeCBC is Cipher Block Chaining mode. The caller must supply a unique IV.
 	ModeCBC Mode = "CBC"
 	// ModeCTR is Counter mode. The caller must supply a unique nonce/counter.
 	ModeCTR Mode = "CTR"
 	// ModeGCM is Galois/Counter Mode (recommended): authenticated encryption.
 	ModeGCM Mode = "GCM"
-	// ModeCFB is Cipher Feedback mode. The caller must supply a unique IV.
-	ModeCFB Mode = "CFB"
 )
 
 // PKCS7Pad pads data to a multiple of blockSize using PKCS#7.
@@ -153,29 +120,24 @@ func PKCS7Unpad(data []byte, blockSize int) ([]byte, error) {
 }
 
 // Encrypt encrypts plaintext using the specified SM4 mode.
-// Supported modes: ModeGCM (recommended), ModeCBC, ModeCTR, ModeCFB, ModeECB (deprecated).
+// Supported modes: ModeGCM (recommended), ModeCBC, ModeCTR.
 //
 //   - GCM: if iv is nil or empty, a random 12-byte nonce is generated and
 //     prepended to the ciphertext; if iv is provided it is used directly and
 //     NOT prepended (and must be exactly GCMNonceSize bytes).
-//   - CBC/CTR/CFB: iv is the IV and MUST be BlockSize (16) bytes; an empty or
+//   - CBC/CTR: iv is the IV and MUST be BlockSize (16) bytes; an empty or
 //     wrong-length iv returns errInvalidIVLen (no auto-generation).
-//   - ECB: iv is ignored.
 //
 // GCM includes authentication; the others do not.
 // WARNING: for GCM mode, never reuse a nonce with the same key.
 func Encrypt(key, plaintext []byte, mode Mode, iv []byte) ([]byte, error) {
 	switch mode {
-	case ModeECB:
-		return encryptECB(key, plaintext)
 	case ModeCBC:
 		return encryptCBC(key, plaintext, iv)
 	case ModeCTR:
 		return encryptCTR(key, plaintext, iv)
 	case ModeGCM:
 		return encryptGCM(key, plaintext, iv)
-	case ModeCFB:
-		return encryptCFB(key, plaintext, iv)
 	default:
 		return nil, errors.New("sm4: unsupported mode")
 	}
@@ -184,50 +146,15 @@ func Encrypt(key, plaintext []byte, mode Mode, iv []byte) ([]byte, error) {
 // Decrypt decrypts ciphertext using the specified SM4 mode.
 func Decrypt(key, ciphertext []byte, mode Mode, iv []byte) ([]byte, error) {
 	switch mode {
-	case ModeECB:
-		return decryptECB(key, ciphertext)
 	case ModeCBC:
 		return decryptCBC(key, ciphertext, iv)
 	case ModeCTR:
 		return decryptCTR(key, ciphertext, iv)
 	case ModeGCM:
 		return decryptGCM(key, ciphertext, iv)
-	case ModeCFB:
-		return decryptCFB(key, ciphertext, iv)
 	default:
 		return nil, errors.New("sm4: unsupported mode")
 	}
-}
-
-func encryptECB(key, plaintext []byte) ([]byte, error) {
-	padded, err := PKCS7Pad(plaintext, BlockSize)
-	if err != nil {
-		return nil, err
-	}
-	block, err := NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	ciphertext := make([]byte, len(padded))
-	for i := 0; i < len(padded); i += BlockSize {
-		block.Encrypt(ciphertext[i:i+BlockSize], padded[i:i+BlockSize])
-	}
-	return ciphertext, nil
-}
-
-func decryptECB(key, ciphertext []byte) ([]byte, error) {
-	if len(ciphertext)%BlockSize != 0 {
-		return nil, errors.New("sm4: ciphertext not aligned to block size")
-	}
-	block, err := NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	plaintext := make([]byte, len(ciphertext))
-	for i := 0; i < len(ciphertext); i += BlockSize {
-		block.Decrypt(plaintext[i:i+BlockSize], ciphertext[i:i+BlockSize])
-	}
-	return PKCS7Unpad(plaintext, BlockSize)
 }
 
 func encryptCBC(key, plaintext, iv []byte) ([]byte, error) {
@@ -329,30 +256,4 @@ func decryptGCM(key, ciphertext, nonce []byte) ([]byte, error) {
 		return nil, errInvalidIVLen
 	}
 	return aead.Open(nil, nonce, ciphertext, nil)
-}
-
-func encryptCFB(key, plaintext, iv []byte) ([]byte, error) {
-	if len(iv) != BlockSize {
-		return nil, errInvalidIVLen
-	}
-	stream, err := NewCFBEncrypter(key, iv)
-	if err != nil {
-		return nil, err
-	}
-	ciphertext := make([]byte, len(plaintext))
-	stream.XORKeyStream(ciphertext, plaintext)
-	return ciphertext, nil
-}
-
-func decryptCFB(key, ciphertext, iv []byte) ([]byte, error) {
-	if len(iv) != BlockSize {
-		return nil, errInvalidIVLen
-	}
-	stream, err := NewCFBDecrypter(key, iv)
-	if err != nil {
-		return nil, err
-	}
-	plaintext := make([]byte, len(ciphertext))
-	stream.XORKeyStream(plaintext, ciphertext)
-	return plaintext, nil
 }

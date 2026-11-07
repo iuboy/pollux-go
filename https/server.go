@@ -51,8 +51,10 @@ func ListenAndServeTLCP(addr string, handler http.Handler, config *tlcp.Config) 
 	return serveTLCP(ln, handler, config)
 }
 
-// ListenAndServeTLSNat starts an HTTP server using standard crypto/tls.
-func ListenAndServeTLSNat(addr string, handler http.Handler, config *tls.Config) error {
+// ListenAndServeIntlTLS starts an HTTP server on the international (stdlib
+// crypto/tls) stack — the counterpart of ListenAndServeTLCP, which serves the
+// GM/TLCP protocol over the same signature.
+func ListenAndServeIntlTLS(addr string, handler http.Handler, config *tls.Config) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err

@@ -2,11 +2,11 @@ package tls13gm
 
 import "fmt"
 
-// handshakeMessage is implemented by every TLS 1.3 handshake message type
+// HandshakeMessage is implemented by every TLS 1.3 handshake message type
 // (ClientHello, ServerHello, ...). marshalBody serializes the message body
 // excluding the 4-byte handshake header; msgType reports the handshake type
 // byte used in that header; unmarshalBody parses a body in place.
-type handshakeMessage interface {
+type HandshakeMessage interface {
 	msgType() uint8
 	marshalBody() ([]byte, error)
 	unmarshalBody([]byte) error
@@ -20,7 +20,10 @@ const MaxHandshakeMessageLen = 1<<24 - 1
 // [type(1) | length(3) | body] and returns the full handshake message bytes.
 // The returned slice is what gets appended to the transcript and (in record or
 // CRYPTO framing) carried over the wire.
-func MarshalHandshakeMessage(m handshakeMessage) ([]byte, error) {
+//
+// m is any [HandshakeMessage] implementation; the error is non-nil when the
+// message body fails to marshal or exceeds [MaxHandshakeMessageLen].
+func MarshalHandshakeMessage(m HandshakeMessage) ([]byte, error) {
 	body, err := m.marshalBody()
 	if err != nil {
 		return nil, err

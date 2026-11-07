@@ -25,7 +25,7 @@ func TestTLSServerWithRSACert(t *testing.T) {
 	defer srvErr.check(t)
 
 	go func() {
-		srvErr.set(polluxHTTP.ListenAndServeTLSNat(addr, echoHandler(), tlsConfig))
+		srvErr.set(polluxHTTP.ListenAndServeIntlTLS(addr, echoHandler(), tlsConfig))
 	}()
 	time.Sleep(200 * time.Millisecond)
 

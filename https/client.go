@@ -54,11 +54,12 @@ func NewTLCPTransport(config *tlcp.Config) (*http.Transport, error) {
 					cfg = &copied
 				}
 			}
-			// tlcp.DialContext honors the ctx deadline, but a blocked dial or
-			// handshake cannot be interrupted by ctx.Done() from inside. Race
-			// the dial against cancellation; on cancel, reap the eventual
-			// connection (the dial goroutine hands it over and we close it) so
-			// nothing leaks.
+			// tlcp.DialContext honors ctx cancellation for both the dial and
+			// the handshake (a cancel closes the in-flight connection from
+			// inside and returns the context error). The race below is kept as
+			// a belt-and-braces reap: on cancel it closes the connection if
+			// DialContext is still winding down, so nothing leaks even if the
+			// return path is slow.
 			type dialResult struct {
 				conn net.Conn
 				err  error

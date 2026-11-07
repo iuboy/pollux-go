@@ -30,12 +30,24 @@ type RegisteredClaims = jwt.RegisteredClaims
 // Signer signs a JWT for a given set of claims and returns the encoded token
 // string. The signing algorithm and key are configured on the Signer
 // instance, not passed per call.
+//
+// The concrete Signers in this package (see NewHS256/NewHS512/NewSM2SM3) are
+// also [Verifier]s; SetAudience is part of this interface so that "aud"
+// enforcement on the Verify side is reachable through the SignerVerifier
+// returned by those constructors.
 type Signer interface {
 	// Algorithm returns the JWT "alg" header value this signer produces.
 	Algorithm() Algorithm
 
 	// Sign encodes claims into a signed JWT string.
 	Sign(claims Claims) (tokenString string, err error)
+
+	// SetAudience configures the expected "aud" claim enforced during Verify.
+	// An empty audience (the default) disables the check; a non-empty value
+	// makes Verify reject tokens whose "aud" claim does not match, preventing
+	// a token issued for one service from being replayed against another.
+	// It must be set before any concurrent Verify call.
+	SetAudience(aud string)
 }
 
 // Verifier parses and validates a JWT, populating claims. The signing

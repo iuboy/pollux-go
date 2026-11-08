@@ -29,6 +29,12 @@ v0.61.0–v0.64.0（quic-go 跟随）标签已从仓库（本地与 GitHub）移
 
 - quic-go subtree 升级 v0.65.0（fork 分歧全部重放零冲突；详见 PATCHES.md v0.65.0 merge note）。依赖升级：gmsm v0.45.2、x/net v0.62.0。
 
+## [0.1.2-3] - 2026-11-08
+
+### Changed
+
+- **Go 指令基线 1.26.9 → 1.26.10**：GO-2026-6809（crypto/x509 不信任被攻陷的中间证书）在 1.26.10 修复——本库证书验证面（smx509/tls13gm/tlcp 双证书/TLCP）直接消费 crypto/x509，下游以 go-version-file 或工具链取 1.26.10 即清零该 stdlib 漏洞（govulncheck 硬门禁基线）。quic-go subtree 的 go 指令同步。
+
 ## [0.1.2-2] - 2026-11-07
 
 ### Fixed

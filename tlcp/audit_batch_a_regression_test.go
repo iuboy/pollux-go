@@ -99,7 +99,7 @@ func TestHalfConnDestroyedNoPlaintextFallback(t *testing.T) {
 	if _, err := hc.encrypt(rec, payload); !errors.Is(err, errHalfConnDestroyed) {
 		t.Errorf("destroy 后 encrypt 应报 destroyed，got %v", err)
 	}
-	if _, _, err := hc.decrypt(append(append([]byte{}, rec...), make([]byte, 48)...)); !errors.Is(err, errHalfConnDestroyed) {
+	if _, err := hc.decrypt(append(append([]byte{}, rec...), make([]byte, 48)...)); !errors.Is(err, errHalfConnDestroyed) {
 		t.Errorf("destroy 后 decrypt 应报 destroyed，got %v", err)
 	}
 
@@ -110,7 +110,7 @@ func TestHalfConnDestroyedNoPlaintextFallback(t *testing.T) {
 	if _, err := plain.encrypt(rec, payload); !errors.Is(err, errHalfConnDestroyed) {
 		t.Errorf("明文相位 destroy 后 encrypt 回退明文（未拒绝）: %v", err)
 	}
-	if _, _, err := plain.decrypt(rec); !errors.Is(err, errHalfConnDestroyed) {
+	if _, err := plain.decrypt(rec); !errors.Is(err, errHalfConnDestroyed) {
 		t.Errorf("明文相位 destroy 后 decrypt 回退明文（未拒绝）: %v", err)
 	}
 }

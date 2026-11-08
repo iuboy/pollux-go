@@ -312,48 +312,48 @@ func (hc *tlcpHalfConn) encrypt(record []byte, payload []byte) ([]byte, error) {
 	return nil, errors.New("tlcp: no cipher configured")
 }
 
-// decrypt unwraps a received record into its plaintext payload + record type.
-// `record` is the full 5-byte-header + ciphertext.
+// decrypt unwraps a received record into its plaintext payload。
+// `record` is the full 5-byte-header + ciphertext（记录类型头由调用方按需
+// 自行读取——唯一调用方从不消费 type 返回值，unparam 裁决收缩签名）。
 //
 // destroyed 检查（在明文回退判断之前）：同 encrypt——destroy 后到达的入站
 // 记录不得按明文解析，否则对端（或线路注入者）在拆连竞态窗口内发送的未加
 // 密记录会被当作合法握手/应用数据消费。调用方 readRecord 持 in.mu（= hc.mu），
 // 与 destroy 的置位同锁，读取无竞争。
-func (hc *tlcpHalfConn) decrypt(record []byte) ([]byte, tlcpRecordType, error) {
+func (hc *tlcpHalfConn) decrypt(record []byte) ([]byte, error) {
 	if len(record) < tlcpRecordHeaderLen {
-		return nil, 0, errors.New("tlcp: record too short")
+		return nil, errors.New("tlcp: record too short")
 	}
-	typ := tlcpRecordType(record[0])
 	payload := record[tlcpRecordHeaderLen:]
 
 	if hc.destroyed {
-		return nil, 0, errHalfConnDestroyed
+		return nil, errHalfConnDestroyed
 	}
 	if hc.cbcKey == nil && hc.aead == nil {
-		return payload, typ, nil // plaintext phase
+		return payload, nil // plaintext phase
 	}
 
 	switch {
 	case hc.aead != nil:
 		enl := hc.aead.ExplicitNonceSize()
 		if len(payload) < enl+1 {
-			return nil, 0, errors.New("tlcp: AEAD record too short")
+			return nil, errors.New("tlcp: AEAD record too short")
 		}
 		explicitNonce := payload[:enl]
 		ct := payload[enl:]
 		plaintextLen := len(ct) - hc.aead.Overhead()
 		if plaintextLen < 0 {
-			return nil, 0, errors.New("tlcp: AEAD record shorter than tag")
+			return nil, errors.New("tlcp: AEAD record shorter than tag")
 		}
 		aad := tlcpAEADAdditionalData(hc.seq[:], record, plaintextLen)
 		plaintext, err := hc.aead.Open(nil, explicitNonce, ct, aad)
 		if err != nil {
-			return nil, 0, errors.New("tlcp: bad record MAC (AEAD authentication failed)")
+			return nil, errors.New("tlcp: bad record MAC (AEAD authentication failed)")
 		}
 		if err := hc.incSeq(); err != nil {
-			return nil, 0, err
+			return nil, err
 		}
-		return plaintext, typ, nil
+		return plaintext, nil
 
 	case hc.cbcKey != nil:
 		const blockSize = 16
@@ -367,7 +367,7 @@ func (hc *tlcpHalfConn) decrypt(record []byte) ([]byte, tlcpRecordType, error) {
 		// a distinguishable early exit is itself a padding-oracle signal.
 		minPayload := blockSize + roundUpToBlock(macSize+1, blockSize)
 		if len(payload)%blockSize != 0 || len(payload) < minPayload {
-			return nil, 0, errDecrypt
+			return nil, errDecrypt
 		}
 		iv := payload[:blockSize]
 		ct := payload[blockSize:]
@@ -376,7 +376,7 @@ func (hc *tlcpHalfConn) decrypt(record []byte) ([]byte, tlcpRecordType, error) {
 			// Key-length programming error; key length is validated at
 			// establishKeys, so this is not attacker-influenced. Still report
 			// it as a decryption failure to keep one failure surface.
-			return nil, 0, errDecrypt
+			return nil, errDecrypt
 		}
 		plain := make([]byte, len(ct))
 		mode.CryptBlocks(plain, ct)
@@ -398,14 +398,14 @@ func (hc *tlcpHalfConn) decrypt(record []byte) ([]byte, tlcpRecordType, error) {
 		// MAC and padding validity combine in constant time so the two failure
 		// modes cannot be distinguished.
 		if subtle.ConstantTimeCompare(localMAC, remoteMAC)&int(paddingGood) != 1 {
-			return nil, 0, errDecrypt
+			return nil, errDecrypt
 		}
 		if err := hc.incSeq(); err != nil {
-			return nil, 0, err
+			return nil, err
 		}
-		return plain[:n], typ, nil
+		return plain[:n], nil
 	}
-	return nil, 0, errors.New("tlcp: no cipher configured")
+	return nil, errors.New("tlcp: no cipher configured")
 }
 
 // --- Conn: the TLCP connection ---
@@ -765,7 +765,7 @@ func (c *tlcpConn) readRecord() ([]byte, tlcpRecordType, error) {
 		// bytes (see readRecord's alert branch below for the parsed form).
 		fullRecord := append(header, body...)
 		c.in.mu.Lock()
-		plaintext, _, err := c.in.decrypt(fullRecord)
+		plaintext, err := c.in.decrypt(fullRecord)
 		c.in.mu.Unlock()
 		if err != nil {
 			return nil, 0, err

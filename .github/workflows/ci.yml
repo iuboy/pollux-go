@@ -2,9 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
   workflow_dispatch:
+
+# dev 是日常开发分支：push 即跑（GO-2026-6809 这类 stdlib 门禁失败在 dev 上
+# 及早暴露，而非等到 PR/main）。同 ref 重复事件取消旧跑；PR 保持可取消。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

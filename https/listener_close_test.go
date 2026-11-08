@@ -104,8 +104,9 @@ func TestHybridConnCloseDuringSlowHandshake(t *testing.T) {
 		t.Fatal("Close(raw) 之后握手未失败（Read 未返回）")
 	}
 
-	// 幂等：再次 Close 立即返回首次结果。
-	if second := hc.Close(); second != firstCloseErr {
+	// 幂等：再次 Close 立即返回首次结果（errors.Is 判别——Close 可能返回
+	// 包装错误，!= 比较在 wrapped 错误上恒假）。
+	if second := hc.Close(); !errors.Is(second, firstCloseErr) {
 		t.Fatalf("重复 Close 应返回首次结果 %v, got %v", firstCloseErr, second)
 	}
 

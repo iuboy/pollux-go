@@ -119,7 +119,7 @@ func PKCS7Unpad(data []byte, blockSize int) ([]byte, error) {
 	// 恒定扫描末块全部字节:last[i] 落在 padding 区(i ≥ blockSize-pad)时,
 	// 其值必须等于 pad;padding 区之外的字节恒视为通过。
 	last := data[len(data)-blockSize:]
-	for i := 0; i < blockSize; i++ {
+	for i := range blockSize {
 		// inPad = 1 ⇔ i ≥ blockSize-pad ⇔ blockSize-pad-i-1 < 0(符号位)。
 		inPad := int(uint64(int64(blockSize)-int64(p)-int64(i)-1) >> 63)
 		eq := subtle.ConstantTimeByteEq(last[i], pad)

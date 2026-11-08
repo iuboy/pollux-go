@@ -164,7 +164,7 @@ func TestWriteAtomic_ConcurrentWritesNoInterleave(t *testing.T) {
 				readerErr <- fmt.Errorf("read at %d: %w", total, err)
 				return
 			}
-			for i := 0; i < n; i++ {
+			for i := range n {
 				if buf[i] != cur {
 					if run%chunk != 0 {
 						readerErr <- fmt.Errorf("并发 Write 交错：图案在 %d 字节处切换，run=%d 非 %d 的倍数", total, run, chunk)
@@ -190,7 +190,7 @@ func TestWriteAtomic_ConcurrentWritesNoInterleave(t *testing.T) {
 		go func(p byte) {
 			defer wg.Done()
 			payload := bytes.Repeat([]byte{p}, chunk)
-			for i := 0; i < chunks; i++ {
+			for range chunks {
 				if _, err := client.Write(payload); err != nil {
 					t.Errorf("write pattern %#x: %v", p, err)
 					return
